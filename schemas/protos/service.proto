@@ -1,0 +1,11 @@
+// Copyright (c) 2025 Pratik Barhate
+// Licensed under the MIT License. See the LICENSE file in the project root for more information.
+
+syntax = "proto3";
+package hushar;
+
+import "structs.proto";
+
+service Hushar {  
+  rpc InferenceService (stream InferenceRequest) returns (stream InferenceResponse);
+}

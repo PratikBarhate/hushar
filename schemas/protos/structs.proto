@@ -1,0 +1,72 @@
+// Copyright (c) 2025 Pratik Barhate
+// Licensed under the MIT License. See the LICENSE file in the project root for more information.
+
+syntax = "proto3";
+package hushar;
+
+message InferenceRequest {
+  string request_id = 1;
+  repeated InputRow inputs = 2;
+}
+
+message InferenceResponse {
+  string request_id = 1;
+  repeated OutputRow outputs = 2;
+}
+
+message InputRow {
+    string row_id = 1;
+    map<string, DataType> features = 2;
+}
+
+message OutputRow {
+    string row_id = 1;
+    repeated float scores = 2;
+}
+
+message DataType {
+  oneof data_type {
+    double double_value = 1;
+    float float_value = 2;
+    int32 integer_value = 3;
+    int64 long_value = 4;
+    string string_value = 5;
+    DoubleArray double_array = 6;
+    FloatArray float_array = 7;
+    IntegerArray integer_array = 8;
+    LongArray long_array = 9;
+    StringArray string_array = 10;
+  }
+}
+
+message DoubleArray {
+  repeated double values = 1;
+}
+
+message FloatArray {
+  repeated float values = 1;
+}
+
+message IntegerArray {
+  repeated int32 values = 1;
+}
+
+message LongArray {
+  repeated int64 values = 1;
+}
+
+message StringArray {
+  repeated string values = 1;
+}
+
+message InferenceLogRow {
+    string row_id = 1;
+    map<string, DataType> features = 2;
+    repeated float scores = 3;
+}
+
+message InferenceLogBatch {
+  string request_id = 1;
+  string model_id = 2;
+  repeated InferenceLogRow inference_log_rows = 3;
+}
