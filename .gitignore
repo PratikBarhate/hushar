@@ -1,5 +1,9 @@
+# Project Specific
+#####################
+benchmark/bin/
+
 # Rust Compiled files
-###################
+#####################
 debug/
 data/
 dist/

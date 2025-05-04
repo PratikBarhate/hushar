@@ -1,215 +1,265 @@
 package io.github.pratikbarhate.hushar.benchmark;
 
 import com.google.common.util.concurrent.RateLimiter;
-import hushar.HusharGrpc;
-import hushar.Structs.InferenceRequest;
-import hushar.Structs.InferenceResponse;
-import hushar.Structs;
+import io.github.pratikbarhate.hushar.HusharGrpc;
+import io.github.pratikbarhate.hushar.Structs;
+import io.github.pratikbarhate.hushar.Structs.DataType;
+import io.github.pratikbarhate.hushar.Structs.InferenceRequest;
+import io.github.pratikbarhate.hushar.Structs.InferenceResponse;
+import io.github.pratikbarhate.hushar.Structs.InputRow;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.cloudwatch.CloudWatchClient;
-import software.amazon.awssdk.services.cloudwatch.model.*;
+import software.amazon.awssdk.services.cloudwatch.model.MetricDatum;
+import software.amazon.awssdk.services.cloudwatch.model.PutMetricDataRequest;
+import software.amazon.awssdk.services.cloudwatch.model.StandardUnit;
 
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Logger;
 
 public class BenchmarkClient {
-    private final ManagedChannel channel;
-    private final HusharGrpc.HusharBlockingStub blockingStub;
-    private final CloudWatchClient cloudWatch;
-    private final RateLimiter rateLimiter;
-    private final int numThreads;
-    private final long durationSeconds;
+    private static final Logger logger = Logger.getLogger(BenchmarkClient.class.getName());
     
-    // Metrics tracking
+    private final String serverHost;
+    private final int serverPort;
+    private final int numThreads;
+    private final double requestRate;
+    private final int durationMinutes;
+    private final String awsRegion;
+    private final String cloudWatchNamespace;
+    private final List<InputRow> staticInputs;
+    private final CloudWatchClient cloudWatchClient;
+    private final ExecutorService executorService;
     private final AtomicLong totalRequests = new AtomicLong(0);
     private final AtomicLong successfulRequests = new AtomicLong(0);
-    private final AtomicLong failedRequests = new AtomicLong(0);
-    private final ConcurrentLinkedQueue<Long> latencies = new ConcurrentLinkedQueue<>();
     
-    public BenchmarkClient(String host, int port, double requestsPerSecond, 
-                          int numThreads, int durationMinutes) {
-        this.channel = ManagedChannelBuilder.forAddress(host, port)
-                .usePlaintext()
-                .build();
-        this.blockingStub = HusharGrpc.newBlockingStub(channel);
-        this.cloudWatch = CloudWatchClient.create();
-        this.rateLimiter = RateLimiter.create(requestsPerSecond);
+    public BenchmarkClient(String serverHost, int serverPort, int numThreads, double requestRate, 
+                          int durationMinutes, String awsRegion, String cloudWatchNamespace) {
+        this.serverHost = serverHost;
+        this.serverPort = serverPort;
         this.numThreads = numThreads;
-        this.durationSeconds = TimeUnit.MINUTES.toSeconds(durationMinutes);
+        this.requestRate = requestRate;
+        this.durationMinutes = durationMinutes;
+        this.awsRegion = awsRegion;
+        this.cloudWatchNamespace = cloudWatchNamespace;
+        this.staticInputs = createStaticInputs();
+        this.cloudWatchClient = createCloudWatchClient();
+        this.executorService = Executors.newFixedThreadPool(numThreads);
     }
     
-    public void runBenchmark() throws InterruptedException {
-        ExecutorService executor = Executors.newFixedThreadPool(numThreads);
-        List<Future<?>> futures = new ArrayList<>();
-        
-        long startTime = System.currentTimeMillis();
-        long endTime = startTime + TimeUnit.SECONDS.toMillis(durationSeconds);
-        
-        // Start all worker threads
-        for (int i = 0; i < numThreads; i++) {
-            futures.add(executor.submit(() -> workerTask(endTime)));
-        }
-        
-        // Wait for all threads to complete
-        for (Future<?> future : futures) {
-            future.get();
-        }
-        
-        executor.shutdown();
-        executor.awaitTermination(10, TimeUnit.SECONDS);
-        
-        // Send metrics to CloudWatch
-        sendMetricsToCloudWatch();
-        shutdown();
-    }
-    
-    private void workerTask(long endTime) {
-        while (System.currentTimeMillis() < endTime) {
-            rateLimiter.acquire();
-            
-            String requestId = UUID.randomUUID().toString();
-            long startNanos = System.nanoTime();
-            
-            InferenceRequest request = createInferenceRequest(requestId);
-            
-            try {
-                // Synchronous unary call - much simpler than streaming
-                InferenceResponse response = blockingStub.inference(request);
-                
-                long latencyMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
-                latencies.add(latencyMs);
-                successfulRequests.incrementAndGet();
-                
-            } catch (Exception e) {
-                failedRequests.incrementAndGet();
-            }
-            
-            totalRequests.incrementAndGet();
-        }
-    }
-    
-    private InferenceRequest createInferenceRequest(String requestId) {
-        Random random = new Random();
-        int numRows = 80 + random.nextInt(41); // 80-120 rows
-        
-        List<Structs.InputRow> inputs = new ArrayList<>();
-        
-        for (int i = 0; i < numRows; i++) {
-            Map<String, Structs.DataType> features = new HashMap<>();
-            
-            // Add test features
-            features.put("double_feature", Structs.DataType.newBuilder()
-                .setDoubleValue(random.nextDouble() * 100)
-                .build());
-            
-            features.put("float_feature", Structs.DataType.newBuilder()
-                .setFloatValue(random.nextFloat() * 100)
-                .build());
-            
-            features.put("integer_feature", Structs.DataType.newBuilder()
-                .setIntegerValue(random.nextInt(1000))
-                .build());
-            
-            features.put("string_feature", Structs.DataType.newBuilder()
-                .setStringValue("test-" + random.nextInt(100))
-                .build());
-            
-            Structs.InputRow row = Structs.InputRow.newBuilder()
-                .setRowId("row-" + i)
-                .putAllFeatures(features)
+    private CloudWatchClient createCloudWatchClient() {
+        return CloudWatchClient.builder()
+                .region(Region.of(awsRegion))
+                .credentialsProvider(DefaultCredentialsProvider.create())
                 .build();
+    }
+    
+    private List<InputRow> createStaticInputs() {
+        List<InputRow> inputs = new ArrayList<>();
+        Random random = new Random(42); // Fixed seed for reproducible testing
+        
+        for (int i = 0; i < 6; i++) {
+            Map<String, DataType> features = new HashMap<>();
+            
+            // Sample features - adjust based on your actual feature schema
+            features.put("numeric_feature_1", createDoubleValue(random.nextDouble() * 100));
+            features.put("numeric_feature_2", createFloatValue(random.nextFloat() * 50));
+            features.put("string_feature", createStringValue("feature_" + i));
+            features.put("array_feature", createDoubleArray(generateArray(random, 10)));
+            
+            InputRow row = Structs.InputRow.newBuilder()
+                    .setRowId("row_" + i)
+                    .putAllFeatures(features)
+                    .build();
             
             inputs.add(row);
         }
         
-        return InferenceRequest.newBuilder()
-            .setRequestId(requestId)
-            .addAllInputs(inputs)
-            .build();
+        return inputs;
     }
     
-    private void sendMetricsToCloudWatch() {
-        long total = totalRequests.get();
-        long successful = successfulRequests.get();
-        long failed = failedRequests.get();
-        double throughput = successful / (double) durationSeconds;
+    private DataType createDoubleValue(double value) {
+        return DataType.newBuilder().setDoubleValue(value).build();
+    }
+    
+    private DataType createFloatValue(float value) {
+        return DataType.newBuilder().setFloatValue(value).build();
+    }
+    
+    private DataType createStringValue(String value) {
+        return DataType.newBuilder().setStringValue(value).build();
+    }
+    
+    private DataType createDoubleArray(double[] values) {
+        Structs.DoubleArray array = Structs.DoubleArray.newBuilder()
+                .addAllValues(Arrays.stream(values).boxed().toList())
+                .build();
+        return DataType.newBuilder().setDoubleArray(array).build();
+    }
+    
+    private double[] generateArray(Random random, int size) {
+        double[] array = new double[size];
+        for (int i = 0; i < size; i++) {
+            array[i] = random.nextDouble() * 1000;
+        }
+        return array;
+    }
+    
+    public void runBenchmark() {
+        logger.info("Starting benchmark with " + numThreads + " threads, rate: " + requestRate + " req/sec");
         
-        List<MetricDatum> metrics = new ArrayList<>();
-        Instant timestamp = Instant.now();
+        ExecutorService workers = Executors.newFixedThreadPool(numThreads);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch endLatch = new CountDownLatch(numThreads);
         
-        // Summary metrics
-        metrics.add(MetricDatum.builder()
-            .metricName("TotalRequests")
-            .unit(StandardUnit.COUNT)
-            .value((double) total)
-            .timestamp(timestamp)
-            .build());
+        for (int i = 0; i < numThreads; i++) {
+            workers.submit(() -> {
+                try {
+                    startLatch.await();
+                    runWorkerThread();
+                } catch (Exception e) {
+                    logger.severe("Worker thread error: " + e.getMessage());
+                } finally {
+                    endLatch.countDown();
+                }
+            });
+        }
         
-        metrics.add(MetricDatum.builder()
-            .metricName("SuccessfulRequests")
-            .unit(StandardUnit.COUNT)
-            .value((double) successful)
-            .timestamp(timestamp)
-            .build());
+        // Start all threads
+        startLatch.countDown();
         
-        metrics.add(MetricDatum.builder()
-            .metricName("FailedRequests")
-            .unit(StandardUnit.COUNT)
-            .value((double) failed)
-            .timestamp(timestamp)
-            .build());
+        // Wait for specified duration
+        try {
+            TimeUnit.MINUTES.sleep(durationMinutes);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logger.severe("Benchmark interrupted");
+        }
         
-        metrics.add(MetricDatum.builder()
-            .metricName("ThroughputRPS")
-            .unit(StandardUnit.COUNT_SECOND)
-            .value(throughput)
-            .timestamp(timestamp)
-            .build());
+        // Shutdown
+        workers.shutdownNow();
+        try {
+            endLatch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
         
-        // Send individual latency measurements
-        for (Long latency : latencies) {
-            metrics.add(MetricDatum.builder()
-                .metricName("RequestLatency")
-                .unit(StandardUnit.MILLISECONDS)
-                .value(latency.doubleValue())
-                .timestamp(timestamp)
-                .build());
-            
-            // CloudWatch has a limit of 20 metrics per request
-            if (metrics.size() >= 20) {
-                sendMetricBatch(metrics);
-                metrics.clear();
+        cloudWatchClient.close();
+        executorService.shutdown();
+        
+        logger.info("Benchmark completed. Total requests: " + totalRequests.get() + 
+                   ", Successful: " + successfulRequests.get());
+    }
+    
+    private void runWorkerThread() {
+        ManagedChannel channel = ManagedChannelBuilder.forAddress(serverHost, serverPort)
+                .usePlaintext()
+                .build();
+        
+        HusharGrpc.HusharStub stub = HusharGrpc.newStub(channel);
+        RateLimiter rateLimiter = RateLimiter.create(requestRate / numThreads);
+        Random random = new Random();
+        
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+                rateLimiter.acquire();
+                
+                // Create request with 80-120 input rows
+                int numRows = 80 + random.nextInt(41);
+                List<InputRow> requestInputs = new ArrayList<>();
+                
+                for (int i = 0; i < numRows; i++) {
+                    InputRow template = staticInputs.get(random.nextInt(staticInputs.size()));
+                    InputRow row = Structs.InputRow.newBuilder()
+                            .setRowId(template.getRowId() + "_" + System.nanoTime())
+                            .putAllFeatures(template.getFeaturesMap())
+                            .build();
+                    requestInputs.add(row);
+                }
+                
+                InferenceRequest request = InferenceRequest.newBuilder()
+                        .setRequestId(UUID.randomUUID().toString())
+                        .addAllInputs(requestInputs)
+                        .build();
+                
+                long startTime = System.nanoTime();
+                makeRequest(stub, request, startTime);
+            }
+        } catch (Exception e) {
+            if (!Thread.currentThread().isInterrupted()) {
+                logger.severe("Worker thread error: " + e.getMessage());
+            }
+        } finally {
+            channel.shutdown();
+            try {
+                channel.awaitTermination(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
         }
-        
-        // Send any remaining metrics
-        if (!metrics.isEmpty()) {
-            sendMetricBatch(metrics);
-        }
     }
     
-    private void sendMetricBatch(List<MetricDatum> metrics) {
-        PutMetricDataRequest request = PutMetricDataRequest.builder()
-            .namespace("HusharLatencyBenchmark")
-            .metricData(metrics)
-            .build();
+    private void makeRequest(HusharGrpc.HusharStub stub, InferenceRequest request, long startTime) {
+        totalRequests.incrementAndGet();
         
-        try {
-            cloudWatch.putMetricData(request);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        stub.inferenceService(request, new io.grpc.stub.StreamObserver<InferenceResponse>() {
+            @Override
+            public void onNext(InferenceResponse response) {
+                long latencyNanos = System.nanoTime() - startTime;
+                double latencyMs = latencyNanos / 1_000_000.0;
+                
+                successfulRequests.incrementAndGet();
+                logToCloudWatch(latencyMs, "Success");
+                
+                if (totalRequests.get() % 100 == 0) {
+                    logger.info("Processed " + totalRequests.get() + " requests");
+                }
+            }
+            
+            @Override
+            public void onError(Throwable t) {
+                long latencyNanos = System.nanoTime() - startTime;
+                double latencyMs = latencyNanos / 1_000_000.0;
+                
+                logger.warning("Request failed: " + t.getMessage());
+                logToCloudWatch(latencyMs, "Error");
+            }
+            
+            @Override
+            public void onCompleted() {
+                // Not used in unary RPC
+            }
+        });
     }
     
-    public void shutdown() {
-        try {
-            channel.shutdown().awaitTermination(5, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
-        cloudWatch.close();
+    private void logToCloudWatch(double latencyMs, String status) {
+        executorService.submit(() -> {
+            try {
+                MetricDatum datum = MetricDatum.builder()
+                        .metricName("InferenceLatency")
+                        .value(latencyMs)
+                        .unit(StandardUnit.MILLISECONDS)
+                        .timestamp(Instant.now())
+                        .dimensions(software.amazon.awssdk.services.cloudwatch.model.Dimension.builder()
+                                .name("Status")
+                                .value(status)
+                                .build())
+                        .build();
+                
+                PutMetricDataRequest putRequest = PutMetricDataRequest.builder()
+                        .namespace(cloudWatchNamespace)
+                        .metricData(datum)
+                        .build();
+                
+                cloudWatchClient.putMetricData(putRequest);
+            } catch (Exception e) {
+                logger.warning("Failed to log to CloudWatch: " + e.getMessage());
+            }
+        });
     }
 }
