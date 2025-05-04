@@ -71,6 +71,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service_config_path = args
         .get(2)
         .expect("CLI argument (2) service configuration path is missing");
+    let met_thread_cnt = args
+        .get(3)
+        .expect("CLI argument (3) metrics thread count is missing")
+        .parse::<usize>()
+        .unwrap();
+    let log_thread_cnt = args
+        .get(4)
+        .expect("CLI argument (4) data logger thread count is missing")
+        .parse::<usize>()
+        .unwrap();
     let aws_config = aws_config::load_from_env().await;
     let s3_client = aws_sdk_s3::Client::new(&aws_config);
     let cloudwatch_client = Arc::new(aws_sdk_cloudwatch::Client::new(&aws_config));
@@ -101,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shared_metrics_receiver = Arc::new(tokio::sync::Mutex::new(metrics_receiver));
     let (log_sender, log_receiver) = tokio::sync::mpsc::channel::<InferenceLogBatch>(200);
     let shared_log_receiver = Arc::new(tokio::sync::Mutex::new(log_receiver));
-    for worker_id in 0..4 {
+    for worker_id in 0..log_thread_cnt {
         let worker_client = Arc::clone(&kinesis_client);
         let worker_receiver = Arc::clone(&shared_log_receiver);
         tokio::spawn(io::feature_logger(
@@ -111,13 +121,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             worker_id,
         ));
     }
-    for worker_id in 0..2 {
+    for worker_id in 0..met_thread_cnt {
         let worker_client = Arc::clone(&cloudwatch_client);
         let worker_receiver = Arc::clone(&shared_metrics_receiver);
         tokio::spawn(io::inference_metrics_sidecar(
             500,
             worker_client,
-            "Hushar",
+            "HusharService",
             worker_receiver,
             worker_id,
         ));
