@@ -2,8 +2,6 @@
 // Licensed under the MIT License. See the LICENSE file in the project root for more information.
 
 use config::HusharServiceConfig;
-use futures::Stream;
-use futures::StreamExt;
 use hushar_proto::hushar::{
     hushar_server::{Hushar, HusharServer},
     InferenceLogBatch, InferenceRequest, InferenceResponse,
@@ -12,9 +10,7 @@ use inference::TractRunnableModel;
 use io::FileReader;
 use std::env;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::pin::Pin;
 use std::sync::Arc;
-use tokio_stream::wrappers::ReceiverStream;
 use tonic::{transport::Server, Request, Response, Status};
 
 pub(crate) mod config;
@@ -33,61 +29,34 @@ pub(crate) struct HusharService {
 
 #[tonic::async_trait]
 impl Hushar for HusharService {
-    type InferenceServiceStream =
-        Pin<Box<dyn Stream<Item = Result<InferenceResponse, Status>> + Send + 'static>>;
-
     async fn inference_service(
         &self,
-        request: Request<tonic::Streaming<InferenceRequest>>,
-    ) -> Result<Response<Self::InferenceServiceStream>, Status> {
-        let mut request_stream = request.into_inner();
-        let metrics_sender = self.metrics_sender.clone();
-        let log_sender = self.log_sender.clone();
-        let feat_len = self.feat_len.clone();
-        let model = self.model.clone();
-        let vec_config = self.vec_config.clone();
-        let model_id = self.service_config.model_id.clone();
-
-        let (tx, rx) = tokio::sync::mpsc::channel(200);
-        let output_stream = ReceiverStream::new(rx);
-
-        tokio::task::spawn(async move {
-            while let Some(result) = request_stream.next().await {
-                let send_result = match result {
-                    Ok(request) => {
-                        let request_id = request.request_id.to_string();
-                        match inference::scoring::batch_inference(
-                            &feat_len,
-                            &model,
-                            request.inputs,
-                            &vec_config,
-                        ) {
-                            Ok((outputs, inference_log_rows, inference_micros)) => {
-                                let inference_response = InferenceResponse {
-                                    request_id: request_id.clone(),
-                                    outputs,
-                                };
-                                let inference_log_batch = InferenceLogBatch {
-                                    request_id,
-                                    model_id: model_id.clone(),
-                                    inference_log_rows,
-                                };
-                                let _ = metrics_sender.send(inference_micros);
-                                let _ = log_sender.send(inference_log_batch);
-                                Ok(inference_response)
-                            }
-                            Err(e) => Err(Status::internal(e.to_string())),
-                        }
-                    }
-                    Err(e) => Err(Status::internal(e.to_string())),
+        request: Request<InferenceRequest>,
+    ) -> Result<Response<InferenceResponse>, Status> {
+        let inference_req = request.into_inner();
+        let request_id = inference_req.request_id;
+        match inference::scoring::batch_inference(
+            &self.feat_len,
+            &self.model,
+            inference_req.inputs,
+            &self.vec_config,
+        ) {
+            Ok((outputs, inference_log_rows, inference_micros)) => {
+                let inference_response = InferenceResponse {
+                    request_id: request_id.clone(),
+                    outputs,
                 };
-                if tx.send(send_result).await.is_err() {
-                    println!("Receiver dropped, client disconnected");
-                    break;
-                }
+                let inference_log_batch = InferenceLogBatch {
+                    request_id,
+                    model_id: self.service_config.model_id.clone(),
+                    inference_log_rows,
+                };
+                let _ = &self.metrics_sender.send(inference_micros);
+                let _ = &self.log_sender.send(inference_log_batch);
+                Ok(Response::new(inference_response))
             }
-        });
-        Ok(Response::new(Box::pin(output_stream)))
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
     }
 }
 
@@ -132,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shared_metrics_receiver = Arc::new(tokio::sync::Mutex::new(metrics_receiver));
     let (log_sender, log_receiver) = tokio::sync::mpsc::channel::<InferenceLogBatch>(200);
     let shared_log_receiver = Arc::new(tokio::sync::Mutex::new(log_receiver));
-    for worker_id in 0..8 {
+    for worker_id in 0..4 {
         let worker_client = Arc::clone(&kinesis_client);
         let worker_receiver = Arc::clone(&shared_log_receiver);
         tokio::spawn(io::feature_logger(
@@ -142,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             worker_id,
         ));
     }
-    for worker_id in 0..4 {
+    for worker_id in 0..2 {
         let worker_client = Arc::clone(&cloudwatch_client);
         let worker_receiver = Arc::clone(&shared_metrics_receiver);
         tokio::spawn(io::inference_metrics_sidecar(

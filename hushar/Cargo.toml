@@ -10,13 +10,11 @@ aws-config = { workspace = true }
 aws-sdk-cloudwatch = { workspace = true }
 aws-sdk-kinesis = { workspace = true }
 aws-sdk-s3 = { workspace = true }
-futures = { workspace = true }
 hushar-proto = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-tokio-stream =  { workspace = true }
 tonic = { workspace = true }
 tract-onnx = { workspace = true }
 

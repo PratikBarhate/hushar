@@ -7,7 +7,6 @@ import hushar.Structs.InferenceResponse;
 import hushar.Structs;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
-import io.grpc.stub.StreamObserver;
 import software.amazon.awssdk.services.cloudwatch.CloudWatchClient;
 import software.amazon.awssdk.services.cloudwatch.model.*;
 
@@ -18,7 +17,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public class BenchmarkClient {
     private final ManagedChannel channel;
-    private final HusharGrpc.HusharStub asyncStub;
+    private final HusharGrpc.HusharBlockingStub blockingStub;
     private final CloudWatchClient cloudWatch;
     private final RateLimiter rateLimiter;
     private final int numThreads;
@@ -35,7 +34,7 @@ public class BenchmarkClient {
         this.channel = ManagedChannelBuilder.forAddress(host, port)
                 .usePlaintext()
                 .build();
-        this.asyncStub = HusharGrpc.newStub(channel);
+        this.blockingStub = HusharGrpc.newBlockingStub(channel);
         this.cloudWatch = CloudWatchClient.create();
         this.rateLimiter = RateLimiter.create(requestsPerSecond);
         this.numThreads = numThreads;
@@ -75,34 +74,15 @@ public class BenchmarkClient {
             long startNanos = System.nanoTime();
             
             InferenceRequest request = createInferenceRequest(requestId);
-            CountDownLatch responseLatch = new CountDownLatch(1);
-            
-            StreamObserver<InferenceResponse> responseObserver = new StreamObserver<InferenceResponse>() {
-                @Override
-                public void onNext(InferenceResponse response) {
-                    long latencyMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
-                    latencies.add(latencyMs);
-                    successfulRequests.incrementAndGet();
-                    responseLatch.countDown();
-                }
-                
-                @Override
-                public void onError(Throwable t) {
-                    failedRequests.incrementAndGet();
-                    responseLatch.countDown();
-                }
-                
-                @Override
-                public void onCompleted() {}
-            };
-            
-            StreamObserver<InferenceRequest> requestObserver = 
-                asyncStub.inferenceService(responseObserver);
             
             try {
-                requestObserver.onNext(request);
-                requestObserver.onCompleted();
-                responseLatch.await(5, TimeUnit.SECONDS);
+                // Synchronous unary call - much simpler than streaming
+                InferenceResponse response = blockingStub.inference(request);
+                
+                long latencyMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+                latencies.add(latencyMs);
+                successfulRequests.incrementAndGet();
+                
             } catch (Exception e) {
                 failedRequests.incrementAndGet();
             }
