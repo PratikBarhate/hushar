@@ -60,8 +60,8 @@ impl Hushar for HusharService {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let num_cpus = std::thread::available_parallelism().unwrap().get();
     let args: Vec<String> = env::args().collect();
     let ip_address: Ipv4Addr = args
         .get(1)
@@ -81,40 +81,97 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("CLI argument (4) data logger thread count is missing")
         .parse::<usize>()
         .unwrap();
-    let aws_config = aws_config::load_from_env().await;
-    let s3_client = aws_sdk_s3::Client::new(&aws_config);
-    let cloudwatch_client = Arc::new(aws_sdk_cloudwatch::Client::new(&aws_config));
-    let kinesis_client = Arc::new(aws_sdk_kinesis::Client::new(&aws_config));
 
-    let s3_reader = io::S3Reader::new(s3_client);
-    let service_config = config::HusharServiceConfig::from_json(
-        &s3_reader.read_string(&service_config_path).await.unwrap(),
-    )
-    .unwrap();
-    let vec_config = config::VectorizationConfig::from_json(
-        &s3_reader
-            .read_string(&service_config.vectorization_instruction_path)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    let (tract_model, feat_len) = io::load_onnx_model(
-        &s3_reader
-            .read_bytes(&service_config.vectorization_instruction_path)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
+    let server_thread_cnt = num_cpus - (met_thread_cnt + log_thread_cnt);
 
-    let (metrics_sender, metrics_receiver) =
-        tokio::sync::mpsc::channel::<inference::InferenceMicros>(200);
+    let config_runtime = tokio::runtime::Builder::new_current_thread()
+        .thread_name("hushar-config-loader")
+        .enable_all()
+        .build()?;
+
+    let (
+        service_config,
+        vec_config,
+        tract_model,
+        feat_len,
+        metrics_sender,
+        metrics_receiver,
+        log_sender,
+        log_receiver,
+        cloudwatch_client,
+        kinesis_client,
+    ) = config_runtime.block_on(async {
+        let aws_config = aws_config::load_from_env().await;
+        let s3_client = aws_sdk_s3::Client::new(&aws_config);
+        let cloudwatch_client = Arc::new(aws_sdk_cloudwatch::Client::new(&aws_config));
+        let kinesis_client = Arc::new(aws_sdk_kinesis::Client::new(&aws_config));
+
+        let s3_reader = io::S3Reader::new(s3_client);
+        let service_config = config::HusharServiceConfig::from_json(
+            &s3_reader.read_string(&service_config_path).await.unwrap(),
+        )
+        .unwrap();
+
+        let vec_config = config::VectorizationConfig::from_json(
+            &s3_reader
+                .read_string(&service_config.vectorization_instruction_path)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+
+        let (tract_model, feat_len) = io::load_onnx_model(
+            &s3_reader
+                .read_bytes(&service_config.model_path)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+
+        let (metrics_sender, metrics_receiver) =
+            tokio::sync::mpsc::channel::<inference::InferenceMicros>(200);
+        let (log_sender, log_receiver) = tokio::sync::mpsc::channel::<InferenceLogBatch>(200);
+
+        (
+            service_config,
+            vec_config,
+            tract_model,
+            feat_len,
+            metrics_sender,
+            metrics_receiver,
+            log_sender,
+            log_receiver,
+            cloudwatch_client,
+            kinesis_client,
+        )
+    });
+
+    config_runtime.shutdown_background();
+
+    let server_runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(server_thread_cnt)
+        .thread_name("hushar-server-worker")
+        .enable_all()
+        .build()?;
+
+    let metrics_runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(met_thread_cnt)
+        .thread_name("hushar-metrics-worker")
+        .enable_all()
+        .build()?;
+
+    let logging_runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(log_thread_cnt)
+        .thread_name("hushar-logging-worker")
+        .enable_all()
+        .build()?;
+
     let shared_metrics_receiver = Arc::new(tokio::sync::Mutex::new(metrics_receiver));
-    let (log_sender, log_receiver) = tokio::sync::mpsc::channel::<InferenceLogBatch>(200);
     let shared_log_receiver = Arc::new(tokio::sync::Mutex::new(log_receiver));
     for worker_id in 0..log_thread_cnt {
         let worker_client = Arc::clone(&kinesis_client);
         let worker_receiver = Arc::clone(&shared_log_receiver);
-        tokio::spawn(io::feature_logger(
+        logging_runtime.spawn(io::feature_logger(
             worker_client,
             worker_receiver,
             "HusharLogStream",
@@ -124,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for worker_id in 0..met_thread_cnt {
         let worker_client = Arc::clone(&cloudwatch_client);
         let worker_receiver = Arc::clone(&shared_metrics_receiver);
-        tokio::spawn(io::inference_metrics_sidecar(
+        metrics_runtime.spawn(io::inference_metrics_sidecar(
             500,
             worker_client,
             "HusharService",
@@ -142,14 +199,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         service_config,
         vec_config: Arc::new(vec_config),
     };
+    server_runtime.block_on(async {
+        let _ = Server::builder()
+            .concurrency_limit_per_connection(4)
+            .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
+            .tcp_nodelay(true)
+            .add_service(HusharServer::new(hushar_service))
+            .serve(server_addr)
+            .await;
+    });
 
-    Server::builder()
-        .concurrency_limit_per_connection(4)
-        .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
-        .tcp_nodelay(true)
-        .add_service(HusharServer::new(hushar_service))
-        .serve(server_addr)
-        .await?;
+    metrics_runtime.shutdown_background();
+    logging_runtime.shutdown_background();
+    server_runtime.shutdown_background();
 
     Ok(())
 }
