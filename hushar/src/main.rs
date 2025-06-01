@@ -190,7 +190,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
 
-    let server_addr = SocketAddr::from((ip_address, service_config.port_number.clone() as u16));
+    let server_addr = SocketAddr::from((ip_address, service_config.port_number.clone()));
+    let connection_concurrency = service_config.connection_concurrency.clone() as usize;
     let hushar_service = HusharService {
         feat_len,
         log_sender,
@@ -201,7 +202,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     server_runtime.block_on(async {
         let _ = Server::builder()
-            .concurrency_limit_per_connection(4)
+            .concurrency_limit_per_connection(connection_concurrency)
             .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
             .tcp_nodelay(true)
             .add_service(HusharServer::new(hushar_service))

@@ -63,23 +63,122 @@ public class BenchmarkClient {
         List<InputRow> inputs = new ArrayList<>();
         Random random = new Random(42); // Fixed seed for reproducible testing
         
-        for (int i = 0; i < 6; i++) {
-            Map<String, DataType> features = new HashMap<>();
-            
-            // Sample features - adjust based on your actual feature schema
-            features.put("numeric_feature_1", createDoubleValue(random.nextDouble() * 100));
-            features.put("numeric_feature_2", createFloatValue(random.nextFloat() * 50));
-            features.put("string_feature", createStringValue("feature_" + i));
-            features.put("array_feature", createDoubleArray(generateArray(random, 10)));
-            
-            InputRow row = Structs.InputRow.newBuilder()
-                    .setRowId("row_" + i)
-                    .putAllFeatures(features)
-                    .build();
-            
-            inputs.add(row);
-        }
-        
+        Map<String, DataType> features_1 = new HashMap<>();
+        features_1.put("embedding_text_1", createStringValue("excellent"));
+        features_1.put("embedding_category_2", createStringValue("electronics"));
+        features_1.put("embedding_sentiment_3", createStringValue("positive"));
+        features_1.put("embedding_location_4", createStringValue("Asia"));
+        features_1.put("onehot_color_1", createStringValue("maroon"));
+        features_1.put("onehot_size_2", createStringValue("16x32"));
+        features_1.put("onehot_category_3", createStringValue("bikes"));
+        features_1.put("onehot_status_4", createStringValue("balanced"));
+        features_1.put("identity_scores_1", createDoubleArray(generateArray(random, 2)));
+        features_1.put("identity_arr", createDoubleArray(generateArray(random, 4)));
+        features_1.put("minmax32_temperature_1", createFloatValue(random.nextFloat() * 100));
+        features_1.put("minmax32_price_2", createFloatValue(random.nextFloat() * 100));
+        features_1.put("minmax32_percentage_3", createFloatValue(random.nextFloat() * 100));
+        features_1.put("minmax64_revenue_1", createDoubleValue(random.nextDouble() * 100));
+        features_1.put("minmax64_distance_2", createDoubleValue(random.nextDouble() * 100));
+        features_1.put("minmax64_timestamp_3", createDoubleValue(random.nextDouble() * 100));
+        features_1.put("standard32_age_1", createFloatValue(random.nextFloat() * 100));
+        features_1.put("standard32_weight_2", createFloatValue(random.nextFloat() * 100));
+        features_1.put("standard32_duration_3", createFloatValue(random.nextFloat() * 100));
+        features_1.put("standard64_income_1", createDoubleValue(random.nextDouble() * 100));
+        features_1.put("standard64_population_2", createDoubleValue(random.nextDouble() * 100));
+        features_1.put("standard64_views_3", createDoubleValue(random.nextDouble() * 100));
+        InputRow row_1 = Structs.InputRow.newBuilder()
+                .setRowId("row_1")
+                .putAllFeatures(features_1)
+                .build();
+        inputs.add(row_1);
+
+        Map<String, DataType> features_2 = new HashMap<>();
+        features_2.put("embedding_text_1", createStringValue("good"));
+        features_2.put("embedding_category_2", createStringValue("clothing"));
+        features_2.put("embedding_sentiment_3", createStringValue("negative"));
+        features_2.put("embedding_location_4", createStringValue("Europe"));
+        features_2.put("onehot_color_1", createStringValue("coral"));
+        features_2.put("onehot_size_2", createStringValue("12x12"));
+        features_2.put("onehot_category_3", createStringValue("bikes"));
+        features_2.put("onehot_status_4", createStringValue("balanced"));
+        features_2.put("identity_scores_1", createDoubleArray(generateArray(random, 2)));
+        features_2.put("identity_arr", createDoubleArray(generateArray(random, 4)));
+        features_2.put("minmax32_temperature_1", createFloatValue(random.nextFloat() * 100));
+        features_2.put("minmax32_price_2", createFloatValue(random.nextFloat() * 100));
+        features_2.put("minmax32_percentage_3", createFloatValue(random.nextFloat() * 100));
+        features_2.put("minmax64_revenue_1", createDoubleValue(random.nextDouble() * 100));
+        features_2.put("minmax64_distance_2", createDoubleValue(random.nextDouble() * 100));
+        features_2.put("minmax64_timestamp_3", createDoubleValue(random.nextDouble() * 100));
+        features_2.put("standard32_age_1", createFloatValue(random.nextFloat() * 100));
+        features_2.put("standard32_weight_2", createFloatValue(random.nextFloat() * 100));
+        features_2.put("standard32_duration_3", createFloatValue(random.nextFloat() * 100));
+        features_2.put("standard64_income_1", createDoubleValue(random.nextDouble() * 100));
+        features_2.put("standard64_population_2", createDoubleValue(random.nextDouble() * 100));
+        features_2.put("standard64_views_3", createDoubleValue(random.nextDouble() * 100));
+        InputRow row_2 = Structs.InputRow.newBuilder()
+                .setRowId("row_2")
+                .putAllFeatures(features_2)
+                .build();
+        inputs.add(row_2);
+
+        Map<String, DataType> features_3 = new HashMap<>();
+        features_3.put("embedding_text_1", createStringValue("poor"));
+        features_3.put("embedding_category_2", createStringValue("food"));
+        features_3.put("embedding_sentiment_3", createStringValue("neutral"));
+        features_3.put("embedding_location_4", createStringValue("USA"));
+        features_3.put("onehot_color_1", createStringValue("lavender"));
+        features_3.put("onehot_size_2", createStringValue("20x20"));
+        features_3.put("onehot_category_3", createStringValue("cookware"));
+        features_3.put("onehot_status_4", createStringValue("budgeted"));
+        features_3.put("identity_scores_1", createDoubleArray(generateArray(random, 2)));
+        features_3.put("identity_arr", createDoubleArray(generateArray(random, 4)));
+        features_3.put("minmax32_temperature_1", createFloatValue(random.nextFloat() * 100));
+        features_3.put("minmax32_price_2", createFloatValue(random.nextFloat() * 100));
+        features_3.put("minmax32_percentage_3", createFloatValue(random.nextFloat() * 100));
+        features_3.put("minmax64_revenue_1", createDoubleValue(random.nextDouble() * 100));
+        features_3.put("minmax64_distance_2", createDoubleValue(random.nextDouble() * 100));
+        features_3.put("minmax64_timestamp_3", createDoubleValue(random.nextDouble() * 100));
+        features_3.put("standard32_age_1", createFloatValue(random.nextFloat() * 100));
+        features_3.put("standard32_weight_2", createFloatValue(random.nextFloat() * 100));
+        features_3.put("standard32_duration_3", createFloatValue(random.nextFloat() * 100));
+        features_3.put("standard64_income_1", createDoubleValue(random.nextDouble() * 100));
+        features_3.put("standard64_population_2", createDoubleValue(random.nextDouble() * 100));
+        features_3.put("standard64_views_3", createDoubleValue(random.nextDouble() * 100));
+        InputRow row_3 = Structs.InputRow.newBuilder()
+                .setRowId("row_3")
+                .putAllFeatures(features_3)
+                .build();
+        inputs.add(row_3);
+
+        Map<String, DataType> features_4 = new HashMap<>();
+        features_4.put("embedding_text_1", createStringValue("average"));
+        features_4.put("embedding_category_2", createStringValue("food"));
+        features_4.put("embedding_sentiment_3", createStringValue("negative"));
+        features_4.put("embedding_location_4", createStringValue("Africa"));
+        features_4.put("onehot_color_1", createStringValue("aqua"));
+        features_4.put("onehot_size_2", createStringValue("11x14"));
+        features_4.put("onehot_category_3", createStringValue("appliances"));
+        features_4.put("onehot_status_4", createStringValue("adjusted"));
+        features_4.put("identity_scores_1", createDoubleArray(generateArray(random, 2)));
+        features_4.put("identity_arr", createDoubleArray(generateArray(random, 4)));
+        features_4.put("minmax32_temperature_1", createFloatValue(random.nextFloat() * 100));
+        features_4.put("minmax32_price_2", createFloatValue(random.nextFloat() * 100));
+        features_4.put("minmax32_percentage_3", createFloatValue(random.nextFloat() * 100));
+        features_4.put("minmax64_revenue_1", createDoubleValue(random.nextDouble() * 100));
+        features_4.put("minmax64_distance_2", createDoubleValue(random.nextDouble() * 100));
+        features_4.put("minmax64_timestamp_3", createDoubleValue(random.nextDouble() * 100));
+        features_4.put("standard32_age_1", createFloatValue(random.nextFloat() * 100));
+        features_4.put("standard32_weight_2", createFloatValue(random.nextFloat() * 100));
+        features_4.put("standard32_duration_3", createFloatValue(random.nextFloat() * 100));
+        features_4.put("standard64_income_1", createDoubleValue(random.nextDouble() * 100));
+        features_4.put("standard64_population_2", createDoubleValue(random.nextDouble() * 100));
+        features_4.put("standard64_views_3", createDoubleValue(random.nextDouble() * 100));
+        InputRow row_4 = Structs.InputRow.newBuilder()
+                .setRowId("row_4")
+                .putAllFeatures(features_4)
+                .build();
+        inputs.add(row_4);
+
         return inputs;
     }
     
@@ -163,14 +262,14 @@ public class BenchmarkClient {
         
         HusharGrpc.HusharStub stub = HusharGrpc.newStub(channel);
         RateLimiter rateLimiter = RateLimiter.create(requestRate / numThreads);
-        Random random = new Random();
+        Random random = new Random(42);
         
         try {
             while (!Thread.currentThread().isInterrupted()) {
                 rateLimiter.acquire();
                 
                 // Create request with 80-120 input rows
-                int numRows = 80 + random.nextInt(41);
+                int numRows = 80 + random.nextInt(42);
                 List<InputRow> requestInputs = new ArrayList<>();
                 
                 for (int i = 0; i < numRows; i++) {

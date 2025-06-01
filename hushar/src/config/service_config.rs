@@ -6,12 +6,12 @@
 use serde::Deserialize;
 use std::error::Error;
 
-fn default_port_number() -> u32 {
+fn default_port_number() -> u16 {
     8279
 }
 
 fn default_connection_concurrency() -> u16 {
-    10
+    50
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -21,7 +21,7 @@ pub struct HusharServiceConfig {
     pub model_path: String,
     pub model_id: String,
     #[serde(default = "default_port_number")]
-    pub port_number: u32,
+    pub port_number: u16,
     pub vectorization_instruction_path: String,
 }
 
