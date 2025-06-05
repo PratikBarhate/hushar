@@ -74,6 +74,18 @@ application {
     mainClass = 'io.github.pratikbarhate.hushar.benchmark.Main'
 }
 
+jar {
+    manifest {
+        attributes(
+                'Main-Class': 'io.github.pratikbarhate.hushar.benchmark.Main'
+        )
+    }
+    // To add all of the dependencies
+    from {
+        configurations.compileClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+}
+
 tasks.named('test') {
     useJUnitPlatform()
 }
