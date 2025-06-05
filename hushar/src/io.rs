@@ -1,7 +1,8 @@
 // Copyright (c) 2025 Pratik Barhate
 // Licensed under the MIT License. See the LICENSE file in the project root for more information.
 
-use hushar_proto::hushar::InferenceLogBatch;
+use chrono::{Datelike, Timelike};
+use hushar_proto::hushar::{InferenceLogBatch, InferenceLogs};
 use prost::Message;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -21,7 +22,7 @@ pub(crate) async fn inference_metrics_sidecar(
     namespace: &'static str,
     receiver: Arc<Mutex<mpsc::Receiver<inference::InferenceMicros>>>,
     worker_id: usize,
-) {
+) -> () {
     println!("Metrics :: Starting worker {}", worker_id);
     let mut metric_buffer = Vec::new();
     loop {
@@ -61,41 +62,64 @@ pub(crate) async fn inference_metrics_sidecar(
                     "Metrics :: Worker {} channel closed, shutting down",
                     worker_id
                 );
-                break;
             }
         }
     }
 }
 
 pub(crate) async fn feature_logger(
-    kinesis_client: Arc<aws_sdk_kinesis::Client>,
+    buffer_capacity: usize,
+    s3_client: Arc<aws_sdk_s3::Client>,
     receiver: Arc<Mutex<mpsc::Receiver<InferenceLogBatch>>>,
-    stream_name: &'static str,
+    s3_bucket: Arc<String>,
+    s3_prefix: Arc<String>,
     worker_id: usize,
-) {
+) -> () {
     println!("Logger :: Starting worker {}", worker_id);
     loop {
         let mut receiver_lock = receiver.lock().await;
+        let mut inference_logs_buffer = Vec::new();
         match receiver_lock.recv().await {
             Some(batch) => {
                 drop(receiver_lock);
-                let data = batch.encode_to_vec();
-                let partition_key = format!("{}-{}", batch.request_id, batch.model_id);
+                inference_logs_buffer.push(batch);
 
-                let _ = kinesis_client
-                    .put_record()
-                    .stream_name(stream_name)
-                    .partition_key(partition_key)
-                    .data(aws_sdk_kinesis::primitives::Blob::new(data))
-                    .send()
-                    .await;
+                if inference_logs_buffer.len() > buffer_capacity {
+                    let inference_logs = InferenceLogs {
+                        inference_log_batches: std::mem::take(&mut inference_logs_buffer),
+                    };
+                    let current_time = chrono::Utc::now();
+                    let date_time_str = format!(
+                        "year={}/month={:02}/day={:02}/hour={:02}/mi={}",
+                        current_time.year(),
+                        current_time.month(),
+                        current_time.day(),
+                        current_time.hour(),
+                        current_time.minute()
+                    );
+                    let file_key = format!(
+                        "{}/{}/{}_{}.pb",
+                        s3_prefix.clone().to_string(),
+                        date_time_str,
+                        uuid::Uuid::new_v4().to_string(),
+                        current_time.timestamp_micros()
+                    );
+                    let _ = s3_client
+                        .put_object()
+                        .bucket(s3_bucket.clone().to_string())
+                        .key(file_key)
+                        .body(aws_sdk_s3::primitives::ByteStream::from(
+                            inference_logs.encode_to_vec(),
+                        ))
+                        .send()
+                        .await;
+                }
             }
             None => {
                 println!(
                     "Logger :: Worker {} channel closed, shutting down",
                     worker_id
                 );
-                break;
             }
         }
     }

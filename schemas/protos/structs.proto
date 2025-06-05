@@ -72,3 +72,7 @@ message InferenceLogBatch {
   string model_id = 2;
   repeated InferenceLogRow inference_log_rows = 3;
 }
+
+message InferenceLogs {
+  repeated InferenceLogBatch inferenceLogBatches = 1;
+}

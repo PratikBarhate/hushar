@@ -96,10 +96,8 @@ impl S3Reader {
     /// # Arguments
     ///
     /// * `client` - An initialized AWS S3 client
-    pub fn new(client: aws_sdk_s3::Client) -> Self {
-        S3Reader {
-            client: Arc::new(client),
-        }
+    pub fn new(client: Arc<aws_sdk_s3::Client>) -> Self {
+        S3Reader { client }
     }
 
     /// Downloads a file from S3 to the local filesystem

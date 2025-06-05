@@ -16,8 +16,9 @@ aws-config = { version= "1.6.1", features = ["behavior-version-latest"] }
 aws-sdk-cloudwatch = "1.68"
 aws-sdk-kinesis = "1.68"
 aws-sdk-s3 = "1.68"
+chrono = "0.4.41"
 hushar-proto = { path = "./hushar-proto" }
-mockall = "0.12"
+mockall = "0.13.1"
 prost = "0.13.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -25,3 +26,4 @@ tokio = { version = "1.44", features = ["macros", "rt-multi-thread"] }
 tonic = "0.13"
 tonic-build = "0.13"
 tract-onnx = "0.21.12"
+uuid = { version = "1.17.0", features = ["v4"]}

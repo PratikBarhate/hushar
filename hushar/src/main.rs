@@ -71,16 +71,37 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service_config_path = args
         .get(2)
         .expect("CLI argument (2) service configuration path is missing");
-    let met_thread_cnt = args
+    let inference_log_path = args
         .get(3)
-        .expect("CLI argument (3) metrics thread count is missing")
+        .expect("CLI argument (3) feature log path")
+        .to_string();
+    let met_thread_cnt = args
+        .get(4)
+        .expect("CLI argument (4) metrics thread count is missing")
         .parse::<usize>()
         .unwrap();
     let log_thread_cnt = args
-        .get(4)
-        .expect("CLI argument (4) data logger thread count is missing")
+        .get(5)
+        .expect("CLI argument (5) data logger thread count is missing")
         .parse::<usize>()
         .unwrap();
+
+    let log_s3_uri = inference_log_path
+        .strip_prefix("s3://")
+        .ok_or("Invalid S3 URI format")?;
+    let mut log_s3_uri_parts = log_s3_uri.splitn(2, '/');
+    let inference_log_bucket = Arc::new(
+        log_s3_uri_parts
+            .next()
+            .ok_or("Missing bucket name in S3 path")?
+            .to_string(),
+    );
+    let inference_log_prefix = Arc::new(
+        log_s3_uri_parts
+            .next()
+            .ok_or("Missing key in S3 path")?
+            .to_string(),
+    );
 
     let server_thread_cnt = num_cpus - (met_thread_cnt + log_thread_cnt);
 
@@ -99,14 +120,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         log_sender,
         log_receiver,
         cloudwatch_client,
-        kinesis_client,
+        s3_client,
     ) = config_runtime.block_on(async {
         let aws_config = aws_config::load_from_env().await;
-        let s3_client = aws_sdk_s3::Client::new(&aws_config);
+        let s3_client = Arc::new(aws_sdk_s3::Client::new(&aws_config));
         let cloudwatch_client = Arc::new(aws_sdk_cloudwatch::Client::new(&aws_config));
-        let kinesis_client = Arc::new(aws_sdk_kinesis::Client::new(&aws_config));
 
-        let s3_reader = io::S3Reader::new(s3_client);
+        let s3_reader = io::S3Reader::new(Arc::clone(&s3_client));
         let service_config = config::HusharServiceConfig::from_json(
             &s3_reader.read_string(&service_config_path).await.unwrap(),
         )
@@ -142,7 +162,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             log_sender,
             log_receiver,
             cloudwatch_client,
-            kinesis_client,
+            s3_client,
         )
     });
 
@@ -169,12 +189,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shared_metrics_receiver = Arc::new(tokio::sync::Mutex::new(metrics_receiver));
     let shared_log_receiver = Arc::new(tokio::sync::Mutex::new(log_receiver));
     for worker_id in 0..log_thread_cnt {
-        let worker_client = Arc::clone(&kinesis_client);
+        let worker_client = Arc::clone(&s3_client);
         let worker_receiver = Arc::clone(&shared_log_receiver);
         logging_runtime.spawn(io::feature_logger(
+            500,
             worker_client,
             worker_receiver,
-            "HusharLogStream",
+            inference_log_bucket.clone(),
+            inference_log_prefix.clone(),
             worker_id,
         ));
     }
