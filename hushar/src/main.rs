@@ -2,7 +2,7 @@
 // Licensed under the MIT License. See the LICENSE file in the project root for more information.
 
 use config::HusharServiceConfig;
-use hushar_proto::hushar::{
+use hushar::hushar_proto::{
     hushar_server::{Hushar, HusharServer},
     InferenceLogBatch, InferenceRequest, InferenceResponse,
 };

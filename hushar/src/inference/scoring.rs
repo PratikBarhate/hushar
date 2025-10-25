@@ -6,7 +6,7 @@
 //! and run inference on the vectorized batch of tensors.
 
 use crate::inference::{InferenceMicros, TractRunnableModel};
-use hushar_proto::hushar::{InferenceLogRow, InputRow, OutputRow};
+use hushar::hushar_proto::{InferenceLogRow, InputRow, OutputRow};
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;
@@ -113,7 +113,7 @@ pub fn batch_inference(
 mod tests {
     use super::*;
     use crate::inference::transformations::Transformation;
-    use hushar_proto::hushar::{data_type::DataType, InputRow};
+    use hushar::hushar_proto::{data_type::DataType, InputRow};
     use mockall::mock;
     use std::collections::HashMap;
     use std::error::Error;
@@ -237,7 +237,7 @@ mod tests {
                 let feat_name = format!("feat{}", j);
                 let value = (i as f32 * 0.1) + (j as f32 * 0.05); // Some deterministic value
 
-                let data_type = hushar_proto::hushar::DataType {
+                let data_type = hushar::hushar_proto::DataType {
                     data_type: Some(DataType::FloatValue(value)),
                 };
 

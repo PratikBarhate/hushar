@@ -124,7 +124,7 @@ impl VectorizationConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hushar_proto::hushar::data_type::DataType;
+    use hushar::hushar_proto::data_type::DataType;
 
     #[test]
     fn test_from_json_with_valid_json() {

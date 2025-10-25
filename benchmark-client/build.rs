@@ -1,3 +1,6 @@
+// Copyright (c) 2025 Pratik Barhate
+// Licensed under the MIT License. See the LICENSE file in the project root for more information.
+
 //! Build script for compiling protobuf definitions.
 //!
 //! This script handles the discovery and compilation of `.proto` files
@@ -21,10 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proto_dir = "../schemas/protos";
     let proto_files = find_proto_files(proto_dir)?;
 
-    tonic_build::configure()
-        .build_server(true)
-        .build_client(true)
-        .compile_protos(&proto_files, &[proto_dir])?;
+    tonic_prost_build::configure().compile_protos(&proto_files, &[proto_dir.to_string()])?;
 
     for proto_file in &proto_files {
         println!("cargo:info=Compiling proto file: {}", proto_file);

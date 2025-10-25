@@ -1,0 +1,7 @@
+{
+  "connection_concurrency": 100,
+  "model_path": "s3://bucket-name/hushar/bench_model.onnx",
+  "model_id": "bench-model-v1.0",
+  "port_number": 827942,
+  "vectorization_instruction_path": "s3://bucket-name/hushar/bench_vect_config.json"
+}

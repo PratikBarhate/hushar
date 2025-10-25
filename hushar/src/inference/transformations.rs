@@ -10,7 +10,7 @@
 //! - OneHotEncoding: Converts categorical values to one-hot encoded vectors
 //! - Standardization: Standardizes numerical values using mean and standard deviation
 
-use hushar_proto::hushar::data_type::DataType;
+use hushar::hushar_proto::data_type::DataType;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
@@ -84,7 +84,7 @@ impl Transformation for Embedding {
 
 /// Passes through numerical values with minimal transformation.
 ///
-/// This transformation attempts to convert any input value to an f32,
+/// This transformation attempts to convert any input value to f32,
 /// preserving the original value with appropriate type casting.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -465,7 +465,7 @@ fn standardize_64(val: f64, mean: &f64, std_dev: &f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hushar_proto::hushar::data_type::DataType;
+    use hushar::hushar_proto::data_type::DataType;
     use std::collections::HashMap;
 
     fn assert_float_eq(a: f32, b: f32) {
@@ -522,7 +522,7 @@ mod tests {
             default_val: default_val.clone(),
         };
 
-        let string_array = hushar_proto::hushar::StringArray {
+        let string_array = hushar::hushar_proto::StringArray {
             values: vec!["cat".to_string(), "bird".to_string(), "dog".to_string()],
         };
 
@@ -656,7 +656,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::DoubleArray(hushar_proto::hushar::DoubleArray {
+        let input = DataType::DoubleArray(hushar::hushar_proto::DoubleArray {
             values: vec![1.1, 2.2, 3.3],
         });
         let result = identity.transform(&input).unwrap();
@@ -671,7 +671,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::FloatArray(hushar_proto::hushar::FloatArray {
+        let input = DataType::FloatArray(hushar::hushar_proto::FloatArray {
             values: vec![1.1, 2.2, 3.3],
         });
         let result = identity.transform(&input).unwrap();
@@ -686,7 +686,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::IntegerArray(hushar_proto::hushar::IntegerArray {
+        let input = DataType::IntegerArray(hushar::hushar_proto::IntegerArray {
             values: vec![1, 2, 3],
         });
         let result = identity.transform(&input).unwrap();
@@ -701,7 +701,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::LongArray(hushar_proto::hushar::LongArray {
+        let input = DataType::LongArray(hushar::hushar_proto::LongArray {
             values: vec![1, 2, 3],
         });
         let result = identity.transform(&input).unwrap();
@@ -716,7 +716,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::StringArray(hushar_proto::hushar::StringArray {
+        let input = DataType::StringArray(hushar::hushar_proto::StringArray {
             values: vec!["1.1".to_string(), "2.2".to_string(), "3.3".to_string()],
         });
         let result = identity.transform(&input).unwrap();
@@ -731,7 +731,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::StringArray(hushar_proto::hushar::StringArray {
+        let input = DataType::StringArray(hushar::hushar_proto::StringArray {
             values: vec![
                 "1.1".to_string(),
                 "not_a_number".to_string(),
@@ -751,7 +751,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::StringArray(hushar_proto::hushar::StringArray { values: vec![] });
+        let input = DataType::StringArray(hushar::hushar_proto::StringArray { values: vec![] });
         let result = identity.transform(&input).unwrap();
         assert_eq!(result.len(), 0);
     }
@@ -789,7 +789,7 @@ mod tests {
         };
 
         // Test float array
-        let float_array = hushar_proto::hushar::FloatArray {
+        let float_array = hushar::hushar_proto::FloatArray {
             values: vec![0.0, 5.0, 10.0],
         };
 
@@ -799,7 +799,7 @@ mod tests {
         assert_eq!(result, vec![0.0, 0.5, 1.0]);
 
         // Test integer array
-        let int_array = hushar_proto::hushar::IntegerArray {
+        let int_array = hushar::hushar_proto::IntegerArray {
             values: vec![0, 5, 10],
         };
 
@@ -872,7 +872,7 @@ mod tests {
         };
 
         // Test double array
-        let double_array = hushar_proto::hushar::DoubleArray {
+        let double_array = hushar::hushar_proto::DoubleArray {
             values: vec![0.0, 5.0, 10.0],
         };
 
@@ -882,7 +882,7 @@ mod tests {
         assert_eq!(result, vec![0.0, 0.5, 1.0]);
 
         // Test long array
-        let long_array = hushar_proto::hushar::LongArray {
+        let long_array = hushar::hushar_proto::LongArray {
             values: vec![0, 5, 10],
         };
 
@@ -958,7 +958,7 @@ mod tests {
             default_val: default_val.clone(),
         };
 
-        let string_array = hushar_proto::hushar::StringArray {
+        let string_array = hushar::hushar_proto::StringArray {
             values: vec!["cat".to_string(), "bird".to_string(), "fish".to_string()],
         };
 
@@ -1028,7 +1028,7 @@ mod tests {
         };
 
         // Test float array
-        let float_array = hushar_proto::hushar::FloatArray {
+        let float_array = hushar::hushar_proto::FloatArray {
             values: vec![40.0, 50.0, 60.0],
         };
 
@@ -1038,7 +1038,7 @@ mod tests {
         assert_eq!(result, vec![-1.0, 0.0, 1.0]);
 
         // Test integer array
-        let int_array = hushar_proto::hushar::IntegerArray {
+        let int_array = hushar::hushar_proto::IntegerArray {
             values: vec![40, 50, 60],
         };
 
@@ -1116,7 +1116,7 @@ mod tests {
         };
 
         // Test double array
-        let double_array = hushar_proto::hushar::DoubleArray {
+        let double_array = hushar::hushar_proto::DoubleArray {
             values: vec![40.0, 50.0, 60.0],
         };
 
@@ -1126,7 +1126,7 @@ mod tests {
         assert_eq!(result, vec![-1.0, 0.0, 1.0]);
 
         // Test long array
-        let long_array = hushar_proto::hushar::LongArray {
+        let long_array = hushar::hushar_proto::LongArray {
             values: vec![40, 50, 60],
         };
 

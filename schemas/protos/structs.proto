@@ -4,8 +4,6 @@
 syntax = "proto3";
 package hushar;
 
-option java_package = "io.github.pratikbarhate.hushar";
-
 message InferenceRequest {
   string request_id = 1;
   repeated InputRow inputs = 2;

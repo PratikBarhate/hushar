@@ -1,5 +1,5 @@
 [package]
-name = "hushar"
+name = "benchmark-client"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -8,19 +8,12 @@ license.workspace = true
 [dependencies]
 aws-config = { workspace = true }
 aws-sdk-cloudwatch = { workspace = true }
-aws-sdk-s3 = { workspace = true }
-chrono = { workspace = true }
+futures = { workspace = true}
 prost = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true }
+rand = { workspace = true}
+tokio = { workspace = true}
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
-tract-onnx = { workspace = true }
-uuid = { workspace = true }
-
-[dev-dependencies]
-mockall = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

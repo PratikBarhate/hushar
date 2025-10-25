@@ -2,7 +2,7 @@
 // Licensed under the MIT License. See the LICENSE file in the project root for more information.
 
 use chrono::{Datelike, Timelike};
-use hushar_proto::hushar::{InferenceLogBatch, InferenceLogs};
+use hushar::hushar_proto::{InferenceLogBatch, InferenceLogs};
 use prost::Message;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};

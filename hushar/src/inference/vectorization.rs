@@ -3,7 +3,7 @@
 
 //! Vectorization module provides the functions to process the input features into a vector input.
 
-use hushar_proto::hushar::DataType;
+use hushar::hushar_proto::DataType;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
@@ -63,7 +63,7 @@ pub(crate) fn vectorize_feats(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hushar_proto::hushar::data_type;
+    use hushar::hushar_proto::data_type;
     use mockall::mock;
     use mockall::predicate::*;
     use std::sync::Arc;

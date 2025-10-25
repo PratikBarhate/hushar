@@ -4,8 +4,6 @@
 syntax = "proto3";
 package hushar;
 
-option java_package = "io.github.pratikbarhate.hushar";
-
 import "structs.proto";
 
 service Hushar {  
