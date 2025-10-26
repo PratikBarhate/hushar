@@ -6,21 +6,19 @@ use chrono::{Datelike, Timelike};
 use hushar::hushar_proto::{InferenceLogBatch, InferenceLogs};
 use prost::Message;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
 
 pub(crate) async fn metrics_emitter(
     buffer_capacity: usize,
     cloudwatch_client: Arc<aws_sdk_cloudwatch::Client>,
     namespace: &'static str,
-    receiver: Arc<Mutex<mpsc::Receiver<inference::InferenceMicros>>>,
+    receiver: async_channel::Receiver<inference::InferenceMicros>,
     worker_id: usize,
 ) -> () {
     println!("Metrics :: Starting worker {}", worker_id);
     let mut metric_buffer = Vec::new();
     loop {
-        let mut receiver_lock = receiver.lock().await;
-        match receiver_lock.recv().await {
-            Some(inference_micros) => {
+        match receiver.recv().await {
+            Ok(inference_micros) => {
                 let metric_data = vec![
                     aws_sdk_cloudwatch::types::MetricDatum::builder()
                         .metric_name("InferenceTime")
@@ -49,7 +47,7 @@ pub(crate) async fn metrics_emitter(
                         .await;
                 }
             }
-            None => {
+            Err(_) => {
                 println!(
                     "Metrics :: Worker {} channel closed, shutting down",
                     worker_id
@@ -62,18 +60,16 @@ pub(crate) async fn metrics_emitter(
 pub(crate) async fn feature_logger(
     buffer_capacity: usize,
     s3_client: Arc<aws_sdk_s3::Client>,
-    receiver: Arc<Mutex<mpsc::Receiver<InferenceLogBatch>>>,
+    receiver: async_channel::Receiver<InferenceLogBatch>,
     s3_bucket: Arc<String>,
     s3_prefix: Arc<String>,
     worker_id: usize,
 ) -> () {
     println!("Logger :: Starting worker {}", worker_id);
     loop {
-        let mut receiver_lock = receiver.lock().await;
         let mut inference_logs_buffer = Vec::new();
-        match receiver_lock.recv().await {
-            Some(batch) => {
-                drop(receiver_lock);
+        match receiver.recv().await {
+            Ok(batch) => {
                 inference_logs_buffer.push(batch);
 
                 if inference_logs_buffer.len() > buffer_capacity {
@@ -107,7 +103,7 @@ pub(crate) async fn feature_logger(
                         .await;
                 }
             }
-            None => {
+            Err(_) => {
                 println!(
                     "Logger :: Worker {} channel closed, shutting down",
                     worker_id

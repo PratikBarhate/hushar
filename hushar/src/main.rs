@@ -1,7 +1,6 @@
 // Copyright (c) 2025 Pratik Barhate
 // Licensed under the MIT License. See the LICENSE file in the project root for more information.
 
-use config::HusharServiceConfig;
 use hushar::hushar_proto::{
     hushar_server::{Hushar, HusharServer},
     InferenceLogBatch, InferenceRequest, InferenceResponse,
@@ -20,10 +19,10 @@ pub(crate) mod io;
 #[derive(Debug)]
 pub(crate) struct HusharService {
     feat_len: usize,
-    log_sender: tokio::sync::mpsc::Sender<InferenceLogBatch>,
     model: Arc<TractRunnableModel>,
-    metrics_sender: tokio::sync::mpsc::Sender<inference::InferenceMicros>,
-    service_config: HusharServiceConfig,
+    log_sender: async_channel::Sender<InferenceLogBatch>,
+    metrics_sender: async_channel::Sender<inference::InferenceMicros>,
+    service_config: config::HusharServiceConfig,
     vec_config: Arc<config::VectorizationConfig>,
 }
 
@@ -148,9 +147,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .unwrap();
 
-        let (metrics_sender, metrics_receiver) =
-            tokio::sync::mpsc::channel::<inference::InferenceMicros>(200);
-        let (log_sender, log_receiver) = tokio::sync::mpsc::channel::<InferenceLogBatch>(200);
+        let (metrics_sender, metrics_receiver) = async_channel::bounded(200);
+        let (log_sender, log_receiver) = async_channel::bounded(200);
 
         (
             service_config,
@@ -186,15 +184,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
 
-    let shared_metrics_receiver = Arc::new(tokio::sync::Mutex::new(metrics_receiver));
-    let shared_log_receiver = Arc::new(tokio::sync::Mutex::new(log_receiver));
     for worker_id in 0..log_thread_cnt {
         let worker_client = Arc::clone(&s3_client);
-        let worker_receiver = Arc::clone(&shared_log_receiver);
         logging_runtime.spawn(io::side_car::feature_logger(
             500,
             worker_client,
-            worker_receiver,
+            log_receiver.clone(),
             inference_log_bucket.clone(),
             inference_log_prefix.clone(),
             worker_id,
@@ -202,12 +197,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     for worker_id in 0..met_thread_cnt {
         let worker_client = Arc::clone(&cloudwatch_client);
-        let worker_receiver = Arc::clone(&shared_metrics_receiver);
         metrics_runtime.spawn(io::side_car::metrics_emitter(
             500,
             worker_client,
             "HusharService",
-            worker_receiver,
+            metrics_receiver.clone(),
             worker_id,
         ));
     }
@@ -216,8 +210,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let connection_concurrency = service_config.connection_concurrency.clone() as usize;
     let hushar_service = HusharService {
         feat_len,
-        log_sender,
         model: Arc::new(tract_model),
+        log_sender,
         metrics_sender,
         service_config,
         vec_config: Arc::new(vec_config),

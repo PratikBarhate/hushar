@@ -12,6 +12,7 @@ authors = ["Pratik Barhate"]
 license = "MIT"
 
 [workspace.dependencies]
+async-channel = "2.5.0"
 aws-config = { version= "1.6.1", features = ["behavior-version-latest"] }
 aws-sdk-cloudwatch = "1.68"
 aws-sdk-s3 = "1.68"
