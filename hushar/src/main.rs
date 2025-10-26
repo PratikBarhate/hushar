@@ -191,7 +191,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     for worker_id in 0..log_thread_cnt {
         let worker_client = Arc::clone(&s3_client);
         let worker_receiver = Arc::clone(&shared_log_receiver);
-        logging_runtime.spawn(io::feature_logger(
+        logging_runtime.spawn(io::side_car::feature_logger(
             500,
             worker_client,
             worker_receiver,
@@ -203,7 +203,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     for worker_id in 0..met_thread_cnt {
         let worker_client = Arc::clone(&cloudwatch_client);
         let worker_receiver = Arc::clone(&shared_metrics_receiver);
-        metrics_runtime.spawn(io::inference_metrics_sidecar(
+        metrics_runtime.spawn(io::side_car::metrics_emitter(
             500,
             worker_client,
             "HusharService",
