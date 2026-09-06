@@ -10,47 +10,60 @@
 //! - OneHotEncoding: Converts categorical values to one-hot encoded vectors
 //! - Standardization: Standardizes numerical values using mean and standard deviation
 
-use hushar::hushar_proto::data_type::DataType;
+use hushar::hushar_proto::data_type::DataType as Value;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::error::Error;
 
-/// Defines the interface for feature transformation implementations.
-///
-/// Implementations of this trait can transform various data types into
-/// vectors of f32 values suitable for machine learning model input.
+/// Turns one feature value into the numbers a model input takes.
 pub trait Transformation: std::fmt::Debug + Send + Sync {
     /// Returns the default value to use when transformation is not possible.
     fn get_default_val(&self) -> &[f32];
 
-    /// Transforms the provided feature value into a vector of f32 values.
-    ///
-    /// # Arguments
-    /// * `feat_val` - The feature value to transform
-    ///
-    /// # Returns
-    /// * `Result<Vec<f32>, Box<dyn Error>>` - The transformed feature value or an error
-    fn transform(&self, feat_val: &DataType) -> Result<Vec<f32>, Box<dyn Error>>;
+    /// Transforms one feature value into the values it contributes to a row.
+    fn transform(&self, feat_val: &Value) -> Result<Vec<f32>, crate::inference::InferenceError>;
 
-    /// Validates the transformation configuration.
+    /// The same transformation, in double precision.
     ///
-    /// # Arguments
-    /// * `name` - The name of the feature being validated
-    ///
-    /// # Returns
-    /// * `Result<(), Box<dyn Error>>` - Ok if valid, Err otherwise with a descriptive message
-    fn validate(&self, name: &str) -> Result<(), Box<dyn Error>>;
+    /// The default widens the `f32` result, which is exact but no more precise than what
+    /// it started from. The 64-bit scalers and [`Identity`] override it, so a model
+    /// configured for doubles gets its arithmetic done in doubles. That matters for tree
+    /// ensembles: a regression tree is not continuous, so a value nudged across a split
+    /// by a narrowing cast selects a different leaf rather than shifting slightly.
+    fn transform_f64(
+        &self,
+        feat_val: &Value,
+    ) -> Result<Vec<f64>, crate::inference::InferenceError> {
+        Ok(self
+            .transform(feat_val)?
+            .into_iter()
+            .map(f64::from)
+            .collect())
+    }
+
+    /// The default value in double precision, for an absent feature.
+    fn default_val_f64(&self) -> Vec<f64> {
+        self.get_default_val()
+            .iter()
+            .copied()
+            .map(f64::from)
+            .collect()
+    }
+
+    /// Checks the transformation's own parameters, naming `name` in any error.
+    fn validate(&self, name: &str) -> Result<(), crate::inference::InferenceError>;
 }
 
 /// Maps string values to vector embeddings using a pre-defined embedding table.
 ///
 /// If the string value is not found in the embedding table, the default value is used.
+///
+/// Fields:
+/// - `default_val` — used when a string is not in the table.
+/// - `embeddings` — string value to its vector.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Embedding {
-    /// Default value to use when a string is not found in the embeddings
     pub default_val: Vec<f32>,
-    /// Mapping from string values to their vector embeddings
     pub embeddings: HashMap<String, Vec<f32>>,
 }
 
@@ -59,10 +72,10 @@ impl Transformation for Embedding {
         &self.default_val
     }
 
-    fn transform(&self, feat_val: &DataType) -> Result<Vec<f32>, Box<dyn Error>> {
+    fn transform(&self, feat_val: &Value) -> Result<Vec<f32>, crate::inference::InferenceError> {
         match feat_val {
-            DataType::StringValue(s) => Ok(embedding(s, &self.embeddings, &self.default_val)),
-            DataType::StringArray(arr) => Ok(arr
+            Value::StringValue(s) => Ok(embedding(s, &self.embeddings, &self.default_val)),
+            Value::StringArray(arr) => Ok(arr
                 .values
                 .iter()
                 .flat_map(|s| embedding(s, &self.embeddings, &self.default_val))
@@ -71,7 +84,7 @@ impl Transformation for Embedding {
         }
     }
 
-    fn validate(&self, name: &str) -> Result<(), Box<dyn Error>> {
+    fn validate(&self, name: &str) -> Result<(), crate::inference::InferenceError> {
         if self.embeddings.is_empty() {
             return Err(format!("Embedding for {}: embeddings must not be empty", name).into());
         }
@@ -86,10 +99,12 @@ impl Transformation for Embedding {
 ///
 /// This transformation attempts to convert any input value to f32,
 /// preserving the original value with appropriate type casting.
+///
+/// Fields:
+/// - `default_val` — used when the feature value is absent.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Identity {
-    /// Default value to use when transformation is not possible. Used when the feature value is None.
     pub default_val: Vec<f32>,
 }
 
@@ -97,22 +112,24 @@ impl Transformation for Identity {
     fn get_default_val(&self) -> &[f32] {
         &self.default_val
     }
-
-    fn transform(&self, feat_val: &DataType) -> Result<Vec<f32>, Box<dyn Error>> {
+    /// A boolean feature is the one-or-zero indicator it already is, which is what
+    /// every model expects of a flag.
+    fn transform(&self, feat_val: &Value) -> Result<Vec<f32>, crate::inference::InferenceError> {
         match feat_val {
-            DataType::DoubleValue(val) => Ok(vec![*val as f32]),
-            DataType::FloatValue(val) => Ok(vec![*val]),
-            DataType::IntegerValue(val) => Ok(vec![*val as f32]),
-            DataType::LongValue(val) => Ok(vec![*val as f32]),
-            DataType::StringValue(s) => match s.parse::<f32>() {
+            Value::DoubleValue(val) => Ok(vec![*val as f32]),
+            Value::FloatValue(val) => Ok(vec![*val]),
+            Value::IntegerValue(val) => Ok(vec![*val as f32]),
+            Value::LongValue(val) => Ok(vec![*val as f32]),
+            Value::BoolValue(val) => Ok(vec![if *val { 1.0 } else { 0.0 }]),
+            Value::StringValue(s) => match s.parse::<f32>() {
                 Ok(f) => Ok(vec![f]),
                 Err(e) => Err(format!("Error in parsing StringValue.\n {}", e).into()),
             },
-            DataType::DoubleArray(arr) => Ok(arr.values.iter().map(|v| *v as f32).collect()),
-            DataType::FloatArray(arr) => Ok(arr.values.iter().map(|v| *v).collect()),
-            DataType::IntegerArray(arr) => Ok(arr.values.iter().map(|v| *v as f32).collect()),
-            DataType::LongArray(arr) => Ok(arr.values.iter().map(|v| *v as f32).collect()),
-            DataType::StringArray(arr) => {
+            Value::DoubleArray(arr) => Ok(arr.values.iter().map(|v| *v as f32).collect()),
+            Value::FloatArray(arr) => Ok(arr.values.to_vec()),
+            Value::IntegerArray(arr) => Ok(arr.values.iter().map(|v| *v as f32).collect()),
+            Value::LongArray(arr) => Ok(arr.values.iter().map(|v| *v as f32).collect()),
+            Value::StringArray(arr) => {
                 let mut results = Vec::new();
                 let mut errors = Vec::new();
 
@@ -131,25 +148,65 @@ impl Transformation for Identity {
         }
     }
 
-    fn validate(&self, name: &str) -> Result<(), Box<dyn Error>> {
+    fn validate(&self, name: &str) -> Result<(), crate::inference::InferenceError> {
         if self.default_val.is_empty() {
             return Err(format!("Identity for {}: default_val must not be empty", name).into());
         }
         Ok(())
     }
+
+    /// Passes the value through without ever narrowing it.
+    ///
+    /// The whole point of `Identity` is that the model sees what the caller sent, so
+    /// a `double` feature reaching a `double` input must not lose its low bits by
+    /// travelling through an `f32` on the way.
+    fn transform_f64(
+        &self,
+        feat_val: &Value,
+    ) -> Result<Vec<f64>, crate::inference::InferenceError> {
+        match feat_val {
+            Value::DoubleValue(val) => Ok(vec![*val]),
+            Value::FloatValue(val) => Ok(vec![f64::from(*val)]),
+            Value::IntegerValue(val) => Ok(vec![f64::from(*val)]),
+            Value::LongValue(val) => Ok(vec![*val as f64]),
+            Value::BoolValue(val) => Ok(vec![if *val { 1.0 } else { 0.0 }]),
+            Value::StringValue(s) => match s.parse::<f64>() {
+                Ok(f) => Ok(vec![f]),
+                Err(e) => Err(format!("Error in parsing StringValue.\n {}", e).into()),
+            },
+            Value::DoubleArray(arr) => Ok(arr.values.clone()),
+            Value::FloatArray(arr) => Ok(arr.values.iter().copied().map(f64::from).collect()),
+            Value::IntegerArray(arr) => Ok(arr.values.iter().copied().map(f64::from).collect()),
+            Value::LongArray(arr) => Ok(arr.values.iter().map(|v| *v as f64).collect()),
+            Value::StringArray(arr) => {
+                let mut results = Vec::new();
+                let mut errors = Vec::new();
+                for s in &arr.values {
+                    match s.parse::<f64>() {
+                        Ok(f) => results.push(f),
+                        Err(_) => errors.push(s.to_string()),
+                    }
+                }
+                if errors.is_empty() {
+                    Ok(results)
+                } else {
+                    Err(format!("Error in parsing StringArray.\n {}", errors.join(", ")).into())
+                }
+            }
+        }
+    }
 }
 
-/// Scales numerical values to the range [0, 1] using min-max normalization for 32-bit float values.
+/// Scales a 32-bit value into `[0, 1]` as `(value - min) / (max - min)`.
 ///
-/// The formula used is: (value - min) / (max - min)
+/// Fields:
+/// - `default_val` — used when the value cannot be scaled.
+/// - `min`, `max` — the original scale.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct MinMaxScaling32 {
-    /// Default value to use when transformation is not possible
     pub default_val: Vec<f32>,
-    /// Minimum value in the original scale
     pub min: f32,
-    /// Maximum value in the original scale
     pub max: f32,
 }
 
@@ -158,18 +215,18 @@ impl Transformation for MinMaxScaling32 {
         &self.default_val
     }
 
-    fn transform(&self, feat_val: &DataType) -> Result<Vec<f32>, Box<dyn Error>> {
+    fn transform(&self, feat_val: &Value) -> Result<Vec<f32>, crate::inference::InferenceError> {
         match feat_val {
-            DataType::FloatValue(val) => Ok(vec![min_max_scaling_32(*val, &self.min, &self.max)]),
-            DataType::IntegerValue(val) => {
+            Value::FloatValue(val) => Ok(vec![min_max_scaling_32(*val, &self.min, &self.max)]),
+            Value::IntegerValue(val) => {
                 Ok(vec![min_max_scaling_32(*val as f32, &self.min, &self.max)])
             }
-            DataType::FloatArray(arr) => Ok(arr
+            Value::FloatArray(arr) => Ok(arr
                 .values
                 .iter()
                 .map(|v| min_max_scaling_32(*v, &self.min, &self.max))
                 .collect()),
-            DataType::IntegerArray(arr) => Ok(arr
+            Value::IntegerArray(arr) => Ok(arr
                 .values
                 .iter()
                 .map(|v| min_max_scaling_32(*v as f32, &self.min, &self.max))
@@ -178,7 +235,7 @@ impl Transformation for MinMaxScaling32 {
         }
     }
 
-    fn validate(&self, name: &str) -> Result<(), Box<dyn Error>> {
+    fn validate(&self, name: &str) -> Result<(), crate::inference::InferenceError> {
         if self.min >= self.max {
             return Err(format!(
                 "MinMaxScaling32 for {}: min ({}) must be less than max ({})",
@@ -197,17 +254,16 @@ impl Transformation for MinMaxScaling32 {
     }
 }
 
-/// Scales numerical values to the range [0, 1] using min-max normalization for 64-bit float values.
+/// Scales a 64-bit value into `[0, 1]` as `(value - min) / (max - min)`.
 ///
-/// The formula used is: (value - min) / (max - min)
+/// Fields:
+/// - `default_val` — used when the value cannot be scaled.
+/// - `min`, `max` — the original scale.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct MinMaxScaling64 {
-    /// Default value to use when transformation is not possible
     pub default_val: Vec<f32>,
-    /// Minimum value in the original scale
     pub min: f64,
-    /// Maximum value in the original scale
     pub max: f64,
 }
 
@@ -216,23 +272,21 @@ impl Transformation for MinMaxScaling64 {
         &self.default_val
     }
 
-    fn transform(&self, feat_val: &DataType) -> Result<Vec<f32>, Box<dyn Error>> {
+    fn transform(&self, feat_val: &Value) -> Result<Vec<f32>, crate::inference::InferenceError> {
         match feat_val {
-            DataType::DoubleValue(val) => {
+            Value::DoubleValue(val) => {
                 Ok(vec![min_max_scaling_64(*val, &self.min, &self.max) as f32])
             }
-            DataType::LongValue(val) => {
-                Ok(vec![
-                    min_max_scaling_64(*val as f64, &self.min, &self.max) as f32
-                ])
-            }
-            DataType::DoubleArray(arr) => Ok(arr
+            Value::LongValue(val) => Ok(vec![
+                min_max_scaling_64(*val as f64, &self.min, &self.max) as f32,
+            ]),
+            Value::DoubleArray(arr) => Ok(arr
                 .values
                 .iter()
                 .map(|v| min_max_scaling_64(*v, &self.min, &self.max))
                 .map(|v| v as f32)
                 .collect()),
-            DataType::LongArray(arr) => Ok(arr
+            Value::LongArray(arr) => Ok(arr
                 .values
                 .iter()
                 .map(|v| min_max_scaling_64(*v as f64, &self.min, &self.max))
@@ -242,7 +296,7 @@ impl Transformation for MinMaxScaling64 {
         }
     }
 
-    fn validate(&self, name: &str) -> Result<(), Box<dyn Error>> {
+    fn validate(&self, name: &str) -> Result<(), crate::inference::InferenceError> {
         if self.min >= self.max {
             return Err(format!(
                 "MinMaxScaling64 for {}: min ({}) must be less than max ({})",
@@ -259,6 +313,34 @@ impl Transformation for MinMaxScaling64 {
         }
         Ok(())
     }
+
+    /// The same scaling, kept in double precision.
+    ///
+    /// [`MinMaxScaling64::transform`] already computes in `f64` and then narrows for
+    /// the vectorised path. This is that arithmetic without the last step, which is
+    /// the only reason to configure a 64-bit scaler against a 64-bit model.
+    fn transform_f64(
+        &self,
+        feat_val: &Value,
+    ) -> Result<Vec<f64>, crate::inference::InferenceError> {
+        match feat_val {
+            Value::DoubleValue(val) => Ok(vec![min_max_scaling_64(*val, &self.min, &self.max)]),
+            Value::LongValue(val) => {
+                Ok(vec![min_max_scaling_64(*val as f64, &self.min, &self.max)])
+            }
+            Value::DoubleArray(arr) => Ok(arr
+                .values
+                .iter()
+                .map(|v| min_max_scaling_64(*v, &self.min, &self.max))
+                .collect()),
+            Value::LongArray(arr) => Ok(arr
+                .values
+                .iter()
+                .map(|v| min_max_scaling_64(*v as f64, &self.min, &self.max))
+                .collect()),
+            _ => Err("Invalid data type for MinMaxScaling64".into()),
+        }
+    }
 }
 
 /// Converts categorical string values into one-hot encoded vectors.
@@ -266,12 +348,14 @@ impl Transformation for MinMaxScaling64 {
 /// For each input string, outputs a vector where all values are 0 except for the
 /// position corresponding to the input category, which is set to 1.
 /// categories are expected to be in a sorted order.
+///
+/// Fields:
+/// - `default_val` — used for an unknown category.
+/// - `categories` — the categories, which must be sorted.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct OneHotEncoding {
-    /// Default value to use when a category is not found
     pub default_val: Vec<f32>,
-    /// List of possible categories in sorted order
     pub categories: Vec<String>,
 }
 
@@ -280,12 +364,10 @@ impl Transformation for OneHotEncoding {
         &self.default_val
     }
 
-    fn transform(&self, feat_val: &DataType) -> Result<Vec<f32>, Box<dyn Error>> {
+    fn transform(&self, feat_val: &Value) -> Result<Vec<f32>, crate::inference::InferenceError> {
         match feat_val {
-            DataType::StringValue(s) => {
-                Ok(one_hot_encoding(s, &self.categories, &self.default_val))
-            }
-            DataType::StringArray(arr) => Ok(arr
+            Value::StringValue(s) => Ok(one_hot_encoding(s, &self.categories, &self.default_val)),
+            Value::StringArray(arr) => Ok(arr
                 .values
                 .iter()
                 .flat_map(|s| one_hot_encoding(s, &self.categories, &self.default_val))
@@ -294,7 +376,7 @@ impl Transformation for OneHotEncoding {
         }
     }
 
-    fn validate(&self, name: &str) -> Result<(), Box<dyn Error>> {
+    fn validate(&self, name: &str) -> Result<(), crate::inference::InferenceError> {
         if self.categories.is_empty() {
             return Err(
                 format!("OneHotEncoding for {}: categories must not be empty", name).into(),
@@ -312,14 +394,19 @@ impl Transformation for OneHotEncoding {
 /// Standardizes numerical values to have zero mean and unit variance for 32-bit float values.
 ///
 /// The formula used is: (value - mean) / std_dev
+///
+/// Fields:
+/// - `default_val` — used when the value cannot be standardized.
+/// - `mean`, `std_dev` — the distribution.
+///
+/// Fields:
+/// - `default_val` — used when the value cannot be standardized.
+/// - `mean`, `std_dev` — the distribution.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Standardization32 {
-    /// Default value to use when transformation is not possible
     pub default_val: Vec<f32>,
-    /// Mean of the distribution
     pub mean: f32,
-    /// Standard deviation of the distribution
     pub std_dev: f32,
 }
 
@@ -328,18 +415,18 @@ impl Transformation for Standardization32 {
         &self.default_val
     }
 
-    fn transform(&self, feat_val: &DataType) -> Result<Vec<f32>, Box<dyn Error>> {
+    fn transform(&self, feat_val: &Value) -> Result<Vec<f32>, crate::inference::InferenceError> {
         match feat_val {
-            DataType::FloatValue(val) => Ok(vec![standardize_32(*val, &self.mean, &self.std_dev)]),
-            DataType::IntegerValue(val) => {
+            Value::FloatValue(val) => Ok(vec![standardize_32(*val, &self.mean, &self.std_dev)]),
+            Value::IntegerValue(val) => {
                 Ok(vec![standardize_32(*val as f32, &self.mean, &self.std_dev)])
             }
-            DataType::FloatArray(arr) => Ok(arr
+            Value::FloatArray(arr) => Ok(arr
                 .values
                 .iter()
                 .map(|v| standardize_32(*v, &self.mean, &self.std_dev))
                 .collect()),
-            DataType::IntegerArray(arr) => Ok(arr
+            Value::IntegerArray(arr) => Ok(arr
                 .values
                 .iter()
                 .map(|v| standardize_32(*v as f32, &self.mean, &self.std_dev))
@@ -348,7 +435,7 @@ impl Transformation for Standardization32 {
         }
     }
 
-    fn validate(&self, name: &str) -> Result<(), Box<dyn Error>> {
+    fn validate(&self, name: &str) -> Result<(), crate::inference::InferenceError> {
         if self.std_dev <= 0.0 {
             return Err(format!(
                 "Standardization32 for {}: std_dev ({}) must be greater than zero",
@@ -370,11 +457,8 @@ impl Transformation for Standardization32 {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Standardization64 {
-    /// Default value to use when transformation is not possible
     pub default_val: Vec<f32>,
-    /// Mean of the distribution
     pub mean: f64,
-    /// Standard deviation of the distribution
     pub std_dev: f64,
 }
 
@@ -383,23 +467,21 @@ impl Transformation for Standardization64 {
         &self.default_val
     }
 
-    fn transform(&self, feat_val: &DataType) -> Result<Vec<f32>, Box<dyn Error>> {
+    fn transform(&self, feat_val: &Value) -> Result<Vec<f32>, crate::inference::InferenceError> {
         match feat_val {
-            DataType::DoubleValue(val) => {
+            Value::DoubleValue(val) => {
                 Ok(vec![standardize_64(*val, &self.mean, &self.std_dev) as f32])
             }
-            DataType::LongValue(val) => {
-                Ok(vec![
-                    standardize_64(*val as f64, &self.mean, &self.std_dev) as f32
-                ])
-            }
-            DataType::DoubleArray(arr) => Ok(arr
+            Value::LongValue(val) => Ok(vec![
+                standardize_64(*val as f64, &self.mean, &self.std_dev) as f32,
+            ]),
+            Value::DoubleArray(arr) => Ok(arr
                 .values
                 .iter()
                 .map(|v| standardize_64(*v, &self.mean, &self.std_dev))
                 .map(|v| v as f32)
                 .collect()),
-            DataType::LongArray(arr) => Ok(arr
+            Value::LongArray(arr) => Ok(arr
                 .values
                 .iter()
                 .map(|v| standardize_64(*v as f64, &self.mean, &self.std_dev))
@@ -409,7 +491,7 @@ impl Transformation for Standardization64 {
         }
     }
 
-    fn validate(&self, name: &str) -> Result<(), Box<dyn Error>> {
+    fn validate(&self, name: &str) -> Result<(), crate::inference::InferenceError> {
         if self.std_dev <= 0.0 {
             return Err(format!(
                 "Standardization64 for {}: std_dev ({}) must be greater than zero",
@@ -425,6 +507,30 @@ impl Transformation for Standardization64 {
             .into());
         }
         Ok(())
+    }
+
+    /// The same standardization, kept in double precision.
+    fn transform_f64(
+        &self,
+        feat_val: &Value,
+    ) -> Result<Vec<f64>, crate::inference::InferenceError> {
+        match feat_val {
+            Value::DoubleValue(val) => Ok(vec![standardize_64(*val, &self.mean, &self.std_dev)]),
+            Value::LongValue(val) => {
+                Ok(vec![standardize_64(*val as f64, &self.mean, &self.std_dev)])
+            }
+            Value::DoubleArray(arr) => Ok(arr
+                .values
+                .iter()
+                .map(|v| standardize_64(*v, &self.mean, &self.std_dev))
+                .collect()),
+            Value::LongArray(arr) => Ok(arr
+                .values
+                .iter()
+                .map(|v| standardize_64(*v as f64, &self.mean, &self.std_dev))
+                .collect()),
+            _ => Err("Invalid data type for Standardization64".into()),
+        }
     }
 }
 
@@ -444,7 +550,7 @@ fn min_max_scaling_64(val: f64, min: &f64, max: &f64) -> f64 {
     (val - min) / (max - min)
 }
 
-fn one_hot_encoding(s: &String, categories: &Vec<String>, default_val: &[f32]) -> Vec<f32> {
+fn one_hot_encoding(s: &String, categories: &[String], default_val: &[f32]) -> Vec<f32> {
     let mut one_hot = vec![0.0; categories.len()];
     if let Ok(index) = categories.binary_search(s) {
         one_hot[index] = 1.0;
@@ -465,7 +571,7 @@ fn standardize_64(val: f64, mean: &f64, std_dev: &f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hushar::hushar_proto::data_type::DataType;
+    use hushar::hushar_proto::data_type::DataType as Value;
     use std::collections::HashMap;
 
     fn assert_float_eq(a: f32, b: f32) {
@@ -485,6 +591,7 @@ mod tests {
         }
     }
 
+    /// Test existing embedding Test non-existent embedding (should return default)
     #[test]
     fn test_embedding_transform_string_value() {
         let mut embeddings = HashMap::new();
@@ -497,15 +604,13 @@ mod tests {
             default_val: default_val.clone(),
         };
 
-        // Test existing embedding
         let result = embedding
-            .transform(&DataType::StringValue("cat".to_string()))
+            .transform(&Value::StringValue("cat".to_string()))
             .unwrap();
         assert_eq!(result, vec![0.1, 0.2, 0.3]);
 
-        // Test non-existent embedding (should return default)
         let result = embedding
-            .transform(&DataType::StringValue("bird".to_string()))
+            .transform(&Value::StringValue("bird".to_string()))
             .unwrap();
         assert_eq!(result, default_val);
     }
@@ -527,14 +632,14 @@ mod tests {
         };
 
         let result = embedding
-            .transform(&DataType::StringArray(string_array))
+            .transform(&Value::StringArray(string_array))
             .unwrap();
         assert_eq!(result, vec![0.1, 0.2, 0.0, 0.0, 0.3, 0.4]);
     }
 
+    /// Valid embedding Invalid: empty embeddings Invalid: empty default_val
     #[test]
     fn test_embedding_validate() {
-        // Valid embedding
         let mut embeddings = HashMap::new();
         embeddings.insert("cat".to_string(), vec![0.1, 0.2, 0.3]);
 
@@ -545,7 +650,6 @@ mod tests {
 
         assert!(embedding.validate("test_feature").is_ok());
 
-        // Invalid: empty embeddings
         let embedding = Embedding {
             embeddings: HashMap::new(),
             default_val: vec![0.0, 0.0, 0.0],
@@ -553,7 +657,6 @@ mod tests {
 
         assert!(embedding.validate("test_feature").is_err());
 
-        // Invalid: empty default_val
         let mut embeddings = HashMap::new();
         embeddings.insert("cat".to_string(), vec![0.1, 0.2, 0.3]);
 
@@ -565,16 +668,15 @@ mod tests {
         assert!(embedding.validate("test_feature").is_err());
     }
 
+    /// Valid Invalid: empty default_val
     #[test]
     fn test_identity_validate() {
-        // Valid
         let identity = Identity {
             default_val: vec![1.0],
         };
 
         assert!(identity.validate("test_feature").is_ok());
 
-        // Invalid: empty default_val
         let identity = Identity {
             default_val: vec![],
         };
@@ -587,7 +689,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::DoubleValue(42.5);
+        let input = Value::DoubleValue(42.5);
         let result = identity.transform(&input).unwrap();
         assert_eq!(result.len(), 1);
         assert_float_eq(result[0], 42.5_f32);
@@ -598,7 +700,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::FloatValue(42.5);
+        let input = Value::FloatValue(42.5);
         let result = identity.transform(&input).unwrap();
         assert_eq!(result.len(), 1);
         assert_float_eq(result[0], 42.5_f32);
@@ -609,7 +711,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::IntegerValue(42);
+        let input = Value::IntegerValue(42);
         let result = identity.transform(&input).unwrap();
         assert_eq!(result.len(), 1);
         assert_float_eq(result[0], 42.0_f32);
@@ -620,7 +722,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::LongValue(42_i64);
+        let input = Value::LongValue(42_i64);
         let result = identity.transform(&input).unwrap();
         assert_eq!(result.len(), 1);
         assert_float_eq(result[0], 42.0_f32);
@@ -631,7 +733,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::StringValue("42.5".to_string());
+        let input = Value::StringValue("42.5".to_string());
         let result = identity.transform(&input).unwrap();
         assert_eq!(result.len(), 1);
         assert_float_eq(result[0], 42.5_f32);
@@ -642,13 +744,15 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::StringValue("not_a_number".to_string());
+        let input = Value::StringValue("not_a_number".to_string());
         let result = identity.transform(&input);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Error in parsing StringValue"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Error in parsing StringValue")
+        );
     }
 
     #[test]
@@ -656,7 +760,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::DoubleArray(hushar::hushar_proto::DoubleArray {
+        let input = Value::DoubleArray(hushar::hushar_proto::DoubleArray {
             values: vec![1.1, 2.2, 3.3],
         });
         let result = identity.transform(&input).unwrap();
@@ -671,7 +775,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::FloatArray(hushar::hushar_proto::FloatArray {
+        let input = Value::FloatArray(hushar::hushar_proto::FloatArray {
             values: vec![1.1, 2.2, 3.3],
         });
         let result = identity.transform(&input).unwrap();
@@ -686,7 +790,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::IntegerArray(hushar::hushar_proto::IntegerArray {
+        let input = Value::IntegerArray(hushar::hushar_proto::IntegerArray {
             values: vec![1, 2, 3],
         });
         let result = identity.transform(&input).unwrap();
@@ -701,7 +805,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::LongArray(hushar::hushar_proto::LongArray {
+        let input = Value::LongArray(hushar::hushar_proto::LongArray {
             values: vec![1, 2, 3],
         });
         let result = identity.transform(&input).unwrap();
@@ -716,7 +820,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::StringArray(hushar::hushar_proto::StringArray {
+        let input = Value::StringArray(hushar::hushar_proto::StringArray {
             values: vec!["1.1".to_string(), "2.2".to_string(), "3.3".to_string()],
         });
         let result = identity.transform(&input).unwrap();
@@ -731,7 +835,7 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::StringArray(hushar::hushar_proto::StringArray {
+        let input = Value::StringArray(hushar::hushar_proto::StringArray {
             values: vec![
                 "1.1".to_string(),
                 "not_a_number".to_string(),
@@ -740,10 +844,12 @@ mod tests {
         });
         let result = identity.transform(&input);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Error in parsing StringArray"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Error in parsing StringArray")
+        );
     }
 
     #[test]
@@ -751,11 +857,12 @@ mod tests {
         let identity = Identity {
             default_val: vec![1.0, 2.0, 3.0],
         };
-        let input = DataType::StringArray(hushar::hushar_proto::StringArray { values: vec![] });
+        let input = Value::StringArray(hushar::hushar_proto::StringArray { values: vec![] });
         let result = identity.transform(&input).unwrap();
         assert_eq!(result.len(), 0);
     }
 
+    /// Test single value Test out of range values Test integer value
     #[test]
     fn test_min_max_scaling32_transform_float() {
         let scaler = MinMaxScaling32 {
@@ -764,22 +871,20 @@ mod tests {
             default_val: vec![0.5],
         };
 
-        // Test single value
-        let result = scaler.transform(&DataType::FloatValue(5.0)).unwrap();
+        let result = scaler.transform(&Value::FloatValue(5.0)).unwrap();
         assert_eq!(result, vec![0.5]);
 
-        // Test out of range values
-        let result = scaler.transform(&DataType::FloatValue(-5.0)).unwrap();
+        let result = scaler.transform(&Value::FloatValue(-5.0)).unwrap();
         assert_eq!(result, vec![-0.5]);
 
-        let result = scaler.transform(&DataType::FloatValue(15.0)).unwrap();
+        let result = scaler.transform(&Value::FloatValue(15.0)).unwrap();
         assert_eq!(result, vec![1.5]);
 
-        // Test integer value
-        let result = scaler.transform(&DataType::IntegerValue(5)).unwrap();
+        let result = scaler.transform(&Value::IntegerValue(5)).unwrap();
         assert_eq!(result, vec![0.5]);
     }
 
+    /// Test float array Test integer array
     #[test]
     fn test_min_max_scaling32_transform_array() {
         let scaler = MinMaxScaling32 {
@@ -788,30 +893,24 @@ mod tests {
             default_val: vec![0.5],
         };
 
-        // Test float array
         let float_array = hushar::hushar_proto::FloatArray {
             values: vec![0.0, 5.0, 10.0],
         };
 
-        let result = scaler
-            .transform(&DataType::FloatArray(float_array))
-            .unwrap();
+        let result = scaler.transform(&Value::FloatArray(float_array)).unwrap();
         assert_eq!(result, vec![0.0, 0.5, 1.0]);
 
-        // Test integer array
         let int_array = hushar::hushar_proto::IntegerArray {
             values: vec![0, 5, 10],
         };
 
-        let result = scaler
-            .transform(&DataType::IntegerArray(int_array))
-            .unwrap();
+        let result = scaler.transform(&Value::IntegerArray(int_array)).unwrap();
         assert_eq!(result, vec![0.0, 0.5, 1.0]);
     }
 
+    /// Valid Invalid: min >= max Invalid: empty default_val
     #[test]
     fn test_min_max_scaling32_validate() {
-        // Valid
         let scaler = MinMaxScaling32 {
             min: 0.0,
             max: 10.0,
@@ -820,7 +919,6 @@ mod tests {
 
         assert!(scaler.validate("test_feature").is_ok());
 
-        // Invalid: min >= max
         let scaler = MinMaxScaling32 {
             min: 10.0,
             max: 10.0,
@@ -829,7 +927,6 @@ mod tests {
 
         assert!(scaler.validate("test_feature").is_err());
 
-        // Invalid: empty default_val
         let scaler = MinMaxScaling32 {
             min: 0.0,
             max: 10.0,
@@ -839,6 +936,7 @@ mod tests {
         assert!(scaler.validate("test_feature").is_err());
     }
 
+    /// Test single value Test out of range values Test long value
     #[test]
     fn test_min_max_scaling64_transform_double() {
         let scaler = MinMaxScaling64 {
@@ -847,22 +945,20 @@ mod tests {
             default_val: vec![0.5],
         };
 
-        // Test single value
-        let result = scaler.transform(&DataType::DoubleValue(5.0)).unwrap();
+        let result = scaler.transform(&Value::DoubleValue(5.0)).unwrap();
         assert_eq!(result, vec![0.5]);
 
-        // Test out of range values
-        let result = scaler.transform(&DataType::DoubleValue(-5.0)).unwrap();
+        let result = scaler.transform(&Value::DoubleValue(-5.0)).unwrap();
         assert_eq!(result, vec![-0.5]);
 
-        let result = scaler.transform(&DataType::DoubleValue(15.0)).unwrap();
+        let result = scaler.transform(&Value::DoubleValue(15.0)).unwrap();
         assert_eq!(result, vec![1.5]);
 
-        // Test long value
-        let result = scaler.transform(&DataType::LongValue(5)).unwrap();
+        let result = scaler.transform(&Value::LongValue(5)).unwrap();
         assert_eq!(result, vec![0.5]);
     }
 
+    /// Test double array Test long array
     #[test]
     fn test_min_max_scaling64_transform_array() {
         let scaler = MinMaxScaling64 {
@@ -871,28 +967,24 @@ mod tests {
             default_val: vec![0.5],
         };
 
-        // Test double array
         let double_array = hushar::hushar_proto::DoubleArray {
             values: vec![0.0, 5.0, 10.0],
         };
 
-        let result = scaler
-            .transform(&DataType::DoubleArray(double_array))
-            .unwrap();
+        let result = scaler.transform(&Value::DoubleArray(double_array)).unwrap();
         assert_eq!(result, vec![0.0, 0.5, 1.0]);
 
-        // Test long array
         let long_array = hushar::hushar_proto::LongArray {
             values: vec![0, 5, 10],
         };
 
-        let result = scaler.transform(&DataType::LongArray(long_array)).unwrap();
+        let result = scaler.transform(&Value::LongArray(long_array)).unwrap();
         assert_eq!(result, vec![0.0, 0.5, 1.0]);
     }
 
+    /// Valid Invalid: min >= max Invalid: empty default_val
     #[test]
     fn test_min_max_scaling64_validate() {
-        // Valid
         let scaler = MinMaxScaling64 {
             min: 0.0,
             max: 10.0,
@@ -901,7 +993,6 @@ mod tests {
 
         assert!(scaler.validate("test_feature").is_ok());
 
-        // Invalid: min >= max
         let scaler = MinMaxScaling64 {
             min: 10.0,
             max: 10.0,
@@ -910,7 +1001,6 @@ mod tests {
 
         assert!(scaler.validate("test_feature").is_err());
 
-        // Invalid: empty default_val
         let scaler = MinMaxScaling64 {
             min: 0.0,
             max: 10.0,
@@ -920,6 +1010,7 @@ mod tests {
         assert!(scaler.validate("test_feature").is_err());
     }
 
+    /// Test existing category Test non-existent category (should return default)
     #[test]
     fn test_one_hot_encoding_transform_string_value() {
         let categories = vec!["cat".to_string(), "dog".to_string(), "fish".to_string()];
@@ -930,24 +1021,23 @@ mod tests {
             default_val: default_val.clone(),
         };
 
-        // Test existing category
         let result = one_hot
-            .transform(&DataType::StringValue("cat".to_string()))
+            .transform(&Value::StringValue("cat".to_string()))
             .unwrap();
         assert_eq!(result, vec![1.0, 0.0, 0.0]);
 
         let result = one_hot
-            .transform(&DataType::StringValue("dog".to_string()))
+            .transform(&Value::StringValue("dog".to_string()))
             .unwrap();
         assert_eq!(result, vec![0.0, 1.0, 0.0]);
 
-        // Test non-existent category (should return default)
         let result = one_hot
-            .transform(&DataType::StringValue("bird".to_string()))
+            .transform(&Value::StringValue("bird".to_string()))
             .unwrap();
         assert_eq!(result, default_val);
     }
 
+    /// Expected: cat one-hot + bird default + fish one-hot
     #[test]
     fn test_one_hot_encoding_transform_string_array() {
         let categories = vec!["cat".to_string(), "dog".to_string(), "fish".to_string()];
@@ -963,15 +1053,14 @@ mod tests {
         };
 
         let result = one_hot
-            .transform(&DataType::StringArray(string_array))
+            .transform(&Value::StringArray(string_array))
             .unwrap();
-        // Expected: cat one-hot + bird default + fish one-hot
         assert_eq!(result, vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
     }
 
+    /// Valid Invalid: empty categories Invalid: empty default_val
     #[test]
     fn test_one_hot_encoding_validate() {
-        // Valid
         let one_hot = OneHotEncoding {
             categories: vec!["cat".to_string(), "dog".to_string()],
             default_val: vec![0.0, 0.0],
@@ -979,7 +1068,6 @@ mod tests {
 
         assert!(one_hot.validate("test_feature").is_ok());
 
-        // Invalid: empty categories
         let one_hot = OneHotEncoding {
             categories: vec![],
             default_val: vec![0.0, 0.0],
@@ -987,7 +1075,6 @@ mod tests {
 
         assert!(one_hot.validate("test_feature").is_err());
 
-        // Invalid: empty default_val
         let one_hot = OneHotEncoding {
             categories: vec!["cat".to_string(), "dog".to_string()],
             default_val: vec![],
@@ -996,6 +1083,7 @@ mod tests {
         assert!(one_hot.validate("test_feature").is_err());
     }
 
+    /// Test standardization Test integer value
     #[test]
     fn test_standardization32_transform_float() {
         let standardizer = Standardization32 {
@@ -1004,21 +1092,20 @@ mod tests {
             default_val: vec![0.0],
         };
 
-        // Test standardization
-        let result = standardizer.transform(&DataType::FloatValue(60.0)).unwrap();
+        let result = standardizer.transform(&Value::FloatValue(60.0)).unwrap();
         assert_eq!(result, vec![1.0]);
 
-        let result = standardizer.transform(&DataType::FloatValue(40.0)).unwrap();
+        let result = standardizer.transform(&Value::FloatValue(40.0)).unwrap();
         assert_eq!(result, vec![-1.0]);
 
-        let result = standardizer.transform(&DataType::FloatValue(50.0)).unwrap();
+        let result = standardizer.transform(&Value::FloatValue(50.0)).unwrap();
         assert_eq!(result, vec![0.0]);
 
-        // Test integer value
-        let result = standardizer.transform(&DataType::IntegerValue(60)).unwrap();
+        let result = standardizer.transform(&Value::IntegerValue(60)).unwrap();
         assert_eq!(result, vec![1.0]);
     }
 
+    /// Test float array Test integer array
     #[test]
     fn test_standardization32_transform_array() {
         let standardizer = Standardization32 {
@@ -1027,30 +1114,28 @@ mod tests {
             default_val: vec![0.0],
         };
 
-        // Test float array
         let float_array = hushar::hushar_proto::FloatArray {
             values: vec![40.0, 50.0, 60.0],
         };
 
         let result = standardizer
-            .transform(&DataType::FloatArray(float_array))
+            .transform(&Value::FloatArray(float_array))
             .unwrap();
         assert_eq!(result, vec![-1.0, 0.0, 1.0]);
 
-        // Test integer array
         let int_array = hushar::hushar_proto::IntegerArray {
             values: vec![40, 50, 60],
         };
 
         let result = standardizer
-            .transform(&DataType::IntegerArray(int_array))
+            .transform(&Value::IntegerArray(int_array))
             .unwrap();
         assert_eq!(result, vec![-1.0, 0.0, 1.0]);
     }
 
+    /// Valid Invalid: std_dev <= 0 Invalid: empty default_val
     #[test]
     fn test_standardization32_validate() {
-        // Valid
         let standardizer = Standardization32 {
             mean: 50.0,
             std_dev: 10.0,
@@ -1059,7 +1144,6 @@ mod tests {
 
         assert!(standardizer.validate("test_feature").is_ok());
 
-        // Invalid: std_dev <= 0
         let standardizer = Standardization32 {
             mean: 50.0,
             std_dev: 0.0,
@@ -1068,7 +1152,6 @@ mod tests {
 
         assert!(standardizer.validate("test_feature").is_err());
 
-        // Invalid: empty default_val
         let standardizer = Standardization32 {
             mean: 50.0,
             std_dev: 10.0,
@@ -1078,6 +1161,7 @@ mod tests {
         assert!(standardizer.validate("test_feature").is_err());
     }
 
+    /// Test standardization Test long value
     #[test]
     fn test_standardization64_transform_double() {
         let standardizer = Standardization64 {
@@ -1086,27 +1170,20 @@ mod tests {
             default_val: vec![0.0],
         };
 
-        // Test standardization
-        let result = standardizer
-            .transform(&DataType::DoubleValue(60.0))
-            .unwrap();
+        let result = standardizer.transform(&Value::DoubleValue(60.0)).unwrap();
         assert_eq!(result, vec![1.0]);
 
-        let result = standardizer
-            .transform(&DataType::DoubleValue(40.0))
-            .unwrap();
+        let result = standardizer.transform(&Value::DoubleValue(40.0)).unwrap();
         assert_eq!(result, vec![-1.0]);
 
-        let result = standardizer
-            .transform(&DataType::DoubleValue(50.0))
-            .unwrap();
+        let result = standardizer.transform(&Value::DoubleValue(50.0)).unwrap();
         assert_eq!(result, vec![0.0]);
 
-        // Test long value
-        let result = standardizer.transform(&DataType::LongValue(60)).unwrap();
+        let result = standardizer.transform(&Value::LongValue(60)).unwrap();
         assert_eq!(result, vec![1.0]);
     }
 
+    /// Test double array Test long array
     #[test]
     fn test_standardization64_transform_array() {
         let standardizer = Standardization64 {
@@ -1115,30 +1192,28 @@ mod tests {
             default_val: vec![0.0],
         };
 
-        // Test double array
         let double_array = hushar::hushar_proto::DoubleArray {
             values: vec![40.0, 50.0, 60.0],
         };
 
         let result = standardizer
-            .transform(&DataType::DoubleArray(double_array))
+            .transform(&Value::DoubleArray(double_array))
             .unwrap();
         assert_eq!(result, vec![-1.0, 0.0, 1.0]);
 
-        // Test long array
         let long_array = hushar::hushar_proto::LongArray {
             values: vec![40, 50, 60],
         };
 
         let result = standardizer
-            .transform(&DataType::LongArray(long_array))
+            .transform(&Value::LongArray(long_array))
             .unwrap();
         assert_eq!(result, vec![-1.0, 0.0, 1.0]);
     }
 
+    /// Valid Invalid: std_dev <= 0 Invalid: empty default_val
     #[test]
     fn test_standardization64_validate() {
-        // Valid
         let standardizer = Standardization64 {
             mean: 50.0,
             std_dev: 10.0,
@@ -1147,7 +1222,6 @@ mod tests {
 
         assert!(standardizer.validate("test_feature").is_ok());
 
-        // Invalid: std_dev <= 0
         let standardizer = Standardization64 {
             mean: 50.0,
             std_dev: 0.0,
@@ -1156,7 +1230,6 @@ mod tests {
 
         assert!(standardizer.validate("test_feature").is_err());
 
-        // Invalid: empty default_val
         let standardizer = Standardization64 {
             mean: 50.0,
             std_dev: 10.0,
@@ -1166,71 +1239,76 @@ mod tests {
         assert!(standardizer.validate("test_feature").is_err());
     }
 
+    /// Test cases for invalid data types for each transformation Embedding with
+    /// non-string types MinMaxScaling32 with string type MinMaxScaling64 with string
+    /// type OneHotEncoding with numeric types Standardization32 with string type
+    /// Standardization64 with string type
     #[test]
     fn test_transform_invalid_data_types() {
-        // Test cases for invalid data types for each transformation
-
-        // Embedding with non-string types
         let embedding = Embedding {
             embeddings: HashMap::new(),
             default_val: vec![0.0],
         };
 
-        assert!(embedding.transform(&DataType::FloatValue(1.0)).is_err());
+        assert!(embedding.transform(&Value::FloatValue(1.0)).is_err());
 
-        // MinMaxScaling32 with string type
         let scaler = MinMaxScaling32 {
             min: 0.0,
             max: 10.0,
             default_val: vec![0.5],
         };
 
-        assert!(scaler
-            .transform(&DataType::StringValue("test".to_string()))
-            .is_err());
+        assert!(
+            scaler
+                .transform(&Value::StringValue("test".to_string()))
+                .is_err()
+        );
 
-        // MinMaxScaling64 with string type
         let scaler = MinMaxScaling64 {
             min: 0.0,
             max: 10.0,
             default_val: vec![0.5],
         };
 
-        assert!(scaler
-            .transform(&DataType::StringValue("test".to_string()))
-            .is_err());
+        assert!(
+            scaler
+                .transform(&Value::StringValue("test".to_string()))
+                .is_err()
+        );
 
-        // OneHotEncoding with numeric types
         let one_hot = OneHotEncoding {
             categories: vec!["cat".to_string()],
             default_val: vec![0.0],
         };
 
-        assert!(one_hot.transform(&DataType::FloatValue(1.0)).is_err());
+        assert!(one_hot.transform(&Value::FloatValue(1.0)).is_err());
 
-        // Standardization32 with string type
         let standardizer = Standardization32 {
             mean: 50.0,
             std_dev: 10.0,
             default_val: vec![0.0],
         };
 
-        assert!(standardizer
-            .transform(&DataType::StringValue("test".to_string()))
-            .is_err());
+        assert!(
+            standardizer
+                .transform(&Value::StringValue("test".to_string()))
+                .is_err()
+        );
 
-        // Standardization64 with string type
         let standardizer = Standardization64 {
             mean: 50.0,
             std_dev: 10.0,
             default_val: vec![0.0],
         };
 
-        assert!(standardizer
-            .transform(&DataType::StringValue("test".to_string()))
-            .is_err());
+        assert!(
+            standardizer
+                .transform(&Value::StringValue("test".to_string()))
+                .is_err()
+        );
     }
 
+    /// Test existing embedding Test non-existent embedding
     #[test]
     fn test_embedding_helper() {
         let mut embeddings = HashMap::new();
@@ -1238,32 +1316,28 @@ mod tests {
 
         let default_val = vec![0.0, 0.0, 0.0];
 
-        // Test existing embedding
         let result = embedding(&"cat".to_string(), &embeddings, &default_val);
         assert_eq!(result, vec![0.1, 0.2, 0.3]);
 
-        // Test non-existent embedding
         let result = embedding(&"dog".to_string(), &embeddings, &default_val);
         assert_eq!(result, default_val);
     }
 
+    /// Test within range Test at boundaries Test outside range
     #[test]
     fn test_min_max_scaling_32_helper() {
         let min = 0.0;
         let max = 10.0;
 
-        // Test within range
         let result = min_max_scaling_32(5.0, &min, &max);
         assert_eq!(result, 0.5);
 
-        // Test at boundaries
         let result = min_max_scaling_32(0.0, &min, &max);
         assert_eq!(result, 0.0);
 
         let result = min_max_scaling_32(10.0, &min, &max);
         assert_eq!(result, 1.0);
 
-        // Test outside range
         let result = min_max_scaling_32(-5.0, &min, &max);
         assert_eq!(result, -0.5);
 
@@ -1271,23 +1345,21 @@ mod tests {
         assert_eq!(result, 1.5);
     }
 
+    /// Test within range Test at boundaries Test outside range
     #[test]
     fn test_min_max_scaling_64_helper() {
         let min = 0.0;
         let max = 10.0;
 
-        // Test within range
         let result = min_max_scaling_64(5.0, &min, &max);
         assert_eq!(result, 0.5);
 
-        // Test at boundaries
         let result = min_max_scaling_64(0.0, &min, &max);
         assert_eq!(result, 0.0);
 
         let result = min_max_scaling_64(10.0, &min, &max);
         assert_eq!(result, 1.0);
 
-        // Test outside range
         let result = min_max_scaling_64(-5.0, &min, &max);
         assert_eq!(result, -0.5);
 
@@ -1295,12 +1367,12 @@ mod tests {
         assert_eq!(result, 1.5);
     }
 
+    /// Test existing categories Test non-existent category
     #[test]
     fn test_one_hot_encoding_helper() {
         let categories = vec!["cat".to_string(), "dog".to_string(), "fish".to_string()];
         let default_val = vec![0.0, 0.0, 0.0];
 
-        // Test existing categories
         let result = one_hot_encoding(&"cat".to_string(), &categories, &default_val);
         assert_eq!(result, vec![1.0, 0.0, 0.0]);
 
@@ -1310,17 +1382,16 @@ mod tests {
         let result = one_hot_encoding(&"fish".to_string(), &categories, &default_val);
         assert_eq!(result, vec![0.0, 0.0, 1.0]);
 
-        // Test non-existent category
         let result = one_hot_encoding(&"bird".to_string(), &categories, &default_val);
         assert_eq!(result, default_val);
     }
 
+    /// Test standardization
     #[test]
     fn test_standardize_32_helper() {
         let mean = 50.0;
         let std_dev = 10.0;
 
-        // Test standardization
         let result = standardize_32(40.0, &mean, &std_dev);
         assert_eq!(result, -1.0);
 
@@ -1334,12 +1405,12 @@ mod tests {
         assert_eq!(result, 2.0);
     }
 
+    /// Test standardization
     #[test]
     fn test_standardize_64_helper() {
         let mean = 50.0;
         let std_dev = 10.0;
 
-        // Test standardization
         let result = standardize_64(40.0, &mean, &std_dev);
         assert_eq!(result, -1.0);
 

@@ -1,0 +1,26 @@
+[package]
+name = "libnrt-rs"
+# `0.1.0` is this crate's own API version; `+libnrt.2.34.10.0` names the Neuron
+# SDK release the checked-in bindings were generated from. See the note in
+# onnxrt-rs/Cargo.toml for why the upstream version is build metadata rather
+# than the version itself.
+version = "0.1.0+libnrt.2.34.10.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Safe Rust front end over the AWS Neuron runtime (libnrt) C API"
+
+[features]
+default = []
+# Regenerate `src/bindings/nrt.rs` from the Neuron SDK headers instead of
+# using the checked-in bindings. Requires libclang and the SDK headers, so this
+# only works on a host with `aws-neuronx-runtime-lib` installed. Set
+# `NEURON_INCLUDE_DIR` if the headers are not at /opt/aws/neuron/include.
+bindgen = ["dep:bindgen"]
+
+[dependencies]
+libloading = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+bindgen = { workspace = true, optional = true }

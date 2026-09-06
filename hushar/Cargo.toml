@@ -5,19 +5,39 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+# The accelerator this build targets. CPU is the default because it is the only
+# provider present in every ONNX Runtime build, so a default build runs anywhere.
+#
+# These forward to `onnxrt-rs`. Enabling one lets the service accept that
+# `execution_provider` value and compiles the accelerator's tests. It cannot make
+# the provider exist in the host's `libonnxruntime`, which is checked separately
+# at startup.
+default = ["cpu"]
+cpu = ["onnxrt-rs/cpu"]
+coreml = ["onnxrt-rs/coreml"]
+xnnpack = ["onnxrt-rs/xnnpack"]
+tensorrt = ["onnxrt-rs/tensorrt"]
+migraphx = ["onnxrt-rs/migraphx"]
+# Must list hushar's own features, not just forward to onnxrt-rs: the
+# per-accelerator test modules are gated on *these* names.
+all-providers = ["cpu", "coreml", "xnnpack", "tensorrt", "migraphx"]
+
 [dependencies]
-async-channel = { workspace = true }
 aws-config = { workspace = true }
 aws-sdk-cloudwatch = { workspace = true }
+aws-sdk-kinesis = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 chrono = { workspace = true }
+clap = { workspace = true }
+half = { workspace = true }
+onnxrt-rs = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
-tract-onnx = { workspace = true }
 uuid = { workspace = true }
 
 

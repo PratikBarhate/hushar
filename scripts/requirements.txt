@@ -1,3 +1,6 @@
-numpy~=2.2.5
-onnx==1.17.0
-torch~=2.7.0
+# Lower bounds rather than pins: these scripts use long-stable APIs (nn.Linear,
+# torch.onnx.export, onnx.compose) and a benchmark model is regenerated on demand,
+# so tracking a moving toolchain costs less than pinning one that goes stale.
+numpy>=2.2
+onnx>=1.17
+torch>=2.7

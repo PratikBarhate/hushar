@@ -1,0 +1,27 @@
+{
+  "model_id": "fixture-named",
+  "model_path": "test-data/does_not_need_to_exist.onnx",
+  "execution_provider": "coreml:cpu_and_neural_engine",
+  "intra_op_threads": 2,
+  "vectorization_config": {
+    "feature_transformations": {
+      "age": {
+        "type": "standardization32",
+        "mean": 35.5,
+        "std_dev": 12.8,
+        "default_val": [0.0]
+      },
+      "city": {
+        "type": "one_hot_encoding",
+        "categories": ["berlin", "london", "paris"],
+        "default_val": [0, 0, 0]
+      }
+    },
+    "model_inputs": {
+      "age": { "data_type": "float" },
+      "city": { "data_type": "float_array" },
+      "token_id": { "data_type": "long" },
+      "tags": { "data_type": "string" }
+    }
+  }
+}

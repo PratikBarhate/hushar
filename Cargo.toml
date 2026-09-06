@@ -1,31 +1,62 @@
 [workspace]
-members = [ 
+members = [
     "benchmark-client",
     "hushar",
+    "libnrt-rs",
+    "onnxrt-rs",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Pratik Barhate"]
 license = "MIT"
 
 [workspace.dependencies]
-async-channel = "2.5.0"
-aws-config = { version= "1.6.1", features = ["behavior-version-latest"] }
-aws-sdk-cloudwatch = "1.68"
-aws-sdk-s3 = "1.68"
-chrono = "0.4.41"
-futures = "0.3"
-mockall = "0.13.1"
-prost = "0.14.1"
-rand = "0.10.0-rc.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tokio = { version = "1.47.1", features = ["full"] }
-tonic = "0.14.2"
-tonic-prost = "0.14.2"
-tonic-prost-build = "0.14.2"
-tract-onnx = "0.22.0"
-uuid = { version = "1.17.0", features = ["v4"]}
+# Amazon's own SDK, used directly rather than through a multi-cloud abstraction.
+# A vendor SDK is maintained by the people who ship the service, tracks its
+# features, and needs no layer in between to have an opinion about what is
+# portable. Portability lives in this repository instead, behind the `BlobStore`
+# and `MetricsSink` traits, so adding a cloud is an implementation rather than a
+# dependency swap.
+aws-config = { version = "1.11.0", features = ["behavior-version-latest"] }
+aws-sdk-cloudwatch = "1.127.0"
+aws-sdk-kinesis = "1.118.0"
+aws-sdk-s3 = "1.144.0"
+chrono = "0.4.45"
+futures = "0.3.34"
+# `f16`/`bf16` storage types. ONNX Runtime has FLOAT16 and BFLOAT16 element
+# types and models increasingly ship in them, but Rust has no primitive for
+# either. `half::f16` is `repr(transparent)` over `u16`, so a tensor of them
+# keeps the zero-copy path. Note that `half` performs arithmetic by widening to
+# `f32`; that is irrelevant here, where f16 is transported and the engine
+# computes.
+half = "2.7.1"
+# Command-line parsing with derive and environment-variable fallback, so a
+# container can be configured from the environment and a developer from flags.
+clap = { version = "4.6.6", features = ["derive", "env"] }
+mockall = "0.15.0"
+prost = "0.14.4"
+rand = "0.10.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["full"] }
+tonic = "0.14.6"
+tonic-prost = "0.14.6"
+tonic-prost-build = "0.14.6"
+uuid = { version = "1.26.0", features = ["v4"] }
+
+# Foreign function interface support for the `onnxrt-rs` and
+# `libnrt-rs` crates. `bindgen` is only pulled in when the `bindgen`
+# feature of those crates is enabled; `libloading` resolves the C symbols at
+# run time so neither the ONNX Runtime nor the Neuron SDK is needed to build.
+bindgen = "0.72.1"
+libloading = "0.9.0"
+thiserror = "2.0.20"
+
+# Both FFI crates are local path dependencies of the service.
+libnrt-rs = { path = "libnrt-rs" }
+# `default-features = false` so a hushar build selects its accelerator
+# explicitly; hushar's own `cpu` feature forwards to `onnxrt-rs/cpu`.
+onnxrt-rs = { path = "onnxrt-rs", default-features = false }

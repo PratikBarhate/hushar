@@ -1,0 +1,41 @@
+{
+  "model_id": "fixture-vectorized",
+  "model_path": "test-data/does_not_need_to_exist.onnx",
+  "execution_provider": "cpu",
+  "intra_op_threads": 1,
+  "vectorization_config": {
+    "data_type": "float",
+    "feature_transformations": {
+      "review": {
+        "type": "embedding",
+        "embeddings": {
+          "good": [0.9, 0.4, -0.2],
+          "poor": [-0.8, -0.3, 0.1]
+        },
+        "default_val": [0.0, 0.0, 0.0]
+      },
+      "city": {
+        "type": "one_hot_encoding",
+        "categories": ["berlin", "london", "paris"],
+        "default_val": [0, 0, 0]
+      },
+      "scores": {
+        "type": "identity",
+        "default_val": [0.0, 0.0]
+      },
+      "price": {
+        "type": "min_max_scaling32",
+        "min": 0.0,
+        "max": 10000.0,
+        "default_val": [0.5]
+      },
+      "income": {
+        "type": "standardization64",
+        "mean": 75000.0,
+        "std_dev": 35000.0,
+        "default_val": [0.0]
+      }
+    },
+    "feature_order": ["review", "city", "scores", "price", "income"]
+  }
+}

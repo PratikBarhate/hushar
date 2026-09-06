@@ -1,0 +1,52 @@
+[package]
+name = "onnxrt-rs"
+# `0.1.0` is this crate's own API version; `+onnxruntime.1.29.0` names the
+# upstream release the checked-in bindings were generated from. SemVer build
+# metadata is ignored for version comparison, so it documents the pairing
+# without constraining resolution -- the same convention zstd-sys
+# (2.0.16+zstd.1.5.7) and libgit2-sys (0.18.8+1.9.7) use. Deliberately not
+# `version = "1.29.0"`: this crate loads whatever runtime is on the host at
+# run time, so it works against a *range* of versions, and mirroring upstream
+# would leave no way to version a fix to the wrapper itself.
+version = "0.1.0+onnxruntime.1.29.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Safe Rust front end over the ONNX Runtime C API"
+
+[features]
+# CPU is the default because it is the only provider present in every ONNX
+# Runtime build, so a default-feature build runs anywhere.
+default = ["cpu"]
+
+# Which accelerators this build is intended for. Enabling one does two things:
+# it lets `ExecutionProvider::append` accept that provider, and it compiles the
+# accelerator's tests.
+#
+# What a feature CANNOT do is make a provider exist: providers are compiled into
+# `libonnxruntime`, which is resolved at run time, so the runtime check against
+# `Api::available_providers` still applies. A feature declares intent, so a
+# config naming hardware the build was not meant for fails at startup with a
+# clear message rather than quietly running somewhere else.
+cpu = []
+coreml = []
+xnnpack = []
+tensorrt = []
+migraphx = []
+
+# Every accelerator at once. Useful for a build that is deployed to mixed
+# hardware and decides from configuration.
+all-providers = ["cpu", "coreml", "xnnpack", "tensorrt", "migraphx"]
+
+# Regenerate `src/bindings/ort.rs` from `headers/onnxruntime_c_api.h`
+# instead of using the checked-in bindings. Requires libclang. Point
+# `ORT_HEADER_DIR` at a different header set to bind a different ORT release.
+bindgen = ["dep:bindgen"]
+
+[dependencies]
+half = { workspace = true }
+libloading = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+bindgen = { workspace = true, optional = true }

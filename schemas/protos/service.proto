@@ -6,6 +6,7 @@ package hushar;
 
 import "structs.proto";
 
-service Hushar {  
+service Hushar {
+  // Score a batch of feature rows.
   rpc InferenceService (InferenceRequest) returns (InferenceResponse);
 }

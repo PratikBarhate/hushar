@@ -21,9 +21,23 @@ message InputRow {
 
 message OutputRow {
     string row_id = 1;
-    repeated float scores = 2;
+    ScoreType scores = 2;
 }
 
+// One row's scores, in the precision the model produces.
+//
+// A `oneof` for the same reason `DataType` is one: a response cannot then claim to be
+// two types at once, and there is no separate label that could disagree with the
+// values. The variants wrap `FloatArray` and `DoubleArray` rather than holding a
+// `repeated` field directly, because protobuf does not allow a `oneof` to contain one.
+message ScoreType {
+  oneof score_type {
+    FloatArray float_scores = 1;
+    DoubleArray double_scores = 2;
+  }
+}
+
+// One feature value, as received, before vectorization.
 message DataType {
   oneof data_type {
     double double_value = 1;
@@ -36,6 +50,7 @@ message DataType {
     IntegerArray integer_array = 8;
     LongArray long_array = 9;
     StringArray string_array = 10;
+    bool bool_value = 11;
   }
 }
 
@@ -61,6 +76,7 @@ message StringArray {
 
 message InferenceLogRow {
     string row_id = 1;
+    // The values received for this row, before any transformation.
     map<string, DataType> features = 2;
     repeated float scores = 3;
 }

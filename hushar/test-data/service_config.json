@@ -1,0 +1,5 @@
+{
+  "connection_concurrency": 50,
+  "port_number": 8279,
+  "model_config_path": "test-data/model_config_vectorized.json"
+}
