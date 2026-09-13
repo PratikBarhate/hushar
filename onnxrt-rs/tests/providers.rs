@@ -192,6 +192,108 @@ mod coreml {
     }
 }
 
+/// The configuration spellings, which need no OpenVINO present to check.
+mod openvino_spellings {
+    use onnxrt_rs::ExecutionProvider;
+
+    fn parse(s: &str) -> (String, Option<u32>, Option<u32>) {
+        match s
+            .parse::<ExecutionProvider>()
+            .expect("an OpenVINO provider")
+        {
+            ExecutionProvider::OpenVino {
+                device_type,
+                num_of_threads,
+                num_streams,
+            } => (device_type, num_of_threads, num_streams),
+            other => panic!("{s:?} parsed as {other:?}"),
+        }
+    }
+
+    /// CPU, because that is what the provider is reached for on a server. A GPU or NPU
+    /// has to be named, so a configuration cannot land on one by accident.
+    #[test]
+    fn openvino_defaults_to_the_cpu_with_openvinos_own_thread_and_stream_defaults() {
+        assert_eq!(parse("openvino"), ("CPU".to_owned(), None, None));
+        assert_eq!(parse("open_vino"), ("CPU".to_owned(), None, None));
+    }
+
+    /// Uppercased, because OpenVINO's own device names are and a lowercase spelling in a
+    /// configuration should not be a different thing.
+    #[test]
+    fn a_device_is_uppercased() {
+        for (spelling, expected) in [
+            ("openvino:cpu", "CPU"),
+            ("openvino:gpu", "GPU"),
+            ("openvino:npu", "NPU"),
+            ("openvino:gpu.1", "GPU.1"),
+            ("openvino:GPU", "GPU"),
+        ] {
+            assert_eq!(parse(spelling).0, expected, "{spelling}");
+        }
+    }
+
+    #[test]
+    fn threads_and_streams_are_optional_and_order_free() {
+        assert_eq!(
+            parse("openvino:cpu:threads=96"),
+            ("CPU".to_owned(), Some(96), None)
+        );
+        assert_eq!(
+            parse("openvino:streams=4:cpu"),
+            ("CPU".to_owned(), None, Some(4))
+        );
+        assert_eq!(
+            parse("openvino:threads=96:streams=4:gpu"),
+            ("GPU".to_owned(), Some(96), Some(4))
+        );
+        // The upstream spellings work too, since that is what the docs name them.
+        assert_eq!(
+            parse("openvino:num_of_threads=8:num_streams=2"),
+            ("CPU".to_owned(), Some(8), Some(2))
+        );
+    }
+
+    /// A multi-device form carries a colon of its own, so it arrives as two tokens and
+    /// has to be rejoined rather than read as two device types.
+    #[test]
+    fn a_multi_device_form_is_rejoined() {
+        assert_eq!(parse("openvino:auto:gpu,cpu").0, "AUTO:GPU,CPU");
+        assert_eq!(parse("openvino:hetero:gpu,cpu").0, "HETERO:GPU,CPU");
+        assert_eq!(parse("openvino:multi:gpu,cpu:threads=8").0, "MULTI:GPU,CPU");
+    }
+
+    #[test]
+    fn a_bad_spelling_is_refused_with_a_reason() {
+        for (spelling, expected) in [
+            ("openvino:cpu:precision=FP16", "unknown OpenVINO option"),
+            ("openvino:cpu:threads=lots", "expected a positive number"),
+            ("openvino:cpu:threads=0", "must be positive"),
+            ("openvino:cpu:gpu", "two device types"),
+        ] {
+            let err = spelling
+                .parse::<ExecutionProvider>()
+                .expect_err("should be refused")
+                .to_string();
+            assert!(
+                err.contains(expected),
+                "{spelling} should mention {expected:?}: {err}"
+            );
+        }
+    }
+
+    /// The banner prints this, so it has to say what was configured.
+    #[test]
+    fn the_description_names_the_device_and_any_options() {
+        let described = |s: &str| s.parse::<ExecutionProvider>().unwrap().to_string();
+        assert_eq!(described("openvino"), "OpenVINO(CPU)");
+        assert_eq!(
+            described("openvino:cpu:threads=96:streams=2"),
+            "OpenVINO(CPU, threads=96, streams=2)"
+        );
+    }
+}
+
 /// The configuration spellings, which need no CoreML present to check.
 mod coreml_spellings {
     use onnxrt_rs::{CoreMlComputeUnits, CoreMlModelFormat, ExecutionProvider};

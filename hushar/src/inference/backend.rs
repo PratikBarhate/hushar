@@ -57,6 +57,7 @@ pub(crate) mod test_support {
     use super::*;
     use crate::inference::batch::{ElementType, FeatureData, ScoreData};
     use std::sync::Mutex;
+    use std::time::Duration;
 
     /// Builds a single-output batch, for a test backend's result.
     fn one(rows: usize, name: &str, data: ScoreData) -> Result<OutputBatch, InferenceError> {
@@ -94,6 +95,54 @@ pub(crate) mod test_support {
         /// The name this backend expects its input to be called.
         pub(crate) fn input_name(&self) -> &str {
             &self.inputs[0].name
+        }
+    }
+
+    /// A [`SummingBackend`] whose engine call takes a known, non-trivial amount of time.
+    ///
+    /// Timings are recorded in **microseconds**, and a mock backend scoring a handful of
+    /// rows finishes well inside one -- so asserting that a measured stage is non-zero is
+    /// asserting that the machine was slow, which it intermittently is not. Zero is also a
+    /// legitimate reading: `an_empty_batch_is_not_sent_to_the_engine` requires it. That
+    /// leaves no value a test can use to tell "measured 0us" from "never measured".
+    ///
+    /// Sleeping for a duration far longer than the clock's resolution removes the guess. A
+    /// sleep can overrun but never underrun, so a lower-bound assertion on it cannot flake,
+    /// and it checks something stronger than non-zero: that the figure tracks the time
+    /// really spent, in the stage it belongs to.
+    #[derive(Debug)]
+    pub(crate) struct SlowBackend {
+        inner: SummingBackend,
+        delay: Duration,
+    }
+
+    impl SlowBackend {
+        pub(crate) fn new(input_width: usize, output_width: usize, delay: Duration) -> Self {
+            Self {
+                inner: SummingBackend::new(input_width, output_width),
+                delay,
+            }
+        }
+    }
+
+    impl InferenceBackend for SlowBackend {
+        fn name(&self) -> &str {
+            "test/slow"
+        }
+
+        fn inputs(&self) -> &[IoSpec] {
+            self.inner.inputs()
+        }
+
+        fn outputs(&self) -> &[IoSpec] {
+            self.inner.outputs()
+        }
+
+        /// Delegates, so the scores stay derived from each row's own contents and this
+        /// backend differs from its inner one in timing alone.
+        fn run(&self, inputs: InputBatch) -> Result<OutputBatch, InferenceError> {
+            std::thread::sleep(self.delay);
+            self.inner.run(inputs)
         }
     }
 

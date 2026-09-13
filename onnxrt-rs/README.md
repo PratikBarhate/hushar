@@ -5,9 +5,9 @@ generated with `bindgen` from the real upstream header.
 
 This is the inference engine `hushar` runs on. ONNX Runtime was chosen over a
 pure-Rust engine for two reasons: far broader operator coverage, and execution
-providers, which are the only way to reach CoreML on Apple Silicon, CUDA or
-TensorRT on NVIDIA, and ROCm or MIGraphX on AMD. The provider is chosen from
-configuration at startup, so one binary covers every target.
+providers, which are the only way to reach TensorRT on NVIDIA GPUs, MIGraphX on
+AMD GPUs, or XNNPACK on ARM64 CPUs. The provider is chosen from configuration at
+startup, so one binary covers every target.
 
 ## Design
 
@@ -52,8 +52,8 @@ the dynamic loader already looks. Without either, these names are tried:
 | Platform | Names |
 |---|---|
 | Linux | `libonnxruntime.so.1`, `libonnxruntime.so` |
-| macOS | `libonnxruntime.1.dylib`, `libonnxruntime.dylib` |
 | Windows | `onnxruntime.dll` |
+| macOS *(local development)* | `libonnxruntime.1.dylib`, `libonnxruntime.dylib` |
 
 The versioned name is tried first deliberately. `libonnxruntime.so.1` is the
 SONAME recorded in the library's own `DT_SONAME`, so it is the name the dynamic
@@ -68,17 +68,13 @@ Get a build for your platform from the
 
 | Platform | Asset for 1.29.0 |
 |---|---|
-| Linux x64 | `onnxruntime-linux-x64-1.29.0.tgz` |
-| Linux arm64 | `onnxruntime-linux-aarch64-1.29.0.tgz` |
-| macOS, Apple Silicon | `onnxruntime-osx-arm64-1.29.0.tgz` |
+| Linux x64 — Intel, AMD | `onnxruntime-linux-x64-1.29.0.tgz` |
+| Linux arm64 — Graviton, Ampere | `onnxruntime-linux-aarch64-1.29.0.tgz` |
 | Windows x64 | `onnxruntime-win-x64-1.29.0.zip` |
-| NVIDIA, CUDA 12 | `onnxruntime-linux-x64-gpu_cuda12-1.29.0.tgz` |
+| NVIDIA GPU, CUDA 12 | `onnxruntime-linux-x64-gpu_cuda12-1.29.0.tgz` |
 
 ```bash
-# Linux
 export ORT_DYLIB_PATH=$PWD/onnxruntime-linux-x64-1.29.0/lib/libonnxruntime.so
-# macOS
-export ORT_DYLIB_PATH=$PWD/onnxruntime-osx-arm64-1.29.0/lib/libonnxruntime.dylib
 ```
 
 Note that `onnxruntime.ai/docs/install` covers the language packages — pip, NuGet, npm —
@@ -149,7 +145,7 @@ mismatch is a build error rather than a memory-safety bug.
 Wrapped: environment and logging, session options (thread counts, optimisation
 level), loading from memory, input/output name discovery, CPU tensors over
 borrowed buffers, running inference, reading typed outputs with shapes, and
-execution provider registration for CPU, CoreML, XNNPACK, TensorRT and MIGraphX
+execution provider registration for CPU, XNNPACK, TensorRT and MIGraphX
 — see [documentation/hardware.md](../documentation/hardware.md) for the provider
 strings and how availability is checked.
 

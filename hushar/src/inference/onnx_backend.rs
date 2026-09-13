@@ -48,14 +48,18 @@ pub(crate) struct OnnxRuntimeBackend {
 impl OnnxRuntimeBackend {
     /// Loads an ONNX model and prepares it to run on `provider`.
     ///
+    /// `session_options` are ONNX Runtime's string-keyed session settings, applied after
+    /// the thread count because an affinity list is validated against it. See
+    /// [`onnxrt_rs::SessionBuilder::config_entry`].
+    ///
     /// `intra_op_threads` bounds the threads ONNX Runtime uses *inside* one
     /// operator. Pass `Some(1)` when the caller already keeps every core busy
     /// with concurrent requests, as this service does: extra intra-op threads
     /// then only add contention. `None` leaves ONNX Runtime's default.
     ///
-    /// `fixed_batch_size` is the row count this deployment serves, when the
-    /// configuration declares one. It is what allows a model with a pinned leading
-    /// dimension to load at all; see [`convert_specs`].
+    /// `mini_batch` is how the deployment cuts a request's rows, when the
+    /// configuration says to. Padded batches are what allow a model with a pinned
+    /// leading dimension to load at all; see [`convert_specs`].
     ///
     /// # Errors
     ///
@@ -67,7 +71,8 @@ impl OnnxRuntimeBackend {
         model_bytes: &[u8],
         provider: &ExecutionProvider,
         intra_op_threads: Option<i32>,
-        fixed_batch_size: Option<usize>,
+        mini_batch: Option<crate::inference::scoring::MiniBatch>,
+        session_options: &[(String, String)],
     ) -> Result<Self, InferenceError> {
         let api = Api::load()?;
         let environment = Environment::shared("hushar")?;
@@ -78,10 +83,15 @@ impl OnnxRuntimeBackend {
         if let Some(threads) = intra_op_threads {
             builder = builder.intra_op_threads(threads)?;
         }
+        // After the thread count, because ONNX Runtime checks an affinity list against
+        // it: the number of entries has to match the threads it is placing.
+        for (key, value) in session_options {
+            builder = builder.config_entry(key, value)?;
+        }
         let session = builder.build_from_memory(model_bytes)?;
 
-        let inputs = convert_specs("input", &session.input_specs()?, fixed_batch_size)?;
-        let outputs = convert_specs("output", &session.output_specs()?, fixed_batch_size)?;
+        let inputs = convert_specs("input", &session.input_specs()?, mini_batch)?;
+        let outputs = convert_specs("output", &session.output_specs()?, mini_batch)?;
 
         let name = format!("onnxruntime/{provider} (runtime {})", api.version());
 
@@ -273,20 +283,20 @@ fn from_owned_tensor(
 ///   is at fault.
 /// * **The rank**, which must be `[batch]` or `[batch, width]`. Checking it once here is
 ///   what lets everything above this file work in rows and widths.
-/// * **The leading axis**, which must be dynamic unless `fixed_batch_size` declares the
-///   row count this deployment serves. A model fixing it can only ever be given batches
-///   of that one size, so serving one is a decision the configuration has to state.
+/// * **The leading axis**, which must be dynamic unless `mini_batch` declares a padded
+///   size matching it. A model fixing it can only ever be given batches of that one
+///   size, so serving one is a decision the configuration has to state.
 ///
 /// A `[batch]` axis carries one value per row. A dynamic width is left unknown, for the
 /// configuration to decide.
 ///
-/// `fixed_batch_size` is checked per tensor rather than across the signature, because a
-/// graph can pin some axes and leave others symbolic. Every pinned axis must agree with
-/// the declaration; a dynamic one is served by the request gate instead.
+/// `mini_batch` is checked per tensor rather than across the signature, because a graph
+/// can pin some axes and leave others symbolic. Every pinned axis must agree with the
+/// declared size *and* be padded up to it; a dynamic one is served as it arrives.
 fn convert_specs(
     kind: &str,
     specs: &[onnxrt_rs::TensorSpec],
-    fixed_batch_size: Option<usize>,
+    mini_batch: Option<crate::inference::scoring::MiniBatch>,
 ) -> Result<Vec<IoSpec>, InferenceError> {
     specs
         .iter()
@@ -330,25 +340,40 @@ fn convert_specs(
             }
             if s.shape[0] >= 0 {
                 let pinned = usize::try_from(s.shape[0]).unwrap_or(usize::MAX);
-                match fixed_batch_size {
+                // A pinned axis is servable only if every batch is padded up to it,
+                // which is exactly what `is_fixed` declares. A size without the flag
+                // would send a short last batch straight into a shape mismatch, so it
+                // is refused here rather than on the first odd-sized request.
+                match mini_batch {
                     None => {
                         return Err(InferenceError::from(format!(
                             "model {kind} {:?} fixes its leading dimension at {}, so it \
                              could only ever be given batches of that size. Re-export \
                              the model with a dynamic batch axis, or declare \
-                             \"fixed_batch_size\": {} in the model configuration to \
-                             serve only batches of that many rows.",
+                             \"mini_batch_size\": {} with \"is_fixed\": true in the \
+                             model configuration to pad every batch up to that size.",
                             s.name, s.shape[0], s.shape[0]
                         )));
                     }
-                    Some(declared) if declared != pinned => {
+                    Some(m) if m.size != pinned => {
                         return Err(InferenceError::from(format!(
                             "model {kind} {:?} fixes its leading dimension at {}, but \
-                             the model configuration declares \"fixed_batch_size\": \
-                             {declared}. Every request would fail inside the engine on a \
-                             shape mismatch. Set fixed_batch_size to {} or re-export the \
-                             model for {declared} rows.",
-                            s.name, s.shape[0], s.shape[0]
+                             the model configuration declares \"mini_batch_size\": {}. \
+                             Every request would fail inside the engine on a shape \
+                             mismatch. Set mini_batch_size to {} or re-export the model \
+                             for {} rows.",
+                            s.name, s.shape[0], m.size, s.shape[0], m.size
+                        )));
+                    }
+                    Some(m) if !m.is_fixed => {
+                        return Err(InferenceError::from(format!(
+                            "model {kind} {:?} fixes its leading dimension at {}, and \
+                             the model configuration declares \"mini_batch_size\": {} \
+                             without \"is_fixed\": true. A request whose row count is \
+                             not a multiple of {} would send a short last batch and fail \
+                             inside the engine. Add \"is_fixed\": true so the last batch \
+                             is padded up to {}.",
+                            s.name, s.shape[0], m.size, m.size, m.size
                         )));
                     }
                     Some(_) => {}
@@ -557,20 +582,23 @@ mod tests {
         assert!(m.contains('8'), "should name the dimension found: {m}");
         assert!(m.contains("dynamic batch"), "should name the fix: {m}");
         assert!(
-            m.contains("fixed_batch_size"),
+            m.contains("mini_batch_size"),
             "should name the other fix: {m}"
         );
     }
 
-    /// The point of `fixed_batch_size`: a pinned graph is servable once the deployment
-    /// declares the size it was built for. The width survives the check unchanged, which
+    /// The point of a padded mini batch: a pinned graph is servable once the deployment
+    /// declares the size it was built for and says it pads up to it. The width survives the check unchanged, which
     /// is what the configuration is then resolved against.
     #[test]
     fn a_declared_batch_size_makes_a_pinned_model_servable() {
         let ours = convert_specs(
             "input",
             &[shaped("x", OrtDataType::F32, vec![1, 502])],
-            Some(1),
+            Some(crate::inference::scoring::MiniBatch {
+                size: 1,
+                is_fixed: true,
+            }),
         )
         .expect("a pinned axis the config declares is servable");
         assert_eq!(ours[0].width, Some(502));
@@ -585,7 +613,10 @@ mod tests {
         let err = convert_specs(
             "input",
             &[shaped("x", OrtDataType::F32, vec![8, 3])],
-            Some(1),
+            Some(crate::inference::scoring::MiniBatch {
+                size: 1,
+                is_fixed: true,
+            }),
         )
         .expect_err("8 rows cannot serve a deployment promising 1");
         let m = err.to_string();
@@ -593,15 +624,37 @@ mod tests {
         assert!(m.contains('1'), "should name the declared size: {m}");
     }
 
+    /// The mistake the flag exists to catch: the right size, but batches left short. Any
+    /// request whose row count is not a multiple of the size would fail inside the
+    /// engine, so it is refused at load with the flag named.
+    #[test]
+    fn a_pinned_axis_without_the_fixed_flag_is_refused() {
+        let err = convert_specs(
+            "input",
+            &[shaped("x", OrtDataType::F32, vec![8, 3])],
+            Some(crate::inference::scoring::MiniBatch {
+                size: 8,
+                is_fixed: false,
+            }),
+        )
+        .expect_err("a pinned axis needs every batch padded up to it");
+        let m = err.to_string();
+        assert!(m.contains("is_fixed"), "should name the flag to add: {m}");
+    }
+
     /// A declaration alongside a dynamic axis is legal, and means what it says: the
-    /// deployment serves that row count. Checked per tensor rather than per model
-    /// because a graph can pin its inputs and leave an output symbolic.
+    /// deployment splits into that many rows per batch. Checked per tensor rather than
+    /// per model because a graph can pin its inputs and leave an output symbolic. Left
+    /// unpadded here, which a dynamic axis accepts and a pinned one would not.
     #[test]
     fn a_declared_batch_size_leaves_a_dynamic_axis_alone() {
         let ours = convert_specs(
             "input",
             &[shaped("x", OrtDataType::F32, vec![-1, 502])],
-            Some(4),
+            Some(crate::inference::scoring::MiniBatch {
+                size: 4,
+                is_fixed: false,
+            }),
         )
         .expect("a dynamic axis is servable whatever the declaration");
         assert_eq!(ours[0].engine_shape(4, 502), vec![4, 502]);
@@ -631,7 +684,7 @@ mod tests {
     /// A CPU backend over `name`, or `None` when the runtime is unavailable.
     fn cpu_backend(name: &str) -> Option<OnnxRuntimeBackend> {
         let model = fixture(name)?;
-        match OnnxRuntimeBackend::load(&model, &ExecutionProvider::Cpu, Some(1), None) {
+        match OnnxRuntimeBackend::load(&model, &ExecutionProvider::Cpu, Some(1), None, &[]) {
             Ok(b) => Some(b),
             Err(e) => {
                 eprintln!("skipping: no ONNX Runtime available ({e})");
@@ -691,10 +744,11 @@ mod tests {
         let Some(bytes) = fixture("mixed_io.onnx") else {
             return;
         };
-        let err = match OnnxRuntimeBackend::load(&bytes, &ExecutionProvider::Cpu, Some(1), None) {
-            Ok(_) => panic!("an INT64 output must not be servable"),
-            Err(e) => e.to_string(),
-        };
+        let err =
+            match OnnxRuntimeBackend::load(&bytes, &ExecutionProvider::Cpu, Some(1), None, &[]) {
+                Ok(_) => panic!("an INT64 output must not be servable"),
+                Err(e) => e.to_string(),
+            };
         if err.to_lowercase().contains("dylib")
             || err.contains("no ONNX Runtime")
             || err.contains("API version")
@@ -993,14 +1047,22 @@ mod tests {
         let Some(model) = fixture("sigmoid_model_3_batch2.onnx") else {
             return;
         };
-        let backend =
-            match OnnxRuntimeBackend::load(&model, &ExecutionProvider::Cpu, Some(1), Some(2)) {
-                Ok(b) => b,
-                Err(e) => {
-                    eprintln!("skipping: no ONNX Runtime available ({e})");
-                    return;
-                }
-            };
+        let backend = match OnnxRuntimeBackend::load(
+            &model,
+            &ExecutionProvider::Cpu,
+            Some(1),
+            Some(crate::inference::scoring::MiniBatch {
+                size: 2,
+                is_fixed: true,
+            }),
+            &[],
+        ) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("skipping: no ONNX Runtime available ({e})");
+                return;
+            }
+        };
 
         let config = crate::config::vectorization_config::VectorizationConfig::from_json(
             r#"{"data_type": "float", "feature_order": ["a", "b", "c"]}"#,
@@ -1045,7 +1107,10 @@ mod tests {
                 &backend,
                 rows,
                 &builder,
-                Some(2),
+                Some(crate::inference::scoring::MiniBatch {
+                    size: 2,
+                    is_fixed: true,
+                }),
                 crate::inference::scoring::FeatureLogging::Record,
             )
             .unwrap_or_else(|e| panic!("{count} rows against a pinned graph: {e}"));

@@ -7,7 +7,8 @@
     conda activate local && python scripts/generate_test_model.py 3 --fixed-batch 2
 
 `--fixed-batch N` pins the leading dimension instead of leaving it dynamic, which is
-what a model needs to exercise the service's `fixed_batch_size` path. It is a separate
+what a model needs to exercise the service's pinned-axis path
+(`mini_batch_size` with `is_fixed`). It is a separate
 file rather than a replacement, because the dynamic one is what every other test uses.
 
 The 3-feature model is written to both crates' `test-data`, because both test it:

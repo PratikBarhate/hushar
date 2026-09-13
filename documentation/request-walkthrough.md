@@ -111,8 +111,9 @@ let scored = tokio::task::spawn_blocking(move || {
 ```
 
 Inference is CPU-bound and can run for milliseconds, so it leaves the async runtime. The
-blocking pool is capped at the worker count in [`main`](../hushar/src/main.rs) rather than
-tokio's default 512, which keeps roughly one inference in flight per core.
+blocking pool is capped at `threading.inference_concurrency` in
+[`main`](../hushar/src/main.rs) rather than tokio's default 512, which by default keeps
+roughly one inference in flight per core.
 
 **ELI5:** the counter hands the order to the kitchen and goes back to taking orders.
 
@@ -150,7 +151,8 @@ is printed so a deployment mistake is visible at boot:
 hushar: model fraud-v3 loaded on onnxruntime/CPU (runtime 1.29.0)
   inputs   : age FP32[1], city FP32[3], tags STRING[1]
   outputs  : score FP32[1]
-  features : age FP32[1] <- feature "age", transformed
+  features : 3 binding(s)
+             age FP32[1] <- feature "age", transformed
              city FP32[3] <- feature "city", transformed
              tags STRING[1] <- feature "tags", verbatim
 ```
@@ -361,7 +363,7 @@ in [configuration.md](configuration.md#what-is-checked-and-when).
 ```bash
 export ORT_DYLIB_PATH=…   # the ONNX Runtime library for your platform
 
-hushar --config-uri ./service.json --inference-log-uri ./logs --port 50051
+hushar --config-uri ./service.json
 # read the banner: inputs, outputs, and the feature bindings
 
 SMOKE_FEATURES='f1=1.0,f2=2.0,f3=3.0' \

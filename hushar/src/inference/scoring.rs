@@ -107,42 +107,52 @@ pub enum FeatureLogging {
 /// a request can be wrong about: a feature of the wrong type for a verbatim input,
 /// and a row that produces a different number of values from its neighbours.
 ///
-/// # Fixed batch size
+/// How a request's rows are cut into batches for the engine.
 ///
-/// `fixed_batch_size` is the row count the model's graph is pinned to, when it is
-/// pinned. A request of any size is still served: rows are cut into batches of that
-/// many, and the final short batch is padded to it. So a pinned model is a property of
-/// the deployment rather than a constraint on callers.
+/// `size` rows per batch; `is_fixed` pads the last one up to `size` rather than sending
+/// it short. Constructed from the model configuration's `mini_batch_size` and
+/// `is_fixed`, which is where both are documented.
+#[derive(Debug, Clone, Copy)]
+pub struct MiniBatch {
+    pub size: usize,
+    pub is_fixed: bool,
+}
+
+/// Turns named feature values into model outputs.
+///
+/// # Mini batches
+///
+/// `mini_batch` cuts the rows into batches and scores them **at the same time**, one
+/// scoped thread each and the last on this thread. Without it a request is one
+/// batch, which is the default and the only path a single-batch request takes -- no
+/// fan-out, nothing to pay for.
 ///
 /// ```text
-/// fixed_batch_size: 4,  request of 6 rows
+/// mini_batch { size: 4, is_fixed: false },  request of 6 rows
 ///
-///   r0 r1 r2 r3 │ r4 r5 ·· ··      ·· = padding row, all defaults
-///   └── run 1 ──┘ └── run 2 ──┘
-///        ▼             ▼
-///   s0 s1 s2 s3    s4 s5 xx xx      xx = scored, then discarded
-///   └──────── 6 rows out ───┘
+///   r0 r1 r2 r3 │ r4 r5
+///   └── run 1 ──┘ └ run 2 ┘     both in flight together
+///        ▼            ▼
+///   s0 s1 s2 s3    s4 s5
+///   └────── 6 rows out ─┘       order preserved, whichever finishes first
 /// ```
 ///
-/// A padding row carries no features, so every input takes the same path as a request
-/// that omitted that feature: its transformation's `default_val`, or zeros and empty
-/// strings for the inputs passed through verbatim. Nothing new has to be correct for
-/// padding to be correct.
+/// Why this lowers latency is in [`crate::config::model_config::ModelConfig`]: threads
+/// inside one operator stop helping well before the core count, because the operators
+/// are a chain of barriers, while separate mini-batches share no barrier at all.
 ///
-/// **Two things this costs, both worth stating.** Padding is real work -- one row sent
-/// to a model pinned at 32 costs a batch of 32 -- so a pinned deployment should pin to
-/// a size near its traffic, not an arbitrary one. And the batches run in sequence on
-/// this thread, which keeps one inference in flight per request as
-/// [`spawn_blocking`](tokio::task::spawn_blocking) intends; a request of 100 rows
-/// against a size of 1 is 100 engine calls, and it will feel like it.
+/// **Timings when the batches overlap.** Each stage is reported as the **longest single
+/// mini-batch's**, not the sum: the batches run together, so summing would report more
+/// engine time than the request spent. With one batch the two are identical. The
+/// client-side latency remains the number that decides anything.
 ///
-/// `None` runs the request as a single batch of whatever size it is, which is what a
-/// model with a dynamic row axis wants.
+/// Rows come back in request order however the batches interleave, because the results
+/// are collected per batch and concatenated rather than appended as they arrive.
 pub fn score_features(
     backend: &dyn InferenceBackend,
     rows: Vec<InputRow>,
     builder: &InputBuilder,
-    fixed_batch_size: Option<usize>,
+    mini_batch: Option<MiniBatch>,
     logging: FeatureLogging,
 ) -> Result<ScoredBatch, crate::inference::InferenceError> {
     if rows.is_empty() {
@@ -150,14 +160,106 @@ pub fn score_features(
     }
 
     let total = rows.len();
-    // A dynamic deployment is the degenerate case of one batch holding everything, so
-    // there is one code path below rather than a branch that could diverge.
-    let size = fixed_batch_size.unwrap_or(total).max(1);
+    // A request scored whole is the degenerate case of one batch holding everything, so
+    // the fan-out below has one shape rather than a branch that could diverge.
+    let (size, pad_to) = match mini_batch {
+        Some(m) => (m.size.max(1), m.is_fixed.then(|| m.size.max(1))),
+        None => (total, None),
+    };
 
-    let mut scored = ScoredBatch {
-        outputs: Vec::with_capacity(total),
+    // Consumed rather than indexed, so each batch owns its rows and the features can be
+    // handed to the log instead of copied for it.
+    let mut remaining = rows.into_iter();
+    let mut chunks: Vec<Vec<InputRow>> = Vec::with_capacity(total.div_ceil(size));
+    loop {
+        let chunk: Vec<InputRow> = remaining.by_ref().take(size).collect();
+        if chunk.is_empty() {
+            break;
+        }
+        chunks.push(chunk);
+    }
+
+    // One batch is the common case and must not pay for a fan-out it does not use.
+    if chunks.len() == 1 {
+        let mut scored = empty_scored(total, logging);
+        let chunk = chunks.pop().unwrap_or_default();
+        score_chunk(backend, chunk, builder, pad_to, &mut scored, logging)?;
+        return Ok(scored);
+    }
+
+    // A scoped thread per mini batch but the last, which this thread scores itself: the
+    // caller is already a blocking thread with nothing else to do, and one fewer spawn is
+    // one fewer delay before the fan-out is complete.
+    //
+    // Scoped OS threads rather than a work-stealing pool, and that was measured rather
+    // than assumed. A pool bounds the thread count, which looked necessary -- 16 requests
+    // splitting into 20 is 320 threads on 88 cores -- but at that shape the two were
+    // indistinguishable: 299.7 requests a second against 298.5, both shedding, both at
+    // 54 % CPU. What caps throughput there is memory rather than scheduling, so the pool
+    // bought nothing and is not worth a dependency. Scoped threads also inherit this
+    // thread's CPU affinity, which a pool cannot: the caller was pinned to its session's
+    // slice of the cores, so the mini batches land on the same cores as the session they
+    // call into. That does mean a split wants few sessions and wide slices --
+    // `sessions_per_model: 1` gives the whole compute set -- since a request can only
+    // spread as wide as its own slice.
+    let mine = chunks.pop().unwrap_or_default();
+    let mut parts: Vec<Result<ScoredBatch, crate::inference::InferenceError>> =
+        Vec::with_capacity(chunks.len() + 1);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .into_iter()
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let mut part = empty_scored(chunk.len(), logging);
+                    score_chunk(backend, chunk, builder, pad_to, &mut part, logging)?;
+                    Ok(part)
+                })
+            })
+            .collect();
+
+        // Scored here while the spawned batches run, so the calling thread is not idle.
+        let own = {
+            let mut part = empty_scored(mine.len(), logging);
+            score_chunk(backend, mine, builder, pad_to, &mut part, logging).map(|()| part)
+        };
+
+        // Joined in spawn order, which is request order. A panicking batch becomes an
+        // error rather than unwinding through the scope, so one bad batch fails one
+        // request instead of the process.
+        for handle in handles {
+            parts.push(handle.join().unwrap_or_else(|_| {
+                Err(crate::inference::InferenceError::from(
+                    "a mini batch panicked while scoring",
+                ))
+            }));
+        }
+        parts.push(own);
+    });
+
+    let mut scored = empty_scored(total, logging);
+    for part in parts {
+        let part = part?;
+        scored.outputs.extend(part.outputs);
+        scored.logs.extend(part.logs);
+        // The longest batch, not the total: they ran together, so a sum would claim more
+        // time than the request spent in the engine.
+        scored.timings.vec_time = scored.timings.vec_time.max(part.timings.vec_time);
+        scored.timings.tensor_time = scored.timings.tensor_time.max(part.timings.tensor_time);
+        scored.timings.inference_time = scored
+            .timings
+            .inference_time
+            .max(part.timings.inference_time);
+    }
+
+    Ok(scored)
+}
+
+/// An empty result sized for the rows it is about to hold.
+fn empty_scored(rows: usize, logging: FeatureLogging) -> ScoredBatch {
+    ScoredBatch {
+        outputs: Vec::with_capacity(rows),
         logs: match logging {
-            FeatureLogging::Record => Vec::with_capacity(total),
+            FeatureLogging::Record => Vec::with_capacity(rows),
             FeatureLogging::Skip => Vec::new(),
         },
         timings: InferenceMicros {
@@ -165,24 +267,11 @@ pub fn score_features(
             tensor_time: 0,
             inference_time: 0,
         },
-    };
-
-    // Consumed rather than indexed, so each chunk owns its rows and the features can be
-    // handed to the log instead of copied for it.
-    let mut remaining = rows.into_iter();
-    loop {
-        let chunk: Vec<InputRow> = remaining.by_ref().take(size).collect();
-        if chunk.is_empty() {
-            break;
-        }
-        score_chunk(backend, chunk, builder, size, &mut scored, logging)?;
     }
-
-    Ok(scored)
 }
 
-/// Scores one batch, padding it to `size` first if it is short, and appends the real
-/// rows' results to `scored`.
+/// Scores one batch, padding it up to `pad_to` first when that is set, and appends the
+/// real rows' results to `scored`.
 ///
 /// Padding is appended to the chunk this function already owns, so a short batch costs
 /// only the padding rows -- where an earlier version cloned every real row to make room
@@ -190,22 +279,20 @@ pub fn score_features(
 /// what keeps a synthetic row out of both the response and the log without anything
 /// downstream having to know padding exists.
 ///
-/// The timings accumulate across batches, so a request's `InferenceTime` is the engine
-/// time it actually cost. That is the number worth having: two batches of 4 really do
-/// spend twice as long in the engine as one, and a metric that reported only the last
-/// batch would hide exactly the cost this function introduces.
+/// `pad_to` is `None` for a model whose row axis is dynamic, which is the common case
+/// and the one that does no padding work at all.
 fn score_chunk(
     backend: &dyn InferenceBackend,
     mut chunk: Vec<InputRow>,
     builder: &InputBuilder,
-    size: usize,
+    pad_to: Option<usize>,
     scored: &mut ScoredBatch,
     logging: FeatureLogging,
 ) -> Result<(), crate::inference::InferenceError> {
     let vec_start = Instant::now();
 
     let real = chunk.len();
-    if real < size {
+    if let Some(size) = pad_to.filter(|&size| real < size) {
         chunk.resize(
             size,
             InputRow {
@@ -346,10 +433,11 @@ mod tests {
     use crate::config::vectorization_config::VectorizationConfig;
     use crate::inference::backend::test_support::{
         DoubleBackend, FailingBackend, MultiOutputBackend, PerFeatureBackend, RecordingBackend,
-        SummingBackend,
+        SlowBackend, SummingBackend,
     };
     use hushar::hushar_proto::DataType as WireValue;
     use hushar::hushar_proto::data_type::DataType as Value;
+    use std::time::Duration;
 
     /// A builder for `backend`, from the given configuration JSON.
     fn builder_for(backend: &dyn InferenceBackend, json: &str) -> InputBuilder {
@@ -425,7 +513,7 @@ mod tests {
     // ------------------------------------------------------------ the happy path
 
     #[test]
-    fn the_feature_path_scores_every_row_and_reports_timings() {
+    fn the_feature_path_scores_every_row() {
         let backend = SummingBackend::new(3, 2);
         let builder = builder_for(&backend, &vector_config(3, "float"));
 
@@ -440,9 +528,47 @@ mod tests {
 
         assert_eq!(scored.outputs.len(), 4);
         assert_eq!(scored.logs.len(), 4);
+    }
+
+    /// Timings are in microseconds, so the engine call is made to take a duration far
+    /// longer than that and the reading is checked against it. Asserting merely that some
+    /// stage is non-zero would be asserting that the machine is slow: a mock backend
+    /// scoring four rows finishes inside a microsecond, and zero has to stay a legitimate
+    /// reading for `an_empty_batch_is_not_sent_to_the_engine`.
+    ///
+    /// The bound is deliberately loose. A sleep may overrun and the surrounding stages add
+    /// their own time, but neither can make the engine call appear *shorter* than it was,
+    /// so there is no upper bound worth asserting and no way for this to flake.
+    #[test]
+    fn inference_time_measures_the_engine_call() {
+        let delay = Duration::from_millis(5);
+        let backend = SlowBackend::new(3, 2, delay);
+        let builder = builder_for(&backend, &vector_config(3, "float"));
+
+        let scored = score_features(
+            &backend,
+            numeric_rows(4, 3, 1.0),
+            &builder,
+            None,
+            FeatureLogging::Record,
+        )
+        .expect("scored");
+
+        let floor = delay.as_micros() / 2;
         assert!(
-            scored.timings.inference_time > 0 || scored.timings.vec_time > 0,
-            "some stage must have taken measurable time"
+            scored.timings.inference_time >= floor,
+            "a {delay:?} engine call should report at least {floor}us of inference time, \
+             got {}us",
+            scored.timings.inference_time,
+        );
+        // The sleep is inside `run`, so it must land on the engine's stage rather than on
+        // vectorisation -- which is what makes this a test of attribution, not of a total.
+        assert!(
+            scored.timings.vec_time < scored.timings.inference_time,
+            "the delay belongs to the engine call, but vectorisation reported {}us \
+             against the engine's {}us",
+            scored.timings.vec_time,
+            scored.timings.inference_time,
         );
     }
 
@@ -551,7 +677,7 @@ mod tests {
                 &backend,
                 numeric_rows(4, 2, 1.5),
                 &builder,
-                Some(3),
+                Some(fixed(3)),
                 FeatureLogging::Record,
             )
             .expect("scored")
@@ -563,7 +689,7 @@ mod tests {
                 &backend,
                 numeric_rows(4, 2, 1.5),
                 &builder,
-                Some(3),
+                Some(fixed(3)),
                 FeatureLogging::Skip,
             )
             .expect("scored")
@@ -835,6 +961,22 @@ mod tests {
     /// Its sum is therefore `width * r`, so a row's scores name the row they came from.
     /// A padding row holds no features and sums to 0, so it is distinguishable from
     /// every real row but the first.
+    /// A padded split, which is what a pinned graph needs.
+    fn fixed(size: usize) -> MiniBatch {
+        MiniBatch {
+            size,
+            is_fixed: true,
+        }
+    }
+
+    /// A split whose last batch is however many rows remain -- the latency case.
+    fn dynamic(size: usize) -> MiniBatch {
+        MiniBatch {
+            size,
+            is_fixed: false,
+        }
+    }
+
     fn ramp_rows(rows: usize, width: usize) -> Vec<InputRow> {
         (0..rows)
             .map(|r| InputRow {
@@ -863,7 +1005,7 @@ mod tests {
             &backend,
             ramp_rows(6, 3),
             &builder,
-            Some(4),
+            Some(fixed(4)),
             FeatureLogging::Record,
         )
         .expect("six rows against a size of four");
@@ -888,7 +1030,7 @@ mod tests {
             &backend,
             ramp_rows(1, 3),
             &builder,
-            Some(4),
+            Some(fixed(4)),
             FeatureLogging::Record,
         )
         .expect("one row against a size of four");
@@ -907,7 +1049,7 @@ mod tests {
             &backend,
             ramp_rows(8, 3),
             &builder,
-            Some(4),
+            Some(fixed(4)),
             FeatureLogging::Record,
         )
         .expect("eight rows against a size of four");
@@ -929,7 +1071,7 @@ mod tests {
             &backend,
             ramp_rows(5, 3),
             &builder,
-            Some(4),
+            Some(fixed(4)),
             FeatureLogging::Record,
         )
         .expect("five rows against a size of four");
@@ -952,7 +1094,7 @@ mod tests {
             &backend,
             ramp_rows(3, 3),
             &builder,
-            Some(1),
+            Some(fixed(1)),
             FeatureLogging::Record,
         )
         .expect("three rows against a size of one");
@@ -960,6 +1102,104 @@ mod tests {
         assert_eq!(backend.batches(), vec![1, 1, 1]);
         assert_eq!(scored.outputs.len(), 3);
         assert_eq!(float_scores(&scored.outputs[2]), vec![6.0]);
+    }
+
+    /// The latency case, and the one `is_fixed: false` exists for: the rows are split but
+    /// the last batch is however many remain, so nothing is padded and no synthetic row
+    /// is scored. Batch sizes are sorted before comparing because the batches run at the
+    /// same time and finish in whatever order the scheduler gives them.
+    #[test]
+    fn a_dynamic_split_leaves_the_last_batch_short() {
+        let backend = RecordingBackend::new(3, 1);
+        let builder = builder_for(&backend, &vector_config(3, "float"));
+
+        let scored = score_features(
+            &backend,
+            ramp_rows(6, 3),
+            &builder,
+            Some(dynamic(4)),
+            FeatureLogging::Record,
+        )
+        .expect("six rows split into four and two");
+
+        let mut sizes = backend.batches();
+        sizes.sort_unstable();
+        assert_eq!(
+            sizes,
+            vec![2, 4],
+            "the last batch carries the two rows that remain, unpadded"
+        );
+        assert_eq!(scored.outputs.len(), 6);
+        assert_eq!(
+            scored.logs.len(),
+            6,
+            "no padding row reaches the log, because none was made"
+        );
+    }
+
+    /// The property the fan-out has to keep: rows come back in the order they were sent,
+    /// however the batches interleave. Twenty batches of one row make the ordering
+    /// non-trivial -- an implementation appending results as they arrive fails this.
+    #[test]
+    fn mini_batches_return_rows_in_request_order() {
+        let backend = RecordingBackend::new(3, 1);
+        let builder = builder_for(&backend, &vector_config(3, "float"));
+
+        let scored = score_features(
+            &backend,
+            ramp_rows(20, 3),
+            &builder,
+            Some(dynamic(1)),
+            FeatureLogging::Record,
+        )
+        .expect("twenty single-row batches");
+
+        assert_eq!(backend.batches().len(), 20);
+        for r in 0..20 {
+            assert_eq!(scored.outputs[r].row_id, format!("row-{r}"));
+            assert_eq!(scored.logs[r].row_id, format!("row-{r}"));
+            assert_eq!(float_scores(&scored.outputs[r]), vec![3.0 * r as f32]);
+        }
+    }
+
+    /// Splitting must not change a row's scores, only when they are computed. The same
+    /// rows are scored whole and in mini batches, and the two agree row for row.
+    #[test]
+    fn a_dynamic_split_does_not_change_a_rows_scores() {
+        let whole = RecordingBackend::new(3, 1);
+        let split = RecordingBackend::new(3, 1);
+        let builder = builder_for(&whole, &vector_config(3, "float"));
+
+        let one = score_features(
+            &whole,
+            ramp_rows(7, 3),
+            &builder,
+            None,
+            FeatureLogging::Skip,
+        )
+        .expect("scored whole");
+        let many = score_features(
+            &split,
+            ramp_rows(7, 3),
+            &builder,
+            Some(dynamic(3)),
+            FeatureLogging::Skip,
+        )
+        .expect("scored in mini batches");
+
+        assert_eq!(whole.batches(), vec![7]);
+        let mut sizes = split.batches();
+        sizes.sort_unstable();
+        assert_eq!(sizes, vec![1, 3, 3]);
+        assert_eq!(one.outputs.len(), many.outputs.len());
+        for r in 0..7 {
+            assert_eq!(one.outputs[r].row_id, many.outputs[r].row_id);
+            assert_eq!(
+                float_scores(&one.outputs[r]),
+                float_scores(&many.outputs[r]),
+                "row {r} scored differently when split"
+            );
+        }
     }
 
     /// No declaration means no chunking, which is what a dynamic model wants and what
@@ -993,7 +1233,7 @@ mod tests {
             &backend,
             Vec::new(),
             &builder,
-            Some(4),
+            Some(fixed(4)),
             FeatureLogging::Record,
         )
         .expect("nothing");
@@ -1026,7 +1266,7 @@ mod tests {
             &pinned,
             ramp_rows(7, 3),
             &pinned_builder,
-            Some(2),
+            Some(fixed(2)),
             FeatureLogging::Record,
         )
         .expect("scored");

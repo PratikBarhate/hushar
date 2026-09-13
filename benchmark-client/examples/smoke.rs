@@ -38,6 +38,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let response = client
         .inference_service(InferenceRequest {
             request_id: "smoke".into(),
+            // Empty leaves the choice to the server: with a roll-out configured it
+            // applies its split, and the response says which arm answered. SMOKE_MODEL
+            // asks for one by name instead.
+            model_id: std::env::var("SMOKE_MODEL").unwrap_or_default(),
             inputs: vec![InputRow {
                 row_id: "row-0".into(),
                 features,
@@ -46,7 +50,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .into_inner();
 
-    println!("\nscored:");
+    // Named, because a server mid-roll-out chose this itself and the caller cannot
+    // otherwise tell which of its two models answered.
+    println!("\nserved by: {}", response.model_id);
+    println!("scored:");
     for row in &response.outputs {
         println!("  {}", describe(row));
     }

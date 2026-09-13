@@ -321,7 +321,22 @@ impl InputBuilder {
             .map(|input| {
                 let how = match &input.source {
                     Source::Vectorised(order) => {
-                        format!("[{}] transformed and concatenated", order.join(", "))
+                        // Named in full while the list is short enough to read, and
+                        // summarised past that. A 200-feature deployment otherwise puts
+                        // every name on one line thousands of characters wide, which is
+                        // not a contract anyone checks -- and the order is in the
+                        // configuration, which is the authority anyway.
+                        const NAMED: usize = 8;
+                        if order.len() <= NAMED {
+                            format!("[{}] transformed and concatenated", order.join(", "))
+                        } else {
+                            format!(
+                                "{} features transformed and concatenated [{}, ... +{} more]",
+                                order.len(),
+                                order[..NAMED].join(", "),
+                                order.len() - NAMED,
+                            )
+                        }
                     }
                     Source::Feature(name) if input.element.is_float() => {
                         format!("feature {name:?}, transformed")

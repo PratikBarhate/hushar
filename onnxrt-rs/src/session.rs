@@ -108,6 +108,55 @@ impl<'env> SessionBuilder<'env> {
         Ok(self)
     }
 
+    /// Sets one of ONNX Runtime's string-keyed session options.
+    ///
+    /// The escape hatch for the settings that have no dedicated setter in the C API and
+    /// are reached by name instead. The keys are listed in
+    /// `onnxruntime_session_options_config_keys.h`; the ones that matter for serving are
+    ///
+    /// | Key | Effect |
+    /// |---|---|
+    /// | `session.intra_op_thread_affinities` | which logical CPUs the intra-op threads may run on |
+    /// | `session.intra_op.allow_spinning` | `0` stops idle intra-op threads burning cycles |
+    /// | `session.inter_op.allow_spinning` | the same for the inter-op pool |
+    ///
+    /// # Affinity format
+    ///
+    /// Semicolon-separated, **one entry per intra-op thread other than the calling
+    /// thread**, so `intra_op_threads(n)` wants `n - 1` entries. Each entry is a
+    /// comma-separated list of logical CPU ids that thread may use:
+    ///
+    /// ```text
+    ///   "1;2"            two extra threads, pinned to CPU 1 and CPU 2
+    ///   "3,4;5,6"        two extra threads, each free to use a pair
+    /// ```
+    ///
+    /// A count that disagrees with `intra_op_threads` is rejected by ONNX Runtime when
+    /// the session is built, not here.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the key is not one this runtime knows, or the value will not parse.
+    /// Both are reported rather than ignored, since a silently dropped affinity would
+    /// look like affinity that did not help.
+    pub fn config_entry(self, key: &str, value: &str) -> Result<Self> {
+        let f = ort_fn!(self.options.api, AddSessionConfigEntry);
+        let key = CString::new(key).map_err(|_| Error::InteriorNul {
+            context: "session config key",
+        })?;
+        let value = CString::new(value).map_err(|_| Error::InteriorNul {
+            context: "session config value",
+        })?;
+        // SAFETY: `self.options.ptr` is a live options object, and both strings are
+        // NUL-terminated and outlive the call, which copies them.
+        unsafe {
+            self.options
+                .api
+                .check(f(self.options.ptr, key.as_ptr(), value.as_ptr()))?
+        };
+        Ok(self)
+    }
+
     /// Graph optimisation level; defaults to
     /// [`GraphOptimizationLevel::All`].
     pub fn optimization_level(self, level: GraphOptimizationLevel) -> Result<Self> {

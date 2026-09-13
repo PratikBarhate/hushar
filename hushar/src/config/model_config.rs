@@ -13,7 +13,6 @@
 //!   "model_id": "fraud-v3",
 //!   "model_path": "s3://models/fraud/v3/model.onnx",
 //!   "execution_provider": "cpu",
-//!   "intra_op_threads": 1,
 //!   "vectorization_config": {
 //!     "data_type": "float",
 //!     "feature_transformations": { "age": { "type": "identity", "default_val": [0.0] } },
@@ -38,21 +37,15 @@ fn default_execution_provider() -> String {
 
 /// One thread inside each operator.
 ///
-/// The service already saturates the machine with concurrent requests, so letting
-/// ONNX Runtime fan a single operator across cores adds contention rather than
-/// throughput. Override for large models served at low concurrency.
-fn default_intra_op_threads() -> i32 {
-    1
-}
-
 /// One model, and how to serve it.
 ///
 /// Fields:
 /// - `model_id` — recorded on every inference log row, so logs join to a model version.
 /// - `model_path` — where the model file is, carrying its own URI scheme.
 /// - `execution_provider` — the hardware backend. See below.
-/// - `intra_op_threads` — threads ONNX Runtime may use within a single operator.
-/// - `fixed_batch_size` — serve only batches of exactly this many rows. See below.
+/// - `mini_batch_size` — split a request's rows into batches of this many, scored at
+///   the same time. See below.
+/// - `is_fixed` — pad the last mini batch up to `mini_batch_size`. See below.
 /// - `vectorization_config` — how features become model inputs, or `None` to pass each
 ///   input's like-named feature straight through.
 ///
@@ -70,33 +63,59 @@ fn default_intra_op_threads() -> i32 {
 /// The provider must be compiled into the `libonnxruntime` on the host; startup fails
 /// with the list of available providers if it is not.
 ///
-/// # Fixed batch size
+/// # Mini batches
 ///
-/// Left out, the model's row axis must be dynamic and a request may carry any number of
-/// rows. That is the default because it is what a serving path wants: the service batches
-/// however many rows arrive.
+/// `mini_batch_size` cuts a request's rows into batches of that many, **scored at the
+/// same time** rather than one after another. `is_fixed` says whether the last batch is
+/// padded up to the size or left short.
 ///
-/// Set, it declares the batch size the model's graph is built for, and a model may then
-/// pin its leading dimension to the same number. One check follows at
-/// load: a pinned axis disagreeing with this number is refused when the model loads,
-/// because every request would then fail inside the engine on a shape mismatch.
+/// Left out, a request is one batch of whatever size it arrived as, and the model's row
+/// axis must be dynamic. That stays the default.
 ///
-/// It exists so a model that was exported with a pinned leading dimension can be served
-/// at all: without this field such a model is refused when it loads, because it could
-/// only ever be given batches of that one size.
+/// ```text
+/// mini_batch_size: 4, request of 6 rows
 ///
-/// **It does not constrain callers.** A request of any size is served: rows are cut into
-/// batches of this many and the final short batch is padded up to it, with the padded
-/// rows scored and then discarded. So the pinned shape is satisfied without a client
-/// having to know the number. What it costs is work -- one row against a size of 32 runs
-/// a batch of 32 -- so pin to a size near the traffic rather than an arbitrary one.
+///   is_fixed: false            is_fixed: true
+///   r0 r1 r2 r3 │ r4 r5        r0 r1 r2 r3 │ r4 r5 ·· ··   ·· = padding row
+///   └── run ──┘   └─ run ─┘    └── run ──┘   └─── run ───┘
+///       both at the same time      both at the same time
+///            ▼                            ▼
+///   s0 s1 s2 s3   s4 s5        s0 s1 s2 s3   s4 s5 xx xx   xx = scored, discarded
+///   └───── 6 rows out ─┘       └────── 6 rows out ───┘
+/// ```
+///
+/// **Why it lowers latency.** Threads inside one operator stop helping well past a
+/// point -- the operators are a chain and each one is a barrier -- so a big batch has a
+/// latency floor no thread count clears. Separate mini-batches share no barrier at all,
+/// so `n` of them on `n` cores approach the cost of *one*. Splitting 100 rows into 20
+/// therefore costs about what 5 rows cost, not a twentieth of 100 rows' wall clock.
+/// It buys latency with a little more total CPU: each batch repeats the per-call
+/// overhead, and small batches are less efficient per row.
+///
+/// Pair it with `threading.intra_op_threads: 1`. The parallelism now comes from running
+/// mini-batches together, and a pool inside each one competes with that for the same
+/// cores.
+///
+/// **`is_fixed` is what a pinned graph needs.** A model exported with its leading
+/// dimension fixed can only be given batches of that one size, so it needs
+/// `mini_batch_size` equal to that number and `is_fixed: true`; the padded rows are
+/// scored and discarded. A pinned axis disagreeing with the declared size, or declared
+/// without `is_fixed`, is refused when the model loads rather than failing every
+/// request inside the engine.
+///
+/// A padding row carries no features, so every input takes the same path as a request
+/// that omitted that feature: its transformation's `default_val`, or zeros and empty
+/// strings for inputs passed through verbatim. Nothing new has to be correct for
+/// padding to be correct.
+///
+/// **It never constrains callers.** A request of any size is served either way.
 #[derive(Debug)]
 pub struct ModelConfig {
     pub model_id: String,
     pub model_path: String,
     pub execution_provider: String,
-    pub intra_op_threads: i32,
-    pub fixed_batch_size: Option<usize>,
+    pub mini_batch_size: Option<usize>,
+    pub is_fixed: bool,
     pub vectorization_config: Option<VectorizationConfig>,
 }
 
@@ -113,9 +132,9 @@ struct RawModelConfig {
     model_path: String,
     #[serde(default = "default_execution_provider")]
     execution_provider: String,
-    #[serde(default = "default_intra_op_threads")]
-    intra_op_threads: i32,
-    fixed_batch_size: Option<usize>,
+    mini_batch_size: Option<usize>,
+    #[serde(default)]
+    is_fixed: bool,
     vectorization_config: Option<serde_json::Value>,
 }
 
@@ -124,12 +143,24 @@ impl ModelConfig {
         let raw: RawModelConfig = serde_json::from_str(json)?;
 
         // Zero rows is not a smaller batch, it is a model that can never be given
-        // anything. Caught here because every later check would read it as "no pinning".
-        if raw.fixed_batch_size == Some(0) {
+        // anything. Caught here because every later check would read it as "no splitting".
+        if raw.mini_batch_size == Some(0) {
             return Err(format!(
-                "model {:?} declares \"fixed_batch_size\": 0, which no request could \
-                 satisfy. Give the row count the model was exported for, or leave the \
-                 field out to serve any number of rows.",
+                "model {:?} declares \"mini_batch_size\": 0, which no request could \
+                 satisfy. Give the rows per mini batch, or leave the field out to score \
+                 each request as one batch.",
+                raw.model_id
+            )
+            .into());
+        }
+
+        // `is_fixed` only means anything alongside a size, and a config setting it alone
+        // has almost certainly lost the size rather than meant nothing by it.
+        if raw.is_fixed && raw.mini_batch_size.is_none() {
+            return Err(format!(
+                "model {:?} declares \"is_fixed\": true without \"mini_batch_size\", so \
+                 there is no size to pad to. Give the row count the model's graph is \
+                 pinned to, or drop \"is_fixed\".",
                 raw.model_id
             )
             .into());
@@ -148,8 +179,8 @@ impl ModelConfig {
             model_id: raw.model_id,
             model_path: raw.model_path,
             execution_provider: raw.execution_provider,
-            intra_op_threads: raw.intra_op_threads,
-            fixed_batch_size: raw.fixed_batch_size,
+            mini_batch_size: raw.mini_batch_size,
+            is_fixed: raw.is_fixed,
             vectorization_config,
         })
     }
@@ -168,7 +199,7 @@ mod tests {
                 "model_id": "fraud-v3",
                 "model_path": "s3://models/fraud/v3/model.onnx",
                 "execution_provider": "coreml:cpu_and_neural_engine",
-                "intra_op_threads": 4
+                "mini_batch_size": 4
             }"#,
         )
         .expect("valid");
@@ -176,7 +207,6 @@ mod tests {
         assert_eq!(config.model_id, "fraud-v3");
         assert_eq!(config.model_path, "s3://models/fraud/v3/model.onnx");
         assert_eq!(config.execution_provider, "coreml:cpu_and_neural_engine");
-        assert_eq!(config.intra_op_threads, 4);
         assert!(
             config.vectorization_config.is_none(),
             "an absent sub-config means pass every input through"
@@ -188,16 +218,16 @@ mod tests {
         let config = ModelConfig::from_json(r#"{"model_id": "m", "model_path": "/tmp/m.onnx"}"#)
             .expect("valid");
         assert_eq!(config.execution_provider, "cpu");
-        assert_eq!(config.intra_op_threads, 1);
         assert!(
-            config.fixed_batch_size.is_none(),
-            "dynamic batching is the default; pinning is opt-in"
+            config.mini_batch_size.is_none(),
+            "one batch per request is the default; splitting is opt-in"
         );
+        assert!(!config.is_fixed, "padding is opt-in with the size");
     }
 
-    /// The declaration that lets a pinned-shape model be served. It is read here and
-    /// enforced twice: against the model's own leading dimension when it loads, and
-    /// against each request's row count before the engine sees it.
+    /// The declaration that lets a pinned-shape model be served: the size plus the flag
+    /// that says the last batch is padded to it. Read here and enforced against the
+    /// model's own leading dimension when it loads.
     #[test]
     fn a_declared_batch_size_is_carried_through() {
         let config = ModelConfig::from_json(
@@ -205,11 +235,44 @@ mod tests {
                 "model_id": "m",
                 "model_path": "/tmp/m.onnx",
                 "execution_provider": "coreml",
-                "fixed_batch_size": 1
+                "mini_batch_size": 1,
+                "is_fixed": true
             }"#,
         )
         .expect("valid");
-        assert_eq!(config.fixed_batch_size, Some(1));
+        assert_eq!(config.mini_batch_size, Some(1));
+        assert!(config.is_fixed);
+    }
+
+    /// The latency case: a size without the flag, which splits and leaves the last batch
+    /// short. Separate from the pinned case because the two differ only in this flag and
+    /// a reader should see both spellings.
+    #[test]
+    fn a_size_without_the_flag_splits_without_padding() {
+        let config = ModelConfig::from_json(
+            r#"{"model_id": "m", "model_path": "/tmp/m.onnx", "mini_batch_size": 10}"#,
+        )
+        .expect("valid");
+        assert_eq!(config.mini_batch_size, Some(10));
+        assert!(
+            !config.is_fixed,
+            "a short last batch is the default, so a dynamic model needs no extra field"
+        );
+    }
+
+    /// A flag with nothing to pad to. Refused naming both fields, because the config has
+    /// almost certainly lost the size rather than meant nothing by the flag.
+    #[test]
+    fn the_flag_without_a_size_is_refused() {
+        let err = ModelConfig::from_json(
+            r#"{"model_id": "m", "model_path": "/tmp/m.onnx", "is_fixed": true}"#,
+        )
+        .expect_err("a size is required to pad to");
+        let m = err.to_string();
+        assert!(
+            m.contains("is_fixed") && m.contains("mini_batch_size"),
+            "the message should name both fields, got: {m}"
+        );
     }
 
     /// Zero rows is not a smaller batch, it is a model nothing can be sent to. Refused
@@ -217,11 +280,11 @@ mod tests {
     #[test]
     fn a_zero_batch_size_is_refused_naming_the_field() {
         let err = ModelConfig::from_json(
-            r#"{"model_id": "m", "model_path": "/tmp/m.onnx", "fixed_batch_size": 0}"#,
+            r#"{"model_id": "m", "model_path": "/tmp/m.onnx", "mini_batch_size": 0}"#,
         )
         .expect_err("no request can carry zero rows");
         assert!(
-            err.to_string().contains("fixed_batch_size"),
+            err.to_string().contains("mini_batch_size"),
             "should name the field: {err}"
         );
     }
@@ -384,7 +447,6 @@ mod tests {
         let named = read("model_config_named.json");
         assert_eq!(named.model_id, "fixture-named");
         assert_eq!(named.execution_provider, "coreml:cpu_and_neural_engine");
-        assert_eq!(named.intra_op_threads, 2);
         let InputMode::Named { model_inputs } = named
             .vectorization_config
             .expect("the named fixture declares its inputs")

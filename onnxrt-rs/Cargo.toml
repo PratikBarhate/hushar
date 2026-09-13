@@ -31,12 +31,13 @@ default = ["cpu"]
 cpu = []
 coreml = []
 xnnpack = []
+openvino = []
 tensorrt = []
 migraphx = []
 
 # Every accelerator at once. Useful for a build that is deployed to mixed
 # hardware and decides from configuration.
-all-providers = ["cpu", "coreml", "xnnpack", "tensorrt", "migraphx"]
+all-providers = ["cpu", "coreml", "xnnpack", "openvino", "tensorrt", "migraphx"]
 
 # Regenerate `src/bindings/ort.rs` from `headers/onnxruntime_c_api.h`
 # instead of using the checked-in bindings. Requires libclang. Point

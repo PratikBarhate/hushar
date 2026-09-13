@@ -6,6 +6,7 @@ pub(crate) mod batch;
 pub(crate) mod input_builder;
 pub(crate) mod onnx_backend;
 pub(crate) mod scoring;
+pub(crate) mod traffic_split;
 pub(crate) mod transformations;
 
 pub(crate) use backend::InferenceBackend;

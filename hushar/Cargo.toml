@@ -17,11 +17,12 @@ default = ["cpu"]
 cpu = ["onnxrt-rs/cpu"]
 coreml = ["onnxrt-rs/coreml"]
 xnnpack = ["onnxrt-rs/xnnpack"]
+openvino = ["onnxrt-rs/openvino"]
 tensorrt = ["onnxrt-rs/tensorrt"]
 migraphx = ["onnxrt-rs/migraphx"]
 # Must list hushar's own features, not just forward to onnxrt-rs: the
 # per-accelerator test modules are gated on *these* names.
-all-providers = ["cpu", "coreml", "xnnpack", "tensorrt", "migraphx"]
+all-providers = ["cpu", "coreml", "xnnpack", "openvino", "tensorrt", "migraphx"]
 
 [dependencies]
 aws-config = { workspace = true }
@@ -31,6 +32,7 @@ aws-sdk-s3 = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 half = { workspace = true }
+libc = { workspace = true }
 onnxrt-rs = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }

@@ -1,5 +1,20 @@
 {
-  "connection_concurrency": 50,
+  "bind_address": "0.0.0.0",
   "port_number": 8279,
-  "model_config_path": "test-data/model_config_vectorized.json"
+  "model_config_path": "test-data/model_config_vectorized.json",
+  "threading": {
+    "worker_threads": 2,
+    "inference_concurrency": 8,
+    "intra_op_threads": 1
+  },
+  "inference_log": {
+    "uri": "/tmp/hushar-inference-logs",
+    "batch_size": 5000,
+    "sample_rate": 1.0,
+    "max_sends_in_flight": 4
+  },
+  "metrics": {
+    "batch_size": 500,
+    "max_sends_in_flight": 4
+  }
 }

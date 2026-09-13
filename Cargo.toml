@@ -33,6 +33,10 @@ futures = "0.3.34"
 # `f32`; that is irrelevant here, where f16 is transported and the engine
 # computes.
 half = "2.7.1"
+# Only for `sched_setaffinity`, to pin threads to cores. The server runs on Linux;
+# every other target compiles the pinning out and says so at startup rather than
+# pretending it worked.
+libc = "0.2.180"
 # Command-line parsing with derive and environment-variable fallback, so a
 # container can be configured from the environment and a developer from flags.
 clap = { version = "4.6.6", features = ["derive", "env"] }

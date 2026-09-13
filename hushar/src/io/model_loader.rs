@@ -21,9 +21,11 @@ use crate::inference::{InferenceBackend, OnnxRuntimeBackend};
 /// * `execution_provider` - the hardware backend, as spelled in the service
 ///   config; see [`crate::config::HusharServiceConfig::execution_provider`]
 /// * `intra_op_threads` - threads ONNX Runtime may use within one operator
-/// * `fixed_batch_size` - the row count this deployment serves, when the model
-///   configuration declares one. A model with a pinned leading dimension loads only
-///   when this agrees with it.
+/// * `session_options` - ONNX Runtime's string-keyed session settings, such as
+///   thread affinity and spinning
+/// * `mini_batch` - how this deployment cuts a request's rows, when the model
+///   configuration says to. A model with a pinned leading dimension loads only when a
+///   padded size agrees with it.
 ///
 /// # Errors
 ///
@@ -34,12 +36,58 @@ pub fn load_onnx_model(
     model_bytes: &[u8],
     execution_provider: &str,
     intra_op_threads: i32,
-    fixed_batch_size: Option<usize>,
+    session_options: &[(String, String)],
+    mini_batch: Option<crate::inference::scoring::MiniBatch>,
 ) -> Result<Arc<dyn InferenceBackend>, crate::inference::InferenceError> {
     let provider: ExecutionProvider = execution_provider.parse()?;
     let threads = (intra_op_threads > 0).then_some(intra_op_threads);
-    let backend = OnnxRuntimeBackend::load(model_bytes, &provider, threads, fixed_batch_size)?;
+    let backend =
+        OnnxRuntimeBackend::load(model_bytes, &provider, threads, mini_batch, session_options)?;
     Ok(Arc::new(backend))
+}
+
+/// Loads the same model into one session per entry in `session_options`.
+///
+/// One session per pool, rather than one session shared by every caller. The intra-op pool
+/// belongs to the session, so this is the only way to give concurrent requests pools that
+/// do not contend — and each entry carries its own
+/// `session.intra_op_thread_affinities`, which is what keeps a pool on its own cores.
+///
+/// Every session reads the same bytes, so the weights are duplicated: memory is
+/// `sessions x model size`. The graph and its signature are identical by construction,
+/// which is what lets the caller describe the set from any one of them.
+///
+/// # Errors
+///
+/// As [`load_onnx_model`]. The first failure is returned, naming the session that hit it,
+/// since a partially loaded set is of no use.
+pub fn load_onnx_sessions(
+    model_bytes: &[u8],
+    execution_provider: &str,
+    intra_op_threads: i32,
+    session_options: &[Vec<(String, String)>],
+    mini_batch: Option<crate::inference::scoring::MiniBatch>,
+) -> Result<Vec<Arc<dyn InferenceBackend>>, crate::inference::InferenceError> {
+    session_options
+        .iter()
+        .enumerate()
+        .map(|(index, options)| {
+            load_onnx_model(
+                model_bytes,
+                execution_provider,
+                intra_op_threads,
+                options,
+                mini_batch,
+            )
+            .map_err(|e| {
+                crate::inference::InferenceError::from(format!(
+                    "session {} of {}: {e}",
+                    index + 1,
+                    session_options.len()
+                ))
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -124,7 +172,7 @@ mod tests {
     /// feature leaves it unused.
     #[allow(dead_code)]
     fn scores_on(model: &[u8], provider: &str) -> Option<Vec<f32>> {
-        match load_onnx_model(model, provider, 1, None) {
+        match load_onnx_model(model, provider, 1, &[], None) {
             Ok(backend) => {
                 let rows = run_rows(&backend, single_row(), 1)
                     .unwrap_or_else(|e| panic!("{provider} inference failed: {e}"));
@@ -187,7 +235,7 @@ mod tests {
             return Ok(());
         }
 
-        let backend = load_onnx_model(&model, "cpu", 1, None)?;
+        let backend = load_onnx_model(&model, "cpu", 1, &[], None)?;
         assert_eq!(
             backend.inputs().len(),
             1,
@@ -219,7 +267,7 @@ mod tests {
             return Ok(());
         }
 
-        let backend = load_onnx_model(&model, "cpu", 1, None)?;
+        let backend = load_onnx_model(&model, "cpu", 1, &[], None)?;
         let batch = vec![1.0f32, 2.0, 3.0, 0.5, 1.0, 1.5];
         let predictions = run_rows(&backend, batch, 2)?;
 
@@ -239,8 +287,8 @@ mod tests {
         if !runtime_available() {
             return Ok(());
         }
-        let err =
-            load_onnx_model(&model, "tensorrt:not-a-device", 1, None).expect_err("bad device id");
+        let err = load_onnx_model(&model, "tensorrt:not-a-device", 1, &[], None)
+            .expect_err("bad device id");
         assert!(
             err.to_string().contains("device id"),
             "unhelpful message: {err}"
@@ -259,7 +307,7 @@ mod tests {
             return Ok(());
         }
         for (input, expected) in [("cuda", "tensorrt"), ("rocm", "migraphx")] {
-            let err = load_onnx_model(&model, input, 1, None).expect_err("should be rejected");
+            let err = load_onnx_model(&model, input, 1, &[], None).expect_err("should be rejected");
             assert!(
                 err.to_string().contains(expected),
                 "{input:?} should point at {expected:?}, got: {err}"
@@ -279,7 +327,7 @@ mod tests {
         if !runtime_available() {
             return Ok(());
         }
-        let err = load_onnx_model(&model, "NoSuchAccelerator", 1, None)
+        let err = load_onnx_model(&model, "NoSuchAccelerator", 1, &[], None)
             .expect_err("provider does not exist");
         let message = err.to_string();
         assert!(
@@ -294,7 +342,7 @@ mod tests {
         if !runtime_available() {
             return Ok(());
         }
-        assert!(load_onnx_model(&[0, 1, 2, 3], "cpu", 1, None).is_err());
+        assert!(load_onnx_model(&[0, 1, 2, 3], "cpu", 1, &[], None).is_err());
         Ok(())
     }
 
@@ -331,7 +379,7 @@ mod tests {
                 let model = Arc::clone(&model);
                 std::thread::spawn(move || -> Result<(), String> {
                     for round in 0..12 {
-                        let backend = load_onnx_model(&model, "cpu", 1, None)
+                        let backend = load_onnx_model(&model, "cpu", 1, &[], None)
                             .map_err(|e| format!("thread {i} round {round} load: {e}"))?;
                         let predictions = run_rows(&backend, vec![1.0f32, 2.0, 3.0], 1)
                             .map_err(|e| format!("thread {i} round {round} run: {e}"))?;

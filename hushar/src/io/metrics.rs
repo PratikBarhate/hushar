@@ -42,10 +42,15 @@ pub(crate) trait MetricsSink: Debug + Send + Sync {
     /// buffer it spawns the publish. Nothing here awaits a network call, because one
     /// request in every `batch_size` would then carry a CloudWatch round trip.
     ///
+    /// `model_id` is the model that produced them. It is a parameter rather than a
+    /// property of the sink because one process may serve two models during a
+    /// roll-out, and averaging their timings together would hide the very difference
+    /// the roll-out exists to measure.
+    ///
     /// # Panics
     ///
     /// If called outside a tokio runtime, since the publish is spawned.
-    fn record(&self, timings: &InferenceMicros);
+    fn record(&self, model_id: &str, timings: &InferenceMicros);
 
     /// Pushes anything buffered and waits for the sends already in the air.
     ///
@@ -93,7 +98,10 @@ const CLOUDWATCH_MAX_BATCHED_DATUMS: usize =
 #[derive(Debug)]
 pub(crate) struct StderrMetrics {
     every: usize,
-    state: std::sync::Mutex<Aggregate>,
+    /// One aggregate per model, so a roll-out's two arms are summarised separately.
+    /// A map rather than a pair because the sink does not know how many models the
+    /// service loaded, and it should not have to.
+    state: std::sync::Mutex<std::collections::BTreeMap<String, Aggregate>>,
 }
 
 /// Running totals between summaries.
@@ -109,19 +117,22 @@ impl StderrMetrics {
     pub(crate) fn new(every: usize) -> Self {
         Self {
             every: every.max(1),
-            state: std::sync::Mutex::new(Aggregate::default()),
+            state: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         }
     }
 
     /// Recovers the guard even if a previous holder panicked.
     ///
     /// Metrics are not worth propagating a poisoning panic into the service.
-    fn lock(&self) -> std::sync::MutexGuard<'_, Aggregate> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<String, Aggregate>> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Renders and clears the running totals.
-    fn emit(state: &mut Aggregate) {
+    /// Renders and clears one model's running totals.
+    ///
+    /// The model is named on every line, because two arms writing unlabelled lines to
+    /// the same stream would be indistinguishable.
+    fn emit(model_id: &str, state: &mut Aggregate) {
         if state.batches == 0 {
             return;
         }
@@ -132,7 +143,7 @@ impl StderrMetrics {
             .map(|(name, total)| format!("{name} {}", total / n))
             .collect();
         eprintln!(
-            "metrics: {} batches | mean us: {} | max InferenceTime {}",
+            "metrics: {model_id} | {} batches | mean us: {} | max InferenceTime {}",
             state.batches,
             means.join(", "),
             state.max_inference
@@ -151,20 +162,26 @@ impl MetricsSink for StderrMetrics {
         self.every
     }
 
-    fn record(&self, timings: &InferenceMicros) {
-        let mut state = self.lock();
+    fn record(&self, model_id: &str, timings: &InferenceMicros) {
+        let mut models = self.lock();
+        let state = models.entry(model_id.to_owned()).or_default();
         state.batches += 1;
         state.totals[0] += timings.vec_time;
         state.totals[1] += timings.tensor_time;
         state.totals[2] += timings.inference_time;
         state.max_inference = state.max_inference.max(timings.inference_time);
+        // Counted per model, so each arm's line covers the same number of batches. A
+        // shared counter would make the minority arm's line an average over a handful.
         if state.batches as usize >= self.every {
-            Self::emit(&mut state);
+            Self::emit(model_id, state);
         }
     }
 
     async fn flush(&self) {
-        Self::emit(&mut self.lock());
+        let mut models = self.lock();
+        for (model_id, state) in models.iter_mut() {
+            Self::emit(model_id, state);
+        }
     }
 }
 
@@ -252,7 +269,7 @@ pub(crate) struct CloudWatchMetrics {
 impl CloudWatchMetrics {
     /// `batches` is scored batches, not data points.
     ///
-    /// The unit is batches so that one `--metrics-batch-size` means the same thing
+    /// The unit is batches so that one `metrics.batch_size` means the same thing
     /// here as it does on stderr; an earlier version counted data points here and
     /// batches there, so the same number meant 500 summaries in one place and 167 in
     /// the other. Each batch contributes one data point per stage, and
@@ -288,15 +305,22 @@ impl MetricsSink for CloudWatchMetrics {
         self.accumulator.capacity() / STAGES.len()
     }
 
-    fn record(&self, timings: &InferenceMicros) {
+    fn record(&self, model_id: &str, timings: &InferenceMicros) {
         let values = [
             timings.vec_time,
             timings.tensor_time,
             timings.inference_time,
         ];
+        // A dimension rather than a metric name per model, so one alarm and one graph
+        // cover every arm, and a roll-out does not need new dashboards to be watched.
+        let model = aws_sdk_cloudwatch::types::Dimension::builder()
+            .name("ModelId")
+            .value(model_id)
+            .build();
         let datums = STAGES.iter().zip(values).map(|(name, micros)| {
             aws_sdk_cloudwatch::types::MetricDatum::builder()
                 .metric_name(*name)
+                .dimensions(model.clone())
                 .value(micros as f64)
                 .unit(aws_sdk_cloudwatch::types::StandardUnit::Microseconds)
                 .build()
@@ -327,53 +351,123 @@ mod tests {
         }
     }
 
+    /// The model a single-model test records under. Any name will do; what matters is
+    /// that it is the same one the assertion looks up.
+    const MODEL: &str = "test-model";
+
+    /// Batches held for `model`, or zero when nothing has been recorded for it.
+    fn batches(sink: &StderrMetrics, model: &str) -> u64 {
+        sink.lock().get(model).map_or(0, |state| state.batches)
+    }
+
     #[tokio::test]
     async fn the_stderr_sink_aggregates_rather_than_logging_every_batch() {
         let sink = StderrMetrics::new(3);
-        sink.record(&timings(1, 2, 3));
-        sink.record(&timings(1, 2, 3));
-        assert_eq!(sink.lock().batches, 2, "still holding at two of three");
+        sink.record(MODEL, &timings(1, 2, 3));
+        sink.record(MODEL, &timings(1, 2, 3));
+        assert_eq!(batches(&sink, MODEL), 2, "still holding at two of three");
 
-        sink.record(&timings(1, 2, 3));
+        sink.record(MODEL, &timings(1, 2, 3));
         assert_eq!(
-            sink.lock().batches,
+            batches(&sink, MODEL),
             0,
             "the interval should reset after emitting, so nothing is double-counted"
+        );
+    }
+
+    /// The reason the dimension exists: a roll-out's arms must not average together,
+    /// or the difference the roll-out is measuring disappears into one number.
+    #[tokio::test]
+    async fn two_models_are_aggregated_separately() {
+        let sink = StderrMetrics::new(1000);
+        sink.record("control", &timings(0, 0, 10));
+        sink.record("control", &timings(0, 0, 30));
+        sink.record("candidate", &timings(0, 0, 100));
+
+        assert_eq!(batches(&sink, "control"), 2);
+        assert_eq!(batches(&sink, "candidate"), 1);
+        let state = sink.lock();
+        assert_eq!(
+            state["control"].totals[2], 40,
+            "control keeps its own total"
+        );
+        assert_eq!(
+            state["candidate"].totals[2], 100,
+            "the candidate's slower batch must not be charged to the control"
+        );
+        assert_eq!(state["control"].max_inference, 30);
+        assert_eq!(state["candidate"].max_inference, 100);
+    }
+
+    /// Each arm's line covers the same number of batches, so a 10% candidate emits a
+    /// tenth as often rather than emitting an average over a handful.
+    #[tokio::test]
+    async fn the_interval_is_counted_per_model() {
+        let sink = StderrMetrics::new(2);
+        sink.record("control", &timings(0, 0, 1));
+        sink.record("candidate", &timings(0, 0, 1));
+        assert_eq!(
+            (batches(&sink, "control"), batches(&sink, "candidate")),
+            (1, 1),
+            "one batch each is not two batches for one model"
+        );
+
+        sink.record("control", &timings(0, 0, 1));
+        assert_eq!(
+            batches(&sink, "control"),
+            0,
+            "control reached two and emitted"
+        );
+        assert_eq!(
+            batches(&sink, "candidate"),
+            1,
+            "the candidate still holds one"
         );
     }
     /// A mean hides the tail, and the tail is where a latency investigation starts.
     #[tokio::test]
     async fn the_maximum_is_kept_not_averaged_away() {
         let sink = StderrMetrics::new(1000);
-        sink.record(&timings(0, 0, 5));
-        sink.record(&timings(0, 0, 900));
-        sink.record(&timings(0, 0, 7));
+        sink.record(MODEL, &timings(0, 0, 5));
+        sink.record(MODEL, &timings(0, 0, 900));
+        sink.record(MODEL, &timings(0, 0, 7));
 
         let state = sink.lock();
-        assert_eq!(state.max_inference, 900);
-        assert_eq!(state.totals[2], 912);
+        assert_eq!(state[MODEL].max_inference, 900);
+        assert_eq!(state[MODEL].totals[2], 912);
     }
     /// Whatever is buffered at shutdown is exactly the window where the metrics matter
     /// most, so it must not be dropped.
     #[tokio::test]
     async fn flushing_emits_a_partial_interval() {
         let sink = StderrMetrics::new(1000);
-        sink.record(&timings(1, 1, 1));
+        sink.record(MODEL, &timings(1, 1, 1));
         sink.flush().await;
-        assert_eq!(sink.lock().batches, 0);
+        assert_eq!(batches(&sink, MODEL), 0);
+    }
+
+    /// Both arms' partial intervals, not just whichever was seen last.
+    #[tokio::test]
+    async fn flushing_emits_every_model() {
+        let sink = StderrMetrics::new(1000);
+        sink.record("control", &timings(1, 1, 1));
+        sink.record("candidate", &timings(1, 1, 1));
+        sink.flush().await;
+        assert_eq!(batches(&sink, "control"), 0);
+        assert_eq!(batches(&sink, "candidate"), 0);
     }
     /// The service can stop before any batch arrives.
     #[tokio::test]
     async fn flushing_nothing_is_harmless() {
         StderrMetrics::new(10).flush().await;
-        assert_eq!(StderrMetrics::new(10).lock().batches, 0);
+        assert_eq!(batches(&StderrMetrics::new(10), MODEL), 0);
     }
 
     #[tokio::test]
     async fn a_zero_interval_does_not_divide_by_zero() {
         let sink = StderrMetrics::new(0);
-        sink.record(&timings(1, 1, 1));
-        assert_eq!(sink.lock().batches, 0);
+        sink.record(MODEL, &timings(1, 1, 1));
+        assert_eq!(batches(&sink, MODEL), 0);
         assert_eq!(sink.batch_size(), 1);
     }
     /// The property the request path relies on: one sink, every handler, no `&mut`.
@@ -384,7 +478,7 @@ mod tests {
         for _ in 0..4 {
             let sink = Arc::clone(&sink);
             handles.push(tokio::spawn(async move {
-                sink.record(&timings(1, 1, 1));
+                sink.record(MODEL, &timings(1, 1, 1));
             }));
         }
         for handle in handles {
@@ -432,14 +526,14 @@ mod tests {
     #[tokio::test]
     async fn cloudwatch_buffers_until_it_reaches_the_configured_batch_count() {
         let sink = offline_cloudwatch(2);
-        sink.record(&timings(1, 2, 3));
+        sink.record(MODEL, &timings(1, 2, 3));
         assert_eq!(
             sink.accumulator.buffered(),
             3,
             "one batch, three data points"
         );
 
-        sink.record(&timings(1, 2, 3));
+        sink.record(MODEL, &timings(1, 2, 3));
         assert_eq!(
             sink.accumulator.buffered(),
             0,
@@ -447,7 +541,7 @@ mod tests {
         );
     }
     /// The unit is batches on both sinks, which is the whole reason a single
-    /// `--metrics-batch-size` can feed either without meaning two different things.
+    /// `metrics.batch_size` can feed either without meaning two different things.
     #[tokio::test]
     async fn the_configured_size_is_batches_on_both_sinks() {
         assert_eq!(offline_cloudwatch(100).batch_size(), 100);
@@ -488,7 +582,7 @@ mod tests {
 
             // Fill to exactly the reported batch count and confirm it fired there.
             for _ in 0..sink.batch_size() {
-                sink.record(&timings(1, 1, 1));
+                sink.record(MODEL, &timings(1, 1, 1));
             }
             assert_eq!(
                 sink.accumulator.buffered(),
@@ -559,7 +653,7 @@ mod tests {
         let sink = offline_cloudwatch(1);
         let start = std::time::Instant::now();
         for _ in 0..50 {
-            sink.record(&timings(1, 1, 1));
+            sink.record(MODEL, &timings(1, 1, 1));
         }
         let recording = start.elapsed();
         assert!(

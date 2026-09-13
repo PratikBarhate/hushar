@@ -5,10 +5,23 @@
 # is generated on demand rather than committed. See benchmark-data/README.md.
 benchmark-data/generated/
 
+# Bundles from scripts/benchmark/package.sh -- a build artifact of the working tree.
+benchmark-data/dist/
+
 # Client and server logs and the summary table a run leaves behind. The curated
 # reports in benchmark-data/results/ are what is tracked; the output they were
 # written from is not.
 benchmark-data/results/raw/
+
+# Runbooks and working notes for our own benchmark campaigns. These name accounts,
+# regions, bucket names and instance types we happen to be using, which is operational
+# detail rather than anything a reader of this repository needs. The reusable parts of a
+# campaign belong in documentation/ and benchmark-data/results/ instead.
+benchmark-data/private/
+
+# Written by scripts/benchmark/bootstrap.sh on a benchmark instance: that host's
+# ORT_DYLIB_PATH and provider, which are per-host and not the repository's business.
+/env.sh
 
 # Rust build output #
 #####################

@@ -4,13 +4,19 @@
 //! Offers a fixed request rate at a running server and reports what came back.
 //!
 //! Local by default -- percentiles on stdout, no credentials needed. CloudWatch is
-//! opt-in with `--cloudwatch-namespace`, the same way the server treats its own
-//! metrics, so a laptop run needs nothing set up.
+//! opt-in with `--cloudwatch-namespace`, so a laptop run needs nothing set up. The
+//! server makes the same choice the same way, though from `metrics.cloudwatch_namespace`
+//! in its configuration rather than a flag: it is a load generator, not a deployment.
 //!
 //! Features are generated from the model configuration the server was started with,
 //! rather than hard-coded here. A client that invents its own feature names sends
 //! values that match nothing, every feature falls back to its default, and the
 //! benchmark measures a request path it will never see in production.
+//!
+//! A model that does its own featurization has no feature configuration to read -- its
+//! inputs *are* the features -- so for those `--feature-spec` names the file written
+//! beside the model, which says the same thing in the only terms a generator needs: a
+//! range, a width, or a word list.
 //!
 //! ```bash
 //! cargo run --release -p benchmark-client -- \
@@ -60,17 +66,32 @@ struct Args {
     ///
     /// The first requests to a freshly loaded model are not representative: an
     /// execution provider may compile the graph on first use, and nothing is in cache
-    /// yet. CoreML in particular pays for its first inference.
+    /// yet. TensorRT in particular pays seconds for its first inference.
     #[arg(long, env = "BENCH_WARMUP_SECS", default_value_t = 10)]
     warmup_secs: u64,
 
     /// Rows in one request.
-    #[arg(long, env = "BENCH_ROWS", default_value_t = 1)]
+    #[arg(long, env = "BENCH_ROWS", default_value_t = 100)]
     rows: usize,
 
-    /// Requests allowed in flight at once.
-    #[arg(long, env = "BENCH_CONCURRENCY", default_value_t = 64)]
-    concurrency: usize,
+    /// Requests allowed in flight at once. Defaults to four seconds' worth.
+    ///
+    /// In flight has to cover `tps × latency`, so a fixed number throttles the high
+    /// rates and a number equal to `tps` permits only a one-second response. Left
+    /// unset it is `tps × 4`, which keeps this generator from being the bottleneck --
+    /// the server is what is being measured. Set it to make the cap deliberate.
+    #[arg(long, env = "BENCH_CONCURRENCY")]
+    concurrency: Option<usize>,
+
+    /// Ask the server for one model by name, instead of letting it choose.
+    ///
+    /// A server mid-roll-out splits unnamed requests between its two arms by the
+    /// percentage in its configuration. Naming a model overrides that, which is how a
+    /// caller that already decided -- from an experiment bucket, say -- keeps the two
+    /// decisions from disagreeing. Unset leaves the choice to the server, which is what
+    /// a benchmark of the split wants.
+    #[arg(long, env = "BENCH_MODEL_ID")]
+    model_id: Option<String>,
 
     /// The model configuration the server was started with.
     #[arg(long, env = "BENCH_MODEL_CONFIG")]
@@ -83,6 +104,14 @@ struct Args {
     /// exercises only the out-of-vocabulary row.
     #[arg(long, env = "BENCH_VOCABULARY")]
     vocabulary: Option<PathBuf>,
+
+    /// What to send for each feature, for a model that does its own featurization.
+    ///
+    /// Required exactly when the model configuration has no `vectorization_config`:
+    /// there is then nothing in it that names a feature, because the graph's inputs are
+    /// the features. Ignored otherwise, where the configuration is the better authority.
+    #[arg(long, env = "BENCH_FEATURE_SPEC")]
+    feature_spec: Option<PathBuf>,
 
     /// Send results to CloudWatch under this namespace as well as stdout.
     #[arg(long, env = "BENCH_CLOUDWATCH_NAMESPACE")]
@@ -132,13 +161,26 @@ impl Generator {
 /// 64-bit scaler wants a double, an identity wants as many numbers as its default is
 /// wide. A named string input has no transformation at all -- it reaches the model
 /// verbatim -- so its words come from the vocabulary file instead.
+///
+/// A configuration with no `vectorization_config` is a model that featurizes itself, and
+/// then there is nothing here to read: `feature_spec` says what to send instead.
 fn generators(
     config: &serde_json::Value,
     vocabulary: &HashMap<String, Vec<String>>,
+    feature_spec: Option<&serde_json::Value>,
 ) -> Result<Vec<(String, Generator)>, String> {
-    let vectorization = config
-        .get("vectorization_config")
-        .ok_or("the model configuration declares no vectorization_config")?;
+    let Some(vectorization) = config.get("vectorization_config") else {
+        return match feature_spec {
+            Some(spec) => from_feature_spec(spec),
+            None => Err(
+                "the model configuration has no vectorization_config, so it names no \
+                 features -- this model does its own featurization. Pass --feature-spec \
+                 with the file written beside it, such as \
+                 benchmark-data/generated/bench_raw_feature_spec.json"
+                    .to_owned(),
+            ),
+        };
+    };
     let transformations = vectorization
         .get("feature_transformations")
         .and_then(|t| t.as_object())
@@ -246,11 +288,86 @@ fn generators(
         .collect()
 }
 
+/// Reads a feature specification into one generator per feature.
+///
+/// One entry per feature, and each says only what a generator needs:
+///
+/// ```json
+/// {
+///   "mm32_price": { "kind": "float",  "low": 0.0, "high": 10000.0 },
+///   "sd64_income": { "kind": "double", "low": -30000.0, "high": 180000.0 },
+///   "id_vector":  { "kind": "float_array", "width": 8 },
+///   "oh_color":   { "kind": "choice", "words": ["oh_color_c_0000"] }
+/// }
+/// ```
+///
+/// `float` against `double` is not a precision preference: it is which protobuf field
+/// the value travels in, and an FP64 model input takes a double and refuses a float.
+///
+/// Written by the model generator from the same schema the model was built from, so the
+/// values land in the range the graph's own scaling was defined for. A missing bound is
+/// an error rather than a guess -- a silently substituted range would make the run
+/// measure something other than what the file describes.
+fn from_feature_spec(spec: &serde_json::Value) -> Result<Vec<(String, Generator)>, String> {
+    let features = spec
+        .as_object()
+        .ok_or("the feature specification is not a JSON object of feature -> spec")?;
+
+    features
+        .iter()
+        .map(|(name, entry)| {
+            let kind = entry
+                .get("kind")
+                .and_then(|k| k.as_str())
+                .ok_or_else(|| format!("feature {name:?} has no kind"))?;
+            let bound = |key: &str| {
+                entry
+                    .get(key)
+                    .and_then(|v| v.as_f64())
+                    .ok_or_else(|| format!("feature {name:?} is {kind} but has no {key}"))
+            };
+            let generator = match kind {
+                "float" => Generator::Float(bound("low")? as f32, bound("high")? as f32),
+                "double" => Generator::Double(bound("low")?, bound("high")?),
+                "float_array" => Generator::FloatVector(
+                    entry
+                        .get("width")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| format!("feature {name:?} is an array with no width"))?
+                        as usize,
+                ),
+                "choice" => Generator::Choice(
+                    entry
+                        .get("words")
+                        .and_then(|w| w.as_array())
+                        .map(|w| {
+                            w.iter()
+                                .filter_map(|v| v.as_str().map(str::to_owned))
+                                .collect::<Vec<_>>()
+                        })
+                        .filter(|w| !w.is_empty())
+                        .ok_or_else(|| format!("feature {name:?} is a choice with no words"))?,
+                ),
+                other => return Err(format!("unknown kind {other:?} for feature {name:?}")),
+            };
+            Ok((name.clone(), generator))
+        })
+        .collect()
+}
+
 /// One request, with fresh values for every feature of every row.
-fn request(id: u64, rows: usize, generators: &[(String, Generator)]) -> InferenceRequest {
+///
+/// `model_id` empty leaves the choice to the server's configured split.
+fn request(
+    id: u64,
+    rows: usize,
+    generators: &[(String, Generator)],
+    model_id: &str,
+) -> InferenceRequest {
     let mut rng = rand::rng();
     InferenceRequest {
         request_id: format!("bench-{id}"),
+        model_id: model_id.to_owned(),
         inputs: (0..rows)
             .map(|row| InputRow {
                 row_id: format!("row-{row}"),
@@ -267,7 +384,7 @@ fn request(id: u64, rows: usize, generators: &[(String, Generator)]) -> Inferenc
 #[derive(Debug)]
 struct Percentiles {
     p50: f64,
-    p90: f64,
+    p95: f64,
     p99: f64,
     max: f64,
     mean: f64,
@@ -285,7 +402,7 @@ impl Percentiles {
             |q: f64| latencies[((latencies.len() as f64 * q) as usize).min(latencies.len() - 1)];
         Some(Self {
             p50: at(0.50),
-            p90: at(0.90),
+            p95: at(0.95),
             p99: at(0.99),
             max: latencies[latencies.len() - 1],
             mean: latencies.iter().sum::<f64>() / latencies.len() as f64,
@@ -304,7 +421,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(path) => serde_json::from_str(&std::fs::read_to_string(path)?)?,
         None => HashMap::new(),
     };
-    let generators = Arc::new(generators(&config, &vocabulary).map_err(|e| e.to_string())?);
+    let feature_spec: Option<serde_json::Value> = match &args.feature_spec {
+        Some(path) => Some(
+            serde_json::from_str(&std::fs::read_to_string(path)?)
+                .map_err(|e| format!("{}: {e}", path.display()))?,
+        ),
+        None => None,
+    };
+    let generators = Arc::new(
+        generators(&config, &vocabulary, feature_spec.as_ref()).map_err(|e| e.to_string())?,
+    );
 
     let model_id = config
         .get("model_id")
@@ -324,13 +450,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  model     : {model_id} on {provider}");
     println!("  features  : {} per row", generators.len());
     println!(
-        "  offering  : {} req/s x {} row(s), {} in flight, {}s warmup + {}s measured",
-        args.tps, args.rows, args.concurrency, args.warmup_secs, args.duration_secs
+        "  asking    : {}",
+        args.model_id
+            .as_deref()
+            .map_or("whichever the server's split chooses", |m| m)
+    );
+    // Sized from the rate unless pinned, and reported either way: the cap decides
+    // whether `shed` is the client running out or the server refusing, and a reader
+    // cannot tell those apart without knowing which of the two produced this number.
+    let concurrency = args
+        .concurrency
+        .unwrap_or_else(|| ((args.tps as usize).saturating_mul(4)).max(8));
+    let sizing = if args.concurrency.is_some() {
+        "pinned"
+    } else {
+        "4s of latency"
+    };
+    println!(
+        "  offering  : {} req/s x {} row(s), {} in flight ({}), {}s warmup + {}s measured",
+        args.tps, args.rows, concurrency, sizing, args.warmup_secs, args.duration_secs
     );
 
     let client = HusharClient::connect(args.server.clone()).await?;
-    let permits = Arc::new(Semaphore::new(args.concurrency));
-    let latencies = Arc::new(std::sync::Mutex::new(Vec::<f64>::new()));
+    // Shared rather than cloned per request: every request in a run asks for the same
+    // model, and an empty string is the "server decides" case.
+    let requested_model: Arc<str> = Arc::from(args.model_id.clone().unwrap_or_default());
+    let permits = Arc::new(Semaphore::new(concurrency));
+    // Paired with the model that answered, so a roll-out's arms can be reported
+    // separately. The server chooses when the request does not name one, so this is the
+    // only place the split can be observed from the caller's side.
+    let latencies = Arc::new(std::sync::Mutex::new(Vec::<(String, f64)>::new()));
     let (sent, failed, shed) = (
         Arc::new(AtomicU64::new(0)),
         Arc::new(AtomicU64::new(0)),
@@ -369,6 +518,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             };
             let (mut client, generators) = (client.clone(), Arc::clone(&generators));
+            let model_for_task = Arc::clone(&requested_model);
             let (latencies, sent, failed) = (
                 Arc::clone(&latencies),
                 Arc::clone(&sent),
@@ -376,16 +526,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             let measuring_from = start + warmup;
             tokio::spawn(async move {
-                let payload = request(id, args.rows, &generators);
+                let payload = request(id, args.rows, &generators, &model_for_task);
                 let began = Instant::now();
                 let outcome = client.inference_service(payload).await;
                 let elapsed = began.elapsed().as_secs_f64() * 1000.0;
-                if outcome.is_err() {
-                    failed.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    sent.fetch_add(1, Ordering::Relaxed);
-                    if began >= measuring_from {
-                        latencies.lock().expect("latencies").push(elapsed);
+                match outcome {
+                    Err(_) => {
+                        failed.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Ok(response) => {
+                        sent.fetch_add(1, Ordering::Relaxed);
+                        if began >= measuring_from {
+                            let served_by = response.into_inner().model_id;
+                            latencies
+                                .lock()
+                                .expect("latencies")
+                                .push((served_by, elapsed));
+                        }
                     }
                 }
                 drop(permit);
@@ -394,24 +551,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Let what is in flight finish, so the last requests are not counted as failures.
-    let _ = permits.acquire_many(args.concurrency as u32).await;
+    let _ = permits.acquire_many(concurrency as u32).await;
 
-    let mut measured = std::mem::take(&mut *latencies.lock().expect("latencies"));
+    let served = std::mem::take(&mut *latencies.lock().expect("latencies"));
+    // Grouped before the overall numbers are taken, because a split run's headline is
+    // the pair rather than the average of the two.
+    let mut per_arm: std::collections::BTreeMap<String, Vec<f64>> = Default::default();
+    for (arm, elapsed) in &served {
+        per_arm.entry(arm.clone()).or_default().push(*elapsed);
+    }
+    let mut measured: Vec<f64> = served.iter().map(|(_, elapsed)| *elapsed).collect();
     let counts = (
         sent.load(Ordering::Relaxed),
         failed.load(Ordering::Relaxed),
         shed.load(Ordering::Relaxed),
     );
-    report(&args, &mut measured, counts, model_id, provider).await
+    report(
+        &args,
+        &mut measured,
+        &mut per_arm,
+        counts,
+        model_id,
+        provider,
+        concurrency,
+    )
+    .await
 }
 
 /// Prints the result, and sends it to CloudWatch when a namespace was given.
 async fn report(
     args: &Args,
     measured: &mut [f64],
+    per_arm: &mut std::collections::BTreeMap<String, Vec<f64>>,
     counts: (u64, u64, u64),
     model_id: &str,
     provider: &str,
+    concurrency: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (succeeded, failed, shed) = counts;
     let offered = u64::from(args.tps) * (args.warmup_secs + args.duration_secs);
@@ -433,14 +608,40 @@ async fn report(
         measured.len()
     );
     println!("  latency  p50  : {:>9.2} ms", p.p50);
-    println!("           p90  : {:>9.2} ms", p.p90);
+    println!("           p95  : {:>9.2} ms", p.p95);
     println!("           p99  : {:>9.2} ms", p.p99);
     println!("           max  : {:>9.2} ms", p.max);
     println!("           mean : {:>9.2} ms", p.mean);
+    // Only when the server actually split, so an ordinary run's report is unchanged.
+    // The share is the split as the caller observed it, which is the number worth
+    // checking against the configured percentage -- they should agree, and if they do
+    // not, the arms are not comparable.
+    if per_arm.len() > 1 {
+        println!();
+        println!(
+            "  by model      : {:<22}{:>6}{:>9}{:>9}{:>9}{:>9}{:>11}",
+            "", "share", "req/s", "p50", "p95", "p99", "requests"
+        );
+        let total = measured.len() as f64;
+        for (arm, samples) in per_arm.iter_mut() {
+            let Some(q) = Percentiles::of(samples) else {
+                continue;
+            };
+            println!(
+                "    {arm:<24}{:>6.1}% {:>8.1} {:>8.2} {:>8.2} {:>8.2} {:>10}",
+                100.0 * samples.len() as f64 / total,
+                samples.len() as f64 / args.duration_secs as f64,
+                q.p50,
+                q.p95,
+                q.p99,
+                samples.len(),
+            );
+        }
+    }
     println!("  failed        : {failed:>9}");
     println!(
         "  shed          : {shed:>9}  (offered but never sent: {} in flight was the cap)",
-        args.concurrency
+        concurrency
     );
     if shed > offered / 100 {
         println!(
@@ -483,8 +684,8 @@ async fn emit_cloudwatch(
             StandardUnit::Milliseconds,
         ))
         .metric_data(datum(
-            "Latency_P90",
-            percentiles.p90,
+            "Latency_P95",
+            percentiles.p95,
             StandardUnit::Milliseconds,
         ))
         .metric_data(datum(

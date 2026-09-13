@@ -204,6 +204,29 @@ pub enum ExecutionProvider {
         device_id: i32,
     },
 
+    /// Intel's OpenVINO, on Intel CPU, integrated or discrete GPU, or NPU.
+    ///
+    /// The provider Intel tunes for its own hardware, and the one to reach for on a Xeon
+    /// rather than the default CPU provider. Not in any prebuilt ONNX Runtime archive: it
+    /// needs a source build with `--use_openvino`, and OpenVINO itself installed.
+    OpenVino {
+        /// OpenVINO's `device_type`. `CPU`, `GPU`, `NPU`, `GPU.0`, or one of the
+        /// multi-device forms such as `AUTO:GPU,CPU`.
+        device_type: String,
+        /// `num_of_threads`. Inference threads OpenVINO may use, `None` for its own
+        /// default of 8.
+        ///
+        /// **Deprecated upstream** since ONNX Runtime 1.23 in favour of `load_config`
+        /// with `INFERENCE_NUM_THREADS`. Still accepted, and the only way to reach the
+        /// setting from a provider string.
+        num_of_threads: Option<u32>,
+        /// `num_streams`. Parallel inference streams, `None` for its own default of 1,
+        /// which is the latency-oriented choice.
+        ///
+        /// Deprecated upstream alongside `num_of_threads`, in favour of `NUM_STREAMS`.
+        num_streams: Option<u32>,
+    },
+
     /// Any provider by name, with raw string options.
     ///
     /// An escape hatch for providers this enum does not model (QNN, OpenVINO,
@@ -218,6 +241,15 @@ pub enum ExecutionProvider {
 }
 
 impl ExecutionProvider {
+    /// OpenVINO on the CPU, with OpenVINO's own thread and stream defaults.
+    pub fn open_vino() -> Self {
+        Self::OpenVino {
+            device_type: "CPU".to_owned(),
+            num_of_threads: None,
+            num_streams: None,
+        }
+    }
+
     /// CoreML with default compute units and format.
     pub fn core_ml() -> Self {
         Self::CoreMl {
@@ -268,6 +300,7 @@ impl ExecutionProvider {
             Self::Cpu => "CPU",
             Self::CoreMl { .. } => "CoreML",
             Self::Xnnpack { .. } => "XNNPACK",
+            Self::OpenVino { .. } => "OpenVINO",
             Self::TensorRt { .. } => "TensorRT",
             Self::MiGraphx { .. } => "MIGraphX",
             Self::Custom { name, .. } => name,
@@ -283,6 +316,7 @@ impl ExecutionProvider {
             Self::Cpu => "CPUExecutionProvider",
             Self::CoreMl { .. } => "CoreMLExecutionProvider",
             Self::Xnnpack { .. } => "XnnpackExecutionProvider",
+            Self::OpenVino { .. } => "OpenVINOExecutionProvider",
             Self::TensorRt { .. } => "TensorrtExecutionProvider",
             Self::MiGraphx { .. } => "MIGraphXExecutionProvider",
             Self::Custom { name, .. } => name,
@@ -311,6 +345,7 @@ impl ExecutionProvider {
             Self::Cpu => Some("cpu"),
             Self::CoreMl { .. } => Some("coreml"),
             Self::Xnnpack { .. } => Some("xnnpack"),
+            Self::OpenVino { .. } => Some("openvino"),
             Self::TensorRt { .. } => Some("tensorrt"),
             Self::MiGraphx { .. } => Some("migraphx"),
             Self::Custom { .. } => None,
@@ -328,6 +363,7 @@ impl ExecutionProvider {
             Self::Cpu => cfg!(feature = "cpu"),
             Self::CoreMl { .. } => cfg!(feature = "coreml"),
             Self::Xnnpack { .. } => cfg!(feature = "xnnpack"),
+            Self::OpenVino { .. } => cfg!(feature = "openvino"),
             Self::TensorRt { .. } => cfg!(feature = "tensorrt"),
             Self::MiGraphx { .. } => cfg!(feature = "migraphx"),
             Self::Custom { .. } => true,
@@ -394,6 +430,23 @@ impl ExecutionProvider {
                     None => Vec::new(),
                 };
                 append_by_name(api, options, "XNNPACK", &opts)
+            }
+            // Through the generic appender, like CoreML and XNNPACK. The V2 OpenVINO
+            // entry point takes the same string map, and going through the generic one
+            // keeps this crate from binding a struct whose layout Intel may change.
+            Self::OpenVino {
+                device_type,
+                num_of_threads,
+                num_streams,
+            } => {
+                let mut opts = vec![("device_type".to_owned(), device_type.clone())];
+                if let Some(n) = num_of_threads {
+                    opts.push(("num_of_threads".to_owned(), n.to_string()));
+                }
+                if let Some(n) = num_streams {
+                    opts.push(("num_streams".to_owned(), n.to_string()));
+                }
+                append_by_name(api, options, "OpenVINO", &opts)
             }
             Self::Custom { name, options: kv } => append_by_name(api, options, name, kv),
 
@@ -517,6 +570,84 @@ impl FromStr for ExecutionProvider {
                     model_format,
                 })
             }
+            "openvino" | "open_vino" => {
+                // Tokens in any order, like CoreML: a bare token is the device, and
+                // `key=value` is an option. The device is uppercased because OpenVINO's
+                // own names are, and a lowercase `cpu` in a configuration should not be
+                // a different thing from `CPU`.
+                //
+                // A multi-device form contains a colon of its own -- `AUTO:GPU,CPU` --
+                // so the mode and its device list arrive as two tokens and are rejoined.
+                let mut device: Option<String> = None;
+                let mut num_of_threads = None;
+                let mut num_streams = None;
+                let bad = |reason: String| Error::InvalidProvider {
+                    input: s.to_owned(),
+                    reason,
+                };
+                for part in tail.into_iter().flat_map(|t| t.split(':')) {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    match part.split_once('=') {
+                        Some((key, value)) => {
+                            // The key is checked before the value is parsed, so an
+                            // option this does not model is reported as unknown rather
+                            // than as a number that would not parse.
+                            let key = key.trim().to_ascii_lowercase();
+                            let slot = match key.as_str() {
+                                "threads" | "num_of_threads" => &mut num_of_threads,
+                                "streams" | "num_streams" => &mut num_streams,
+                                other => {
+                                    return Err(bad(format!(
+                                        "unknown OpenVINO option {other:?}; expected \
+                                         threads or streams. Everything else OpenVINO \
+                                         takes goes through load_config, which a provider \
+                                         string cannot carry"
+                                    )));
+                                }
+                            };
+                            *slot = Some(value.trim().parse::<u32>().map_err(|_| {
+                                bad(format!(
+                                    "expected a positive number for OpenVINO {key:?}, \
+                                     got {value:?}"
+                                ))
+                            })?);
+                        }
+                        // A device list following a multi-device mode, rejoined onto it.
+                        None if device
+                            .as_deref()
+                            .is_some_and(|d| matches!(d, "AUTO" | "HETERO" | "MULTI")) =>
+                        {
+                            let mode = device.take().unwrap_or_default();
+                            device = Some(format!("{mode}:{}", part.to_ascii_uppercase()));
+                        }
+                        None if device.is_some() => {
+                            return Err(bad(format!(
+                                "two device types given for OpenVINO, {:?} and {part:?}; \
+                                 name one",
+                                device.unwrap_or_default()
+                            )));
+                        }
+                        None => device = Some(part.to_ascii_uppercase()),
+                    }
+                }
+                if num_of_threads == Some(0) || num_streams == Some(0) {
+                    return Err(bad(
+                        "OpenVINO threads and streams must be positive; leave the option \
+                         out for its own default"
+                            .to_owned(),
+                    ));
+                }
+                Ok(Self::OpenVino {
+                    // CPU because that is what this provider is reached for on a server;
+                    // a GPU or NPU has to be named.
+                    device_type: device.unwrap_or_else(|| "CPU".to_owned()),
+                    num_of_threads,
+                    num_streams,
+                })
+            }
             "xnnpack" => Ok(Self::Xnnpack {
                 intra_op_threads: match tail {
                     None => None,
@@ -573,6 +704,20 @@ impl std::fmt::Display for ExecutionProvider {
             Self::Xnnpack {
                 intra_op_threads: Some(n),
             } => write!(f, "XNNPACK(threads={n})"),
+            Self::OpenVino {
+                device_type,
+                num_of_threads,
+                num_streams,
+            } => {
+                write!(f, "OpenVINO({device_type}")?;
+                if let Some(n) = num_of_threads {
+                    write!(f, ", threads={n}")?;
+                }
+                if let Some(n) = num_streams {
+                    write!(f, ", streams={n}")?;
+                }
+                f.write_str(")")
+            }
             Self::TensorRt { device_id } | Self::MiGraphx { device_id } => {
                 write!(f, "{}(device={device_id})", self.name())
             }

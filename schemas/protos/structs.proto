@@ -7,11 +7,25 @@ package hushar;
 message InferenceRequest {
   string request_id = 1;
   repeated InputRow inputs = 2;
+  // Which model should serve this request. Empty means the server decides, using the
+  // traffic split in its configuration.
+  //
+  // Set it to run the split on the caller's side instead -- when the arm has to agree
+  // with a decision already made elsewhere, such as the experiment bucket a user was
+  // assigned. A name the server has not loaded is an error rather than a fallback: a
+  // request silently served by the other arm would corrupt the comparison it is part of.
+  string model_id = 3;
 }
 
 message InferenceResponse {
   string request_id = 1;
   repeated OutputRow outputs = 2;
+  // The model that actually served this request, always set.
+  //
+  // Without it a caller cannot attribute an outcome to an arm, which is the whole
+  // purpose of a split -- and it is the server that chose, so it is the server that
+  // has to say.
+  string model_id = 3;
 }
 
 message InputRow {
