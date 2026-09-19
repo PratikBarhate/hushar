@@ -36,45 +36,43 @@ impl LogLevel {
 
 /// An `OrtEnv`, which owns the runtime's logger and shared thread pools.
 ///
-/// ONNX Runtime expects one environment per process, created before any session
-/// and outliving all of them. Wrap it in an `Arc` and hand clones to whatever
-/// needs to build sessions.
+/// ONNX Runtime expects one environment per process, created before any session and
+/// outliving all of them. Wrap it in an `Arc` and hand clones to whatever needs to build
+/// sessions.
+///
+/// [`Send`] and [`Sync`] rest on `OrtEnv` being a shareable, process-wide object: ONNX
+/// Runtime serialises access to the logger and thread pools internally, and this wrapper
+/// hands out only `&Environment`, never `&mut`.
 #[derive(Debug)]
 pub struct Environment {
     pub(crate) api: Api,
     pub(crate) ptr: *mut sys::OrtEnv,
 }
 
-// SAFETY: `OrtEnv` is documented as a shareable, process-wide object; ONNX
-// Runtime serialises access to the logger and thread pools it owns internally.
-// We hand out only `&Environment` (never `&mut`), so no wrapper-level mutation
-// can race either.
 unsafe impl Send for Environment {}
 unsafe impl Sync for Environment {}
 
 impl Environment {
     /// The process-wide environment, created on first use.
     ///
-    /// **Prefer this over [`Self::new`].** ONNX Runtime allows only one
-    /// environment using the default logger to exist at a time; creating a second
-    /// fails with
+    /// **Prefer this over [`Self::new`].** ONNX Runtime allows only one environment using
+    /// the default logger to exist at a time; creating a second fails with
     ///
     /// ```text
     /// Only one instance of LoggingManager created with
     /// InstanceType::Default can exist at any point in time.
     /// ```
     ///
-    /// That makes [`Self::new`] a race whenever two threads might load a model at
-    /// once — reloading a model while serving, or simply two tests running in
-    /// parallel. This function serialises creation and hands out clones of a
-    /// single environment, so those cases are safe.
+    /// This function serialises creation and hands out clones of a single environment, so
+    /// concurrent first use is safe: two threads loading a model at once, or two tests
+    /// running in parallel. A poisoned lock is recovered from rather than propagated, so a
+    /// panicking caller does not break later ones.
     ///
-    /// The environment is cached for the lifetime of the process and is never
-    /// released, which is what ONNX Runtime wants: it must outlive every session
-    /// created in it.
+    /// The environment is cached for the lifetime of the process and is never released, as
+    /// ONNX Runtime requires: it must outlive every session created in it.
     ///
-    /// `log_id` applies only if this call is the one that creates the
-    /// environment; later calls receive the existing one and ignore it.
+    /// `log_id` applies only if this call is the one that creates the environment; later
+    /// calls receive the existing one and ignore it.
     ///
     /// ```no_run
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -88,17 +86,12 @@ impl Environment {
         static SHARED: OnceLock<Mutex<Option<Arc<Environment>>>> = OnceLock::new();
         let slot = SHARED.get_or_init(|| Mutex::new(None));
 
-        // Recover from a poisoned lock rather than propagating it: the guarded
-        // value is an `Option<Arc<_>>` that a panicking creator cannot have left
-        // in an inconsistent state.
         let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
         if let Some(existing) = guard.as_ref() {
             return Ok(Arc::clone(existing));
         }
 
-        // Held across creation deliberately: this is the serialisation that makes
-        // concurrent first-use safe.
         let env = Arc::new(Self::new(log_id)?);
         *guard = Some(Arc::clone(&env));
         Ok(env)
@@ -117,8 +110,9 @@ impl Environment {
 
     /// Creates an environment against an already-loaded [`Api`].
     ///
-    /// Telemetry is switched off; see [`Self::enable_telemetry`] for why, and for
-    /// how to turn it back on.
+    /// Telemetry is switched off; see [`Self::enable_telemetry`].
+    ///
+    /// On success the returned value owns the `OrtEnv` and releases it on drop.
     pub fn with_api(api: Api, log_id: &str, level: LogLevel) -> Result<Self> {
         let log_id = CString::new(log_id).map_err(|_| Error::InteriorNul {
             context: "environment log id",
@@ -126,9 +120,6 @@ impl Environment {
         let create_env = ort_fn!(api, CreateEnv);
 
         let mut ptr: *mut sys::OrtEnv = ptr::null_mut();
-        // SAFETY: `log_id` is a valid NUL-terminated string that outlives the
-        // call, and `ptr` is a valid out-parameter. On success ONNX Runtime
-        // writes an owned `OrtEnv` there, released in `Drop`.
         unsafe {
             api.check(create_env(level.to_raw(), log_id.as_ptr(), &mut ptr))?;
         }
@@ -141,12 +132,10 @@ impl Environment {
 
     /// Turns off ONNX Runtime's telemetry events.
     ///
-    /// Called for every environment this crate creates, because ONNX Runtime
-    /// enables telemetry by default and there are two reasons not to want it:
-    ///
-    /// **It crashes at process exit.** ORT's telemetry lives in a static whose
-    /// destructor flushes on the way out. With enough session churn that flush
-    /// deadlocks on its own mutex and the process dies with `SIGABRT` *after* all
+    /// Called for every environment this crate creates, because ONNX Runtime enables
+    /// telemetry by default and it can abort the process at exit. Telemetry lives in a
+    /// static whose destructor flushes on the way out; with enough session churn that
+    /// flush deadlocks on its own mutex and the process dies with `SIGABRT` *after* all
     /// work has completed successfully:
     ///
     /// ```text
@@ -155,29 +144,22 @@ impl Environment {
     ///     -> std::mutex::lock()  ->  __psynch_mutexwait
     /// ```
     ///
-    /// A non-zero exit on shutdown is not cosmetic for a service: orchestrators
-    /// read it as a failed task and may count it toward a restart budget.
-    ///
-    /// **A service should not phone home.** Inference is on the request path, and
-    /// emitting vendor telemetry from it is neither free nor something a caller
-    /// consented to.
+    /// A non-zero exit on shutdown is not cosmetic for a service: orchestrators read it as
+    /// a failed task.
     fn disable_telemetry(&self) -> Result<()> {
         let disable = ort_fn!(self.api, DisableTelemetryEvents);
-        // SAFETY: `self.ptr` is a live env produced by `CreateEnv`.
         unsafe { self.api.check(disable(self.ptr)) }
     }
 
     /// Re-enables ONNX Runtime's telemetry events.
     ///
-    /// Off by default for two reasons. It has crashed the process at exit: ORT
-    /// flushes telemetry from a static destructor, and with enough session churn
-    /// that flush deadlocks on its own mutex and aborts *after* all work has
-    /// succeeded. And a service on a request path has no business phoning home.
+    /// Off by default because it has crashed the process at exit: ORT flushes telemetry
+    /// from a static destructor, and with enough session churn that flush deadlocks on its
+    /// own mutex and aborts *after* all work has succeeded.
     ///
     /// Call this only if you need the telemetry and accept the exit risk.
     pub fn enable_telemetry(&self) -> Result<()> {
         let enable = ort_fn!(self.api, EnableTelemetryEvents);
-        // SAFETY: `self.ptr` is a live env produced by `CreateEnv`.
         unsafe { self.api.check(enable(self.ptr)) }
     }
 
@@ -188,10 +170,9 @@ impl Environment {
 }
 
 impl Drop for Environment {
+    /// Releases the `OrtEnv`.
     fn drop(&mut self) {
         if let Some(release) = self.api.raw().ReleaseEnv {
-            // SAFETY: `ptr` was produced by `CreateEnv`, has not been released,
-            // and is not used again: `self` is being dropped.
             unsafe { release(self.ptr) };
         }
     }

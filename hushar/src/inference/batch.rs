@@ -13,24 +13,13 @@
 //! * `width` is derived when a feature is pushed, so a shape cannot disagree with the
 //!   number of values it describes.
 //!
-//! The two directions are separate types. An [`InputBatch`] carries features, which
-//! may be any of five element types. An [`OutputBatch`] carries scores, which are
-//! `FP32` or `FP64` and nothing else, so the response path has no third case to
-//! handle.
+//! The two directions are separate types. An [`InputBatch`] carries features, which may
+//! be any of the five element types; an [`OutputBatch`] carries scores, which are `FP32`
+//! or `FP64` and nothing else.
 
 use crate::inference::InferenceError;
 
 /// Element types the service serves.
-///
-/// Five, each earning its place against a real model: `F32` for a vectorised feature
-/// matrix, `F64` because a tree ensemble is not continuous and a narrowing cast can
-/// move a value across a split, `I32` and `I64` for token ids and category codes, and
-/// `Str` for a model that encodes text in the graph.
-///
-/// Left out are `FP16` and `BF16`, which have no protobuf field and would need a
-/// parallel raw-bytes encoding, and the integers *narrower* than 32 bits, which share
-/// protobuf's `int32` field and so would need a range check per element. `INT32` has a
-/// field of its own, which is why it costs nothing to serve.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ElementType {
     F32,
@@ -51,15 +40,6 @@ impl ElementType {
             ElementType::Str => "STRING",
         }
     }
-
-    /// Whether a transformation's output can feed this type.
-    ///
-    /// Transformations are defined over floats. Rounding one into an integer, or
-    /// inventing text from one, would be silent corruption, so the other types are fed
-    /// verbatim from the request instead.
-    pub(crate) fn is_float(&self) -> bool {
-        matches!(self, ElementType::F32 | ElementType::F64)
-    }
 }
 
 impl std::fmt::Display for ElementType {
@@ -69,9 +49,6 @@ impl std::fmt::Display for ElementType {
 }
 
 /// One feature's values for a whole batch, row-major.
-///
-/// An enum rather than a type parameter, because a batch is heterogeneous: a float
-/// matrix and a text column travel in the same call, so they have to be one Rust type.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum FeatureData {
     F32(Vec<f32>),
@@ -92,13 +69,63 @@ impl FeatureData {
             FeatureData::Str(v) => v.len(),
         }
     }
+
+    /// The element type of this column.
+    pub(crate) fn element_type(&self) -> ElementType {
+        match self {
+            FeatureData::F32(_) => ElementType::F32,
+            FeatureData::F64(_) => ElementType::F64,
+            FeatureData::I32(_) => ElementType::I32,
+            FeatureData::I64(_) => ElementType::I64,
+            FeatureData::Str(_) => ElementType::Str,
+        }
+    }
+
+    /// One row's values, borrowed from this column, or `None` for a row past the end.
+    ///
+    /// # Arguments
+    ///
+    /// * `row` - zero-based row index
+    /// * `width` - values per row
+    pub(crate) fn row(&self, row: usize, width: usize) -> Option<FeatureSlice<'_>> {
+        let r = row_range(row, width, self.len())?;
+        Some(match self {
+            FeatureData::F32(v) => FeatureSlice::F32(&v[r]),
+            FeatureData::F64(v) => FeatureSlice::F64(&v[r]),
+            FeatureData::I32(v) => FeatureSlice::I32(&v[r]),
+            FeatureData::I64(v) => FeatureSlice::I64(&v[r]),
+            FeatureData::Str(v) => FeatureSlice::Str(&v[r]),
+        })
+    }
+}
+
+/// One row's values of one feature, borrowed from the column that holds them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum FeatureSlice<'a> {
+    F32(&'a [f32]),
+    F64(&'a [f64]),
+    I32(&'a [i32]),
+    I64(&'a [i64]),
+    Str(&'a [String]),
+}
+
+impl FeatureSlice<'_> {
+    /// How the value reads in an error message.
+    pub(crate) fn describe(&self) -> &'static str {
+        match self {
+            FeatureSlice::F32(_) => "a float",
+            FeatureSlice::F64(_) => "a double",
+            FeatureSlice::I32(_) => "an integer",
+            FeatureSlice::I64(_) => "a long",
+            FeatureSlice::Str(_) => "text",
+        }
+    }
 }
 
 /// One model output's values for a whole batch, row-major.
 ///
-/// Two variants, because a response carries scores. A model declaring anything else is
-/// refused when it loads, so that decision lives there rather than being re-checked on
-/// every response.
+/// Scores are single or double precision; a model declaring any other output type is
+/// refused when it loads.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ScoreData {
     F32(Vec<f32>),
@@ -120,15 +147,28 @@ impl ScoreData {
             ScoreData::F64(v) => v.len(),
         }
     }
+
+    /// Every score as `f32`, narrowing a double-precision batch.
+    ///
+    /// Nothing on the serving path narrows scores: the response and the log both carry
+    /// the model's own precision.
+    #[allow(dead_code)]
+    pub(crate) fn as_f32(&self) -> Vec<f32> {
+        match self {
+            ScoreData::F32(v) => v.clone(),
+            ScoreData::F64(v) => v.iter().map(|d| *d as f32).collect(),
+        }
+    }
 }
 
 /// One named model input: `rows × width`, row-major.
 ///
-/// Fields:
-/// - `name` — the model's own name for this input.
-/// - `width` — values per row. Private, and set only by [`InputBatch::push`], which
-///   derives it from the value count. That is what makes the shape unable to lie.
-/// - `data` — the values, all of one element type.
+/// # Fields
+///
+/// * `name` - the model's own name for this input
+/// * `width` - values per row; private, and set only by [`InputBatch::push`], which
+///   derives it from the value count
+/// * `data` - the values, all of one element type
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Feature {
     pub name: String,
@@ -144,13 +184,8 @@ impl Feature {
 
     /// One row's values as `f32`.
     ///
-    /// The integers widen and `f64` narrows, so a caller reading a feature back gets
-    /// one stable numeric column. `None` for text, which has no float reading, and for
-    /// a row past the end.
-    ///
-    /// This is the read half of the API a backend uses on the inputs it is handed. The
-    /// ONNX backend takes ownership and lends its buffers to the engine untouched, so
-    /// today only the test backends call it.
+    /// Integers widen and `f64` narrows, so any numeric feature reads as one stable
+    /// column. `None` for text, which has no float reading, and for a row past the end.
     #[allow(dead_code)]
     pub(crate) fn row_as_f32(&self, row: usize) -> Option<Vec<f32>> {
         let range = row_range(row, self.width, self.data.len())?;
@@ -166,10 +201,11 @@ impl Feature {
 
 /// One named model output: `rows × width`, row-major, always floating point.
 ///
-/// Fields:
-/// - `name` — the model's own name for this output.
-/// - `width` — values per row. Private, and derived by [`OutputBatch::push`].
-/// - `data` — the scores, either single or double precision.
+/// # Fields
+///
+/// * `name` - the model's own name for this output
+/// * `width` - values per row; private, and derived by [`OutputBatch::push`]
+/// * `data` - the scores, either single or double precision
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Output {
     pub name: String,
@@ -186,27 +222,14 @@ impl Output {
 
     /// One row's scores as `f32`, or `None` for a row past the end.
     ///
-    /// Always available for a row that exists, because an output is float by
-    /// construction. The inference log carries one stable float column whatever the
-    /// model's precision, which is why the `f64` case narrows here.
+    /// Always available for a row that exists, since an output is float by construction.
+    #[allow(dead_code)]
     pub(crate) fn row_as_f32(&self, row: usize) -> Option<Vec<f32>> {
         let range = row_range(row, self.width, self.data.len())?;
         Some(match &self.data {
             ScoreData::F32(v) => v[range].to_vec(),
             ScoreData::F64(v) => v[range].iter().map(|d| *d as f32).collect(),
         })
-    }
-
-    /// One row's scores as `f64`, without narrowing.
-    ///
-    /// Separate from [`Output::row_as_f32`] so a double-precision model's scores reach
-    /// the response at full precision. `None` for a single-precision output.
-    pub(crate) fn row_f64(&self, row: usize) -> Option<&[f64]> {
-        let range = row_range(row, self.width, self.data.len())?;
-        match &self.data {
-            ScoreData::F64(v) => Some(&v[range]),
-            ScoreData::F32(_) => None,
-        }
     }
 }
 
@@ -219,9 +242,12 @@ fn row_range(row: usize, width: usize, len: usize) -> Option<std::ops::Range<usi
 
 /// Values per row, derived from the value count.
 ///
-/// Refuses a count that is not a whole number of rows, and an empty column for a
-/// non-empty batch. Either would otherwise become a wrong answer rather than an error.
-/// `kind` names the side, so the message reads as "input" or "output".
+/// `kind` names the side in the error message, `"input"` or `"output"`.
+///
+/// # Errors
+///
+/// Fails when `len` is not a whole number of `rows`, when a non-empty batch carries an
+/// empty column, or when a batch of no rows carries values.
 fn derive_width(kind: &str, name: &str, rows: usize, len: usize) -> Result<usize, InferenceError> {
     if rows == 0 {
         if len != 0 {
@@ -246,11 +272,13 @@ fn derive_width(kind: &str, name: &str, rows: usize, len: usize) -> Result<usize
 
 /// A batch of named model inputs, all with the same number of rows.
 ///
-/// Fields, both private so the invariants hold:
-/// - `rows` — rows every feature carries, stated once for the whole batch.
-/// - `features` — the inputs, matched by name rather than position. Name matching is
-///   what an engine's signature is keyed on; a positional list mislabels everything
-///   the moment a model's inputs are reordered.
+/// # Fields
+///
+/// Both private, so the invariants hold.
+///
+/// * `rows` - rows every feature carries, stated once for the whole batch
+/// * `features` - the inputs, matched by name rather than position, since an engine's
+///   signature is keyed on name
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InputBatch {
     rows: usize,
@@ -268,8 +296,10 @@ impl InputBatch {
 
     /// Adds one feature, deriving its width from the values it carries.
     ///
-    /// Refuses a repeated name, which would leave the engine reading whichever of the
-    /// two it found first, and anything [`derive_width`] refuses.
+    /// # Errors
+    ///
+    /// Fails on a name the batch already carries, and on anything [`derive_width`]
+    /// refuses.
     pub(crate) fn push(
         &mut self,
         name: impl Into<String>,
@@ -289,9 +319,6 @@ impl InputBatch {
     }
 
     /// The feature of this name, if the batch carries one.
-    ///
-    /// How a backend picks out the input it wants. The ONNX backend takes ownership
-    /// instead, so today only the test backends call it.
     #[allow(dead_code)]
     pub(crate) fn get(&self, name: &str) -> Option<&Feature> {
         self.features.iter().find(|f| f.name == name)
@@ -305,9 +332,12 @@ impl InputBatch {
 
 /// A batch of named model outputs, all with the same number of rows.
 ///
-/// Fields, both private so the invariants hold:
-/// - `rows` — rows every output carries.
-/// - `outputs` — in the order the model declares them. The first is the one scored.
+/// # Fields
+///
+/// Both private, so the invariants hold.
+///
+/// * `rows` - rows every output carries
+/// * `outputs` - in the order the model declares them; the first is the one scored
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct OutputBatch {
     rows: usize,
@@ -325,7 +355,10 @@ impl OutputBatch {
 
     /// Adds one output, deriving its width from the values it carries.
     ///
-    /// Refuses a repeated name, and anything [`derive_width`] refuses.
+    /// # Errors
+    ///
+    /// Fails on a name the batch already carries, and on anything [`derive_width`]
+    /// refuses.
     pub(crate) fn push(
         &mut self,
         name: impl Into<String>,
@@ -363,18 +396,19 @@ impl OutputBatch {
 
 /// What a model declares for one input or output.
 ///
-/// Fields:
-/// - `name` — the model's own name for it.
-/// - `element_type` — what it takes or produces.
-/// - `width` — values per row, or `None` where the model leaves the axis dynamic and
-///   the configuration decides.
-/// - `rank` — 1 for `[batch]`, 2 for `[batch, width]`. The only reason a rank survives
-///   into the service: an engine rejects a `[rows, 1]` shape for a `[batch]` input even
-///   though the values are identical. Ranks above 2 are refused when the model loads,
-///   which is what lets everything else here work in rows and widths.
+/// A configuration is checked against this at startup, so nothing is inferred at request
+/// time.
 ///
-/// A configuration is checked against this at startup, which is why nothing needs to
-/// be inferred at request time.
+/// # Fields
+///
+/// * `name` - the model's own name for it
+/// * `element_type` - what it takes or produces
+/// * `width` - values per row, or `None` where the model leaves the axis dynamic and
+///   the configuration decides
+/// * `rank` - 1 for `[batch]`, 2 for `[batch, width]`. An engine rejects a `[rows, 1]`
+///   shape for a `[batch]` input even though the values are identical, so the rank is
+///   carried. Ranks above 2 are refused when the model loads, which is what lets
+///   everything else here work in rows and widths.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct IoSpec {
     pub name: String,
@@ -426,15 +460,14 @@ impl IoSpec {
 mod tests {
     use super::*;
 
-    /// A one-feature batch, for the tests that need only one.
+    /// A one-feature batch.
     fn inputs(rows: usize, name: &str, data: FeatureData) -> InputBatch {
         let mut b = InputBatch::new(rows);
         b.push(name, data).expect("valid feature");
         b
     }
 
-    /// The point of the type: six values over two rows is a width of three, and there
-    /// is no second number that could claim otherwise.
+    /// Six values over two rows derive a width of three.
     #[test]
     fn the_width_is_derived_rather_than_supplied() {
         let b = inputs(2, "x", FeatureData::F32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]));
@@ -452,8 +485,7 @@ mod tests {
         assert!(m.contains('3') && m.contains('2'), "got {m}");
     }
 
-    /// Two inputs of different widths are fine; two inputs of different row counts
-    /// cannot be expressed at all, which is the invariant worth having.
+    /// Two inputs of different widths share the batch's row count.
     #[test]
     fn every_feature_shares_the_batchs_row_count() {
         let mut b = InputBatch::new(2);
@@ -537,28 +569,31 @@ mod tests {
         assert!(feature.row_as_f32(2).is_none(), "row 2 is past the end");
     }
 
-    /// Why `row_f64` exists: 0.1 has no exact `f32`, so a response that narrowed it
-    /// would not be the number the model produced.
+    /// A double-precision batch keeps a value no `f32` can hold exactly.
     #[test]
-    fn a_double_output_row_is_available_without_narrowing() {
-        let mut b = OutputBatch::new(1);
-        b.push("scores", ScoreData::F64(vec![0.1, 0.2]))
-            .expect("valid");
-        assert_eq!(b.first().expect("scores").row_f64(0), Some(&[0.1, 0.2][..]));
-    }
-
-    #[test]
-    fn a_float_output_has_no_double_reading() {
-        let mut b = OutputBatch::new(1);
-        b.push("scores", ScoreData::F32(vec![0.5])).expect("valid");
-        assert!(
-            b.first().expect("scores").row_f64(0).is_none(),
-            "an f32 output must not claim double precision"
+    fn a_double_batch_keeps_its_precision() {
+        let doubles = ScoreData::F64(vec![0.1, 0.2]);
+        match &doubles {
+            ScoreData::F64(v) => assert_eq!(v, &[0.1, 0.2], "read exactly, not narrowed"),
+            ScoreData::F32(_) => panic!("a double batch must not be an f32 one"),
+        }
+        assert_eq!(doubles.element_type(), ElementType::F64);
+        assert_ne!(
+            f64::from(doubles.as_f32()[0]),
+            0.1,
+            "0.1 does not survive an f32, which is why neither the response nor the log \
+             is given one"
         );
     }
 
-    /// Unlike a feature, an output is float by construction, so a row that exists
-    /// always has a float reading and the response path has no unreachable branch.
+    #[test]
+    fn a_float_batch_reads_as_floats_without_a_conversion() {
+        let floats = ScoreData::F32(vec![0.5, 0.25]);
+        assert_eq!(floats.as_f32(), vec![0.5, 0.25]);
+        assert_eq!(floats.element_type(), ElementType::F32);
+    }
+
+    /// An output row that exists always has a float reading.
     #[test]
     fn an_output_always_reads_as_floats() {
         let mut b = OutputBatch::new(2);
@@ -592,8 +627,7 @@ mod tests {
         );
     }
 
-    /// A model input declared `[batch]` and one declared `[batch, 1]` carry the same
-    /// values, and an engine rejects the wrong one of the two.
+    /// The declared rank decides whether the engine gets `[rows]` or `[rows, width]`.
     #[test]
     fn the_declared_rank_decides_the_shape_handed_to_the_engine() {
         let rank2 = IoSpec::new("x", ElementType::Str, Some(1));
@@ -601,15 +635,6 @@ mod tests {
 
         let rank1 = IoSpec::new("x", ElementType::Str, Some(1)).with_rank(1);
         assert_eq!(rank1.engine_shape(4, 1), vec![4]);
-    }
-
-    #[test]
-    fn only_the_float_types_can_be_built_from_transformations() {
-        assert!(ElementType::F32.is_float());
-        assert!(ElementType::F64.is_float());
-        assert!(!ElementType::I32.is_float(), "rounding would be corruption");
-        assert!(!ElementType::I64.is_float(), "rounding would be corruption");
-        assert!(!ElementType::Str.is_float(), "text cannot be invented");
     }
 
     #[test]

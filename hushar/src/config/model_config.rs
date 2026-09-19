@@ -3,10 +3,8 @@
 
 //! Everything about one model: where it is, how it runs, and how features reach it.
 //!
-//! Split from the service configuration along one line: this file describes the model
-//! and the hardware it runs on, and the service configuration describes the process.
-//! So `execution_provider` lives here, beside the model it applies to, while the
-//! service configuration keeps only the port and the per-connection limit.
+//! This file describes the model and the hardware it runs on; the service configuration
+//! describes the process, so `execution_provider` lives here.
 //!
 //! ```json
 //! {
@@ -21,33 +19,30 @@
 //! }
 //! ```
 //!
-//! `vectorization_config` is optional. Left out, every model input is fed by the
-//! feature of the same name, passed through with the model's own element type --
-//! which is the useful default for a model whose inputs are already named after
-//! features, and needs no configuration at all.
+//! `vectorization_config` is required, and it is one of two shapes: `feature_order`
+//! concatenates every feature into the model's one input, and `model_inputs` declares one
+//! input per feature and feeds each verbatim.
 
 use crate::config::vectorization_config::VectorizationConfig;
 use serde::Deserialize;
 
-/// CPU unless configured otherwise, which is the only provider guaranteed to be
-/// present in every ONNX Runtime build.
+/// The default execution provider, `cpu`.
 fn default_execution_provider() -> String {
     "cpu".to_owned()
 }
 
-/// One thread inside each operator.
-///
 /// One model, and how to serve it.
 ///
-/// Fields:
-/// - `model_id` — recorded on every inference log row, so logs join to a model version.
-/// - `model_path` — where the model file is, carrying its own URI scheme.
-/// - `execution_provider` — the hardware backend. See below.
-/// - `mini_batch_size` — split a request's rows into batches of this many, scored at
-///   the same time. See below.
-/// - `is_fixed` — pad the last mini batch up to `mini_batch_size`. See below.
-/// - `vectorization_config` — how features become model inputs, or `None` to pass each
-///   input's like-named feature straight through.
+/// # Fields
+///
+/// * `model_id` - recorded on every inference log row, so logs join to a model version
+/// * `model_path` - where the model file is, carrying its own URI scheme
+/// * `execution_provider` - the hardware backend, defaulting to `cpu`; see below
+/// * `mini_batch_size` - split a request's rows into batches of this many, scored at the
+///   same time; optional, and must be greater than zero; see below
+/// * `is_fixed` - pad the last mini batch up to `mini_batch_size`; defaults to false and
+///   requires `mini_batch_size`; see below
+/// * `vectorization_config` - how features become model inputs; required, see below
 ///
 /// # Execution providers
 ///
@@ -56,9 +51,7 @@ fn default_execution_provider() -> String {
 /// Any other value is passed to ONNX Runtime as a provider name, so providers this
 /// service does not model can still be used.
 ///
-/// `cuda` and `rocm` are deliberately rejected: TensorRT and MIGraphX are the vendors'
-/// strategic inference stacks, so a config naming the lower-level provider gets an error
-/// pointing at the right one instead of quietly behaving differently.
+/// `cuda` and `rocm` are rejected: use `tensorrt` or `migraphx`, which the error names.
 ///
 /// The provider must be compiled into the `libonnxruntime` on the host; startup fails
 /// with the list of available providers if it is not.
@@ -84,29 +77,20 @@ fn default_execution_provider() -> String {
 ///   └───── 6 rows out ─┘       └────── 6 rows out ───┘
 /// ```
 ///
-/// **Why it lowers latency.** Threads inside one operator stop helping well past a
-/// point -- the operators are a chain and each one is a barrier -- so a big batch has a
-/// latency floor no thread count clears. Separate mini-batches share no barrier at all,
-/// so `n` of them on `n` cores approach the cost of *one*. Splitting 100 rows into 20
-/// therefore costs about what 5 rows cost, not a twentieth of 100 rows' wall clock.
-/// It buys latency with a little more total CPU: each batch repeats the per-call
-/// overhead, and small batches are less efficient per row.
-///
-/// Pair it with `threading.intra_op_threads: 1`. The parallelism now comes from running
-/// mini-batches together, and a pool inside each one competes with that for the same
-/// cores.
+/// Splitting trades a little more total CPU for lower latency: each batch repeats the
+/// per-call overhead, and small batches are less efficient per row. Pair it with
+/// `threading.intra_op_threads: 1`, since the parallelism then comes from running mini
+/// batches together and a pool inside each one competes for the same cores.
 ///
 /// **`is_fixed` is what a pinned graph needs.** A model exported with its leading
 /// dimension fixed can only be given batches of that one size, so it needs
 /// `mini_batch_size` equal to that number and `is_fixed: true`; the padded rows are
 /// scored and discarded. A pinned axis disagreeing with the declared size, or declared
-/// without `is_fixed`, is refused when the model loads rather than failing every
-/// request inside the engine.
+/// without `is_fixed`, is refused when the model loads.
 ///
 /// A padding row carries no features, so every input takes the same path as a request
 /// that omitted that feature: its transformation's `default_val`, or zeros and empty
-/// strings for inputs passed through verbatim. Nothing new has to be correct for
-/// padding to be correct.
+/// strings for inputs passed through verbatim.
 ///
 /// **It never constrains callers.** A request of any size is served either way.
 #[derive(Debug)]
@@ -116,15 +100,14 @@ pub struct ModelConfig {
     pub execution_provider: String,
     pub mini_batch_size: Option<usize>,
     pub is_fixed: bool,
-    pub vectorization_config: Option<VectorizationConfig>,
+    pub vectorization_config: VectorizationConfig,
 }
 
 /// The JSON as written.
 ///
 /// A separate struct because [`VectorizationConfig`] is not `Deserialize`: it holds
 /// boxed trait objects and applies defaults as it is read, so it has its own
-/// constructor. The nested value is handed to that constructor rather than being
-/// modelled twice, which keeps one set of error messages for one shape of mistake.
+/// constructor.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawModelConfig {
@@ -139,11 +122,16 @@ struct RawModelConfig {
 }
 
 impl ModelConfig {
+    /// Reads a model configuration from JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the JSON does not parse, if `mini_batch_size` is zero, if
+    /// `is_fixed` is set without a `mini_batch_size` to pad to, or if
+    /// `vectorization_config` is missing or invalid.
     pub fn from_json(json: &str) -> Result<Self, crate::inference::InferenceError> {
         let raw: RawModelConfig = serde_json::from_str(json)?;
 
-        // Zero rows is not a smaller batch, it is a model that can never be given
-        // anything. Caught here because every later check would read it as "no splitting".
         if raw.mini_batch_size == Some(0) {
             return Err(format!(
                 "model {:?} declares \"mini_batch_size\": 0, which no request could \
@@ -154,8 +142,6 @@ impl ModelConfig {
             .into());
         }
 
-        // `is_fixed` only means anything alongside a size, and a config setting it alone
-        // has almost certainly lost the size rather than meant nothing by it.
         if raw.is_fixed && raw.mini_batch_size.is_none() {
             return Err(format!(
                 "model {:?} declares \"is_fixed\": true without \"mini_batch_size\", so \
@@ -166,14 +152,20 @@ impl ModelConfig {
             .into());
         }
 
-        let vectorization_config = match raw.vectorization_config {
-            Some(value) => Some(VectorizationConfig::from_json(&value.to_string()).map_err(
-                |e| -> crate::inference::InferenceError {
-                    format!("vectorization_config for model {:?}: {e}", raw.model_id).into()
-                },
-            )?),
-            None => None,
+        let Some(value) = raw.vectorization_config else {
+            return Err(format!(
+                "model {:?} has no \"vectorization_config\", so nothing says how its \
+                 features reach it. Declare \"model_inputs\" to feed one input per \
+                 feature, or \"feature_order\" to concatenate them into one.",
+                raw.model_id
+            )
+            .into());
         };
+        let vectorization_config = VectorizationConfig::from_json(&value.to_string()).map_err(
+            |e| -> crate::inference::InferenceError {
+                format!("vectorization_config for model {:?}: {e}", raw.model_id).into()
+            },
+        )?;
 
         Ok(ModelConfig {
             model_id: raw.model_id,
@@ -199,7 +191,8 @@ mod tests {
                 "model_id": "fraud-v3",
                 "model_path": "s3://models/fraud/v3/model.onnx",
                 "execution_provider": "coreml:cpu_and_neural_engine",
-                "mini_batch_size": 4
+                "mini_batch_size": 4,
+                "vectorization_config": {"feature_order": ["a"]}
             }"#,
         )
         .expect("valid");
@@ -207,16 +200,25 @@ mod tests {
         assert_eq!(config.model_id, "fraud-v3");
         assert_eq!(config.model_path, "s3://models/fraud/v3/model.onnx");
         assert_eq!(config.execution_provider, "coreml:cpu_and_neural_engine");
+    }
+
+    #[test]
+    fn a_model_without_a_vectorization_config_is_refused() {
+        let err = ModelConfig::from_json(r#"{"model_id": "m", "model_path": "/tmp/m.onnx"}"#)
+            .expect_err("nothing says how features reach the model");
+        let m = err.to_string();
         assert!(
-            config.vectorization_config.is_none(),
-            "an absent sub-config means pass every input through"
+            m.contains("model_inputs") && m.contains("feature_order"),
+            "the refusal should name both shapes; got {m}"
         );
     }
 
     #[test]
     fn the_hardware_defaults_to_cpu_with_one_thread() {
-        let config = ModelConfig::from_json(r#"{"model_id": "m", "model_path": "/tmp/m.onnx"}"#)
-            .expect("valid");
+        let config = ModelConfig::from_json(
+            r#"{"model_id": "m", "model_path": "/tmp/m.onnx", "vectorization_config": {"feature_order": ["a"]}}"#,
+        )
+        .expect("valid");
         assert_eq!(config.execution_provider, "cpu");
         assert!(
             config.mini_batch_size.is_none(),
@@ -225,9 +227,7 @@ mod tests {
         assert!(!config.is_fixed, "padding is opt-in with the size");
     }
 
-    /// The declaration that lets a pinned-shape model be served: the size plus the flag
-    /// that says the last batch is padded to it. Read here and enforced against the
-    /// model's own leading dimension when it loads.
+    /// Asserts a declared `mini_batch_size` and `is_fixed` are carried through.
     #[test]
     fn a_declared_batch_size_is_carried_through() {
         let config = ModelConfig::from_json(
@@ -236,7 +236,8 @@ mod tests {
                 "model_path": "/tmp/m.onnx",
                 "execution_provider": "coreml",
                 "mini_batch_size": 1,
-                "is_fixed": true
+                "is_fixed": true,
+                "vectorization_config": {"feature_order": ["a"]}
             }"#,
         )
         .expect("valid");
@@ -244,13 +245,11 @@ mod tests {
         assert!(config.is_fixed);
     }
 
-    /// The latency case: a size without the flag, which splits and leaves the last batch
-    /// short. Separate from the pinned case because the two differ only in this flag and
-    /// a reader should see both spellings.
+    /// Asserts a size without `is_fixed` splits and leaves the last batch short.
     #[test]
     fn a_size_without_the_flag_splits_without_padding() {
         let config = ModelConfig::from_json(
-            r#"{"model_id": "m", "model_path": "/tmp/m.onnx", "mini_batch_size": 10}"#,
+            r#"{"model_id": "m", "model_path": "/tmp/m.onnx", "mini_batch_size": 10, "vectorization_config": {"feature_order": ["a"]}}"#,
         )
         .expect("valid");
         assert_eq!(config.mini_batch_size, Some(10));
@@ -260,8 +259,7 @@ mod tests {
         );
     }
 
-    /// A flag with nothing to pad to. Refused naming both fields, because the config has
-    /// almost certainly lost the size rather than meant nothing by the flag.
+    /// Asserts `is_fixed` without `mini_batch_size` is refused, naming both fields.
     #[test]
     fn the_flag_without_a_size_is_refused() {
         let err = ModelConfig::from_json(
@@ -275,8 +273,7 @@ mod tests {
         );
     }
 
-    /// Zero rows is not a smaller batch, it is a model nothing can be sent to. Refused
-    /// here because every later check would read it as "no pinning" and serve normally.
+    /// Asserts a `mini_batch_size` of zero is refused, naming the field.
     #[test]
     fn a_zero_batch_size_is_refused_naming_the_field() {
         let err = ModelConfig::from_json(
@@ -306,14 +303,17 @@ mod tests {
         )
         .expect("valid");
 
-        let vec_config = config.vectorization_config.expect("present");
-        assert_eq!(
-            vec_config.mode,
-            InputMode::Vectorised {
-                feature_order: vec!["age".into()],
-                data_type: VectorType::Double,
-            }
-        );
+        let vec_config = config.vectorization_config;
+        let InputMode::Vectorised {
+            feature_order,
+            data_type,
+            ..
+        } = &vec_config.mode
+        else {
+            panic!("feature_order must select the vectorised shape");
+        };
+        assert_eq!(feature_order.as_slice(), ["age"]);
+        assert_eq!(*data_type, VectorType::Double);
     }
 
     #[test]
@@ -354,8 +354,7 @@ mod tests {
         assert!(err.to_string().contains("modelPath"), "got {err}");
     }
 
-    /// Every device spelling this config documents must actually parse, so a
-    /// documented value cannot fail at startup.
+    /// Asserts every provider spelling this config documents parses.
     #[test]
     fn every_documented_provider_spelling_parses() {
         for spelling in [
@@ -388,8 +387,7 @@ mod tests {
         assert!(parsed.is_err(), "a non-numeric device id must be rejected");
     }
 
-    /// The lower-level vendor providers must be rejected with a pointer to the
-    /// supported spelling, not silently accepted as an unknown provider name.
+    /// Asserts `cuda` and `rocm` are rejected with the supported provider named.
     #[test]
     fn cuda_and_rocm_point_at_the_supported_provider() {
         for (input, expected) in [("cuda", "tensorrt"), ("rocm", "migraphx")] {
@@ -404,14 +402,7 @@ mod tests {
         }
     }
 
-    /// A complete configuration of each shape must parse, read from a file.
-    ///
-    /// The two fixtures in `test-data` are worked examples: between them they cover both
-    /// shapes a `vectorization_config` can take, every kind of transformation, and every
-    /// element type a named input can be. They are hand-written and belong to this test
-    /// rather than being borrowed from `benchmark-data/generated`, whose files are
-    /// generated -- a regenerated benchmark used to break this test, which told us
-    /// nothing about the config shape.
+    /// Asserts the `test-data` fixture of each shape parses, read from a file.
     #[test]
     fn a_complete_configuration_of_each_shape_parses() {
         let read = |name: &str| {
@@ -424,9 +415,7 @@ mod tests {
 
         let vectorized = read("model_config_vectorized.json");
         assert_eq!(vectorized.model_id, "fixture-vectorized");
-        let vectorization = vectorized
-            .vectorization_config
-            .expect("the vectorized fixture vectorises its features");
+        let vectorization = vectorized.vectorization_config;
         assert!(
             matches!(
                 vectorization.mode,
@@ -437,7 +426,6 @@ mod tests {
             ),
             "the vectorized fixture uses the single concatenated FP32 input"
         );
-        // 3 embedding + 3 one-hot + 2 identity + 1 minmax + 1 standardization.
         assert_eq!(
             vectorization.vector_width().expect("a width"),
             10,
@@ -447,11 +435,7 @@ mod tests {
         let named = read("model_config_named.json");
         assert_eq!(named.model_id, "fixture-named");
         assert_eq!(named.execution_provider, "coreml:cpu_and_neural_engine");
-        let InputMode::Named { model_inputs } = named
-            .vectorization_config
-            .expect("the named fixture declares its inputs")
-            .mode
-        else {
+        let InputMode::Named { model_inputs } = named.vectorization_config.mode else {
             panic!("the named fixture declares one input per feature");
         };
         assert_eq!(

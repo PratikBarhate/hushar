@@ -148,30 +148,49 @@ flowchart LR
   subgraph req["InferenceRequest"]
     direction TB
     rid["request_id"]
-    r0["InputRow row-0<br/>age → 30<br/>city → &quot;london&quot;"]
-    r1["InputRow row-1<br/>…"]
+    ids["row_ids [row-0, row-1]"]
+    arw["features: map&lt;string, Feature&gt;<br/><i>one entry per feature, whole batch each</i><br/>age    w1  float  [30, 41]<br/>city   w1  string [london, leeds]<br/>embed  w3  float  [… 6 values …]"]
   end
   subgraph res["InferenceResponse"]
     direction TB
     sid["request_id"]
-    o0["OutputRow row-0<br/>scores [0.93, 0.07]"]
-    o1["OutputRow row-1<br/>…"]
+    oids["row_ids [row-0, row-1]"]
+    osc["scores<br/>[0.93, 0.07, 0.11, 0.89]"]
   end
   req -->|"one row in, one row out"| res
   style req fill:#fff3cd
   style res fill:#d4edda
 ```
 
-- One `InputRow` per row you want scored; rows are batched into a single engine call.
+- **Features are a `map<string, Feature>`**, one entry per feature, each carrying that
+  feature's values for the whole batch. A name travels once per request as the map key
+  rather than once per row — at 100 rows over 212 features that is 212 names instead of
+  21,200 — and a map cannot carry the same name twice.
+- A `Feature` is a `oneof` over `FloatArray`, `DoubleArray`, `IntegerArray`, `LongArray`
+  and `StringArray`. One type per feature, since an entry is one array.
+- **Width is stated by the caller and required by the model.** An entry's `width` is
+  values per row, and the service checks it against the values that arrived with it — so a
+  caller that contradicts itself is told which feature did it. What the model *needs* comes
+  from its own configuration, so the two are checked separately and a failure says which
+  one it was. A `width` of 0 is "not stated", and then only the weaker check applies: the
+  value count must divide by the row count.
+- Row identity is `row_ids`, one id per row, and its length is the row count every entry
+  is measured against.
+- A feature the batch has no value for is left out of the map entirely, and its
+  transformation's default covers it.
+- The response mirrors the request: the same ids in the same order, and **one** score
+  buffer for the whole batch. Row `r` is `scores[r × width ..]`, the width being
+  `values / rows`.
 - `scores` is a `oneof` over `FloatArray` and `DoubleArray`, so a model asked for double
   precision is not narrowed on the way out.
-- Already vectorized? Send your vector as one feature whose value is a `FloatArray`. A
-  pass-through transformation hands it to the model unchanged, so there is still only
-  one request shape.
+- Already vectorized? That is the ordinary case now: send the vector as one entry of that
+  width and configure `model_inputs`, and it reaches the model unchanged.
 - Only the model's **first output** is returned — class probabilities, a regression
   value, a forecast horizon or an embedding.
 
-Definitions live in [`schemas/protos`](schemas/protos/structs.proto).
+Anything that speaks protobuf can build the payload, in any language with a generated
+client and nothing else to install. Definitions live in
+[`schemas/protos`](schemas/protos/structs.proto).
 
 ---
 
@@ -183,7 +202,7 @@ onnxrt-rs/         safe Rust front end over the ONNX Runtime C API   (in use)
 libnrt-rs/         safe Rust front end over the AWS Neuron C API     (backend not written)
 schemas/protos/    gRPC service and message definitions
 scripts/           model generators, and scripts/benchmark/ for a two-host run
-benchmark-client/  load generator, plus the one-shot `smoke` example
+benchmark-client/  load generator, plus the `smoke` and `inspect_log` examples
 benchmark-data/    generated models (ignored) and curated results (tracked)
 documentation/     the docs below
 ```
@@ -198,7 +217,7 @@ documentation/     the docs below
 | [benchmarking.md](documentation/benchmarking.md) | running a benchmark on real instances, client and server on separate hosts |
 | [request-walkthrough.md](documentation/request-walkthrough.md) | one request, socket to response, function by function |
 | [bindgen.md](documentation/bindgen.md) | why the FFI bindings are checked in and the library loaded at run time |
-| [benchmark-data/README.md](benchmark-data/README.md) | where a benchmark's inputs and results live, and how to record one |
+| [benchmark-data/TEMPLATE.md](benchmark-data/TEMPLATE.md) | where a benchmark's inputs and results live, and how to record one |
 
 ## Testing
 

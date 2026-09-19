@@ -43,7 +43,7 @@ flowchart TB
   w -->|"spawn_blocking"| b
   b["<b>3 · blocking</b> · inference_concurrency<br/>one thread per in-flight request<br/>vectorise → tensors → Run()"]
   b -->|"optional split"| m
-  m["<b>4 · mini batch</b> · mini_batch_size<br/>scoped thread per batch, scored together"]
+  m["<b>4 · mini batch</b> · mini_batch_size<br/>pooled thread per batch, scored together"]
   m --> o
   b --> o
   o["<b>5 · intra-op</b> · intra_op_threads<br/>splits one operator · <i>one pool per session</i>"]
@@ -66,6 +66,7 @@ other: mini batches want `intra_op_threads: 1`.
 | `worker_threads` | waiters | `main.rs` → `worker_threads()` on the tokio builder | Polls sockets, never blocks. A couple of dozen is plenty on any host. Trimming it gives cores to the engine. |
 | `inference_concurrency` | chefs | `main.rs` → `max_blocking_threads()` | **Sets the throughput ceiling**: `achieved ≈ inference_concurrency ÷ service_time`. Too low sheds; too high inflates service time. Size it `≈ TPS × latency × 2`. |
 | `intra_op_threads` | commis per dish | `io/model_loader.rs` → `load_onnx_model`, then `OnnxRuntimeBackend::load` | Threads inside one operator. **Trades host throughput against per-request latency, non-monotonically.** Saturates ~7.9× for a 10M transformer. |
+| `inter_op_threads` | dishes cooked side by side | `config::ThreadingConfig::parallelism`, then `OnnxRuntimeBackend::load` | The alternative to `intra_op_threads`, never a companion to it. Threads run **independent operators**, so a graph that is one chain gains nothing and pays the parallel executor's scheduling. Cannot be pinned: bounded by the slice the session was built on, not placed within it. |
 | `sessions_per_model` | kitchens | `main.rs` → `replica_placement`, `ServableModel::replica_for_this_thread`; `ThreadingConfig::slice_pressure` | `n` pools per model, each pinned to its own core slice. There are `n` slices, not `models × n`. Stops latency tracking load. Costs one copy of the weights per session. |
 | `allow_spinning` | staff wait at the stove | `main.rs` → `session_options_for` (`session.{intra,inter}_op.allow_spinning`) | `false` lets a stalled thread yield its core — what makes oversubscription free. **Set `false` whenever `sessions_per_model > 1`.** |
 | `compute_cores` | which stoves | `main.rs` → `session_options_for` via `affinity::ort_affinity`, `pin_compute_thread` | Confines inference. Divided into one contiguous slice per session by `affinity::partition`. |
@@ -78,7 +79,7 @@ sending traffic.
 ### What they are worth, measured
 
 One knob changed at a time, c9g.24xlarge, 10M transformer, two models resident, 400 req/s.
-Full detail in [benchmark-data/results](../benchmark-data/results/index.md).
+Full detail in [benchmark-data/results](../benchmark-data/results/).
 
 | Change | Effect |
 |---|---|
@@ -204,5 +205,5 @@ version of `sessions_per_model`. See [hardware.md](hardware.md).
 ## Next
 
 - [configuration.md](configuration.md#threading) — the fields
-- [benchmark-data/results](../benchmark-data/results/index.md) — what these deliver, measured
+- [benchmark-data/results](../benchmark-data/results/) — what these deliver, measured
 - [hardware.md](hardware.md) — choosing a provider

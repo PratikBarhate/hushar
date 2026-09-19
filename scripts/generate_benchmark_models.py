@@ -300,23 +300,20 @@ def vectorized_config(rng, model_path, provider, rows=None):
 
 
 def named_config(model_path, provider, rows=None):
-    """One input per feature, and the text features passed through verbatim.
+    """One input per feature, every one fed from the request verbatim.
 
-    The scalars and one-hots are built by transformations because they feed float
-    inputs. The text features feed string inputs, so configuring a transformation for
-    them would be refused at startup -- the graph does that work instead.
+    `model_inputs` transforms nothing: the shape decides that, not the input's type, so
+    declaring a transformation here is refused at startup. Each input therefore receives
+    what the caller sends -- a float for a scalar, a vector for a one-hot, text for a
+    string -- and `named_feature_spec` is what tells the load generator to send exactly
+    that.
 
     `rows` pins the batch size, as in `vectorized_config`.
     """
-    transformations = {}
     inputs = {}
     for name in NAMED_SCALARS:
-        spec = dict(next(s for n, s in SCALERS if n == name))
-        spec["default_val"] = [0.5 if "min_max" in spec["type"] else 0.0]
-        transformations[name] = spec
         inputs[name] = {"data_type": "float"}
-    for name, width in ONE_HOTS:
-        transformations[name] = one_hot_transformation(name, width)
+    for name, _width in ONE_HOTS:
         inputs[name] = {"data_type": "float_array"}
     for name in TEXT_INPUTS:
         inputs[name] = {"data_type": "string"}
@@ -329,23 +326,66 @@ def named_config(model_path, provider, rows=None):
         # is_fixed declares; without it a short last batch is a shape mismatch.
         **({"mini_batch_size": rows, "is_fixed": True} if rows is not None else {}),
         "vectorization_config": {
-            "feature_transformations": transformations,
             "model_inputs": inputs,
         },
     }
 
 
-def raw_config(model_id, model_path, provider, rows=None):
-    """No `vectorization_config` at all: the model's inputs *are* the features.
+def named_feature_spec():
+    """What the load generator sends for each of the named model's inputs.
 
-    Which is the whole point of this shape. Omitting the field is how hushar is told to
-    feed every model input from the feature of its own name, typed from the model's own
-    signature -- so there is nothing to declare and nothing that can disagree with the
-    graph. The scaling, one-hot encoding and embedding lookups the other two
-    configurations spell out are inside the model instead.
+    `model_inputs` declares each input's type but not the values a caller should put in
+    it, and it carries no transformations to infer a range from, so the generator needs
+    this the same way the raw model does.
+
+    A one-hot input is a `float_array` of its width here, not a word: the encoding used
+    to be a configured transformation and is the caller's to send now, so the values on
+    the wire are the vector the model always received.
+    """
+    vocabulary = raw_vocabularies()
+    spec = {}
+    for name in NAMED_SCALARS:
+        scaler = next(s for n, s in SCALERS if n == name)
+        low, high = plausible_range(scaler)
+        spec[name] = {"kind": "float", "low": low, "high": high}
+    for name, width in ONE_HOTS:
+        spec[name] = {"kind": "float_array", "width": width}
+    for name in TEXT_INPUTS:
+        spec[name] = {"kind": "choice", "words": vocabulary[name]}
+    return spec
+
+
+def raw_config(model_id, model_path, provider, rows=None):
+    """One input per feature, every one fed verbatim -- the model featurizes itself.
+
+    The scaling, one-hot encoding and embedding lookups the vectorized configuration
+    spells out are inside the graph instead, so a category arrives as its *name* and a
+    scalar as its unscaled value. Nothing here transforms anything.
+
+    The inputs are still declared. Every field of the resulting plan comes from the
+    model's signature, so the declaration cannot change what is fed -- what it buys is
+    startup: a misspelled input, or a model that no longer takes what this deployment
+    thinks it does, is caught before the first request instead of silently serving a
+    different contract.
 
     `rows` pins the batch size, as in `vectorized_config`.
     """
+    inputs = {}
+    for name, _vocab, _dim in EMBEDDINGS:
+        inputs[name] = {"data_type": "string"}
+    for name, _width in ONE_HOTS:
+        inputs[name] = {"data_type": "string"}
+    for name in TEXT_INPUTS:
+        inputs[name] = {"data_type": "string"}
+    for name, _width in IDENTITIES:
+        inputs[name] = {"data_type": "float_array"}
+    for name, _spec in RAW_SCALARS_32:
+        inputs[name] = {"data_type": "float"}
+    for name, _spec in RAW_SCALARS_64:
+        # The suffix decides the wire variant here as it does everywhere else: a 64-bit
+        # scaler's feature feeds an FP64 input, and the graph does the narrowing.
+        inputs[name] = {"data_type": "double"}
+
     return {
         "model_id": model_id,
         "model_path": model_path,
@@ -353,6 +393,9 @@ def raw_config(model_id, model_path, provider, rows=None):
         # A pinned graph needs every batch padded up to its size, which is what
         # is_fixed declares; without it a short last batch is a shape mismatch.
         **({"mini_batch_size": rows, "is_fixed": True} if rows is not None else {}),
+        "vectorization_config": {
+            "model_inputs": inputs,
+        },
     }
 
 
@@ -1070,6 +1113,9 @@ def main():
     # told what to send by this instead -- see raw_feature_spec. One file for both
     # architectures, because they take the same features.
     written["bench_raw_feature_spec.json"] = raw_feature_spec()
+    # The named model needs one for the same reason: `model_inputs` declares each input's
+    # type but carries no transformation to read a range or a width from.
+    written["bench_named_feature_spec.json"] = named_feature_spec()
     for name, body in written.items():
         with open(os.path.join(out_dir, name), "w") as handle:
             json.dump(body, handle, indent=2)

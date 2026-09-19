@@ -3,13 +3,12 @@
 
 //! Everything that talks to something outside the process.
 //!
-//! Three traits carry the whole of the "which cloud" question, and they are the
-//! extension points: [`BlobStore`] for objects, [`MetricsSink`] for timings and
-//! [`DataSink`] for the data a request produced. Local and Amazon are implemented;
-//! adding a provider means adding an implementation, not changing anything above.
+//! Three traits are the extension points: [`BlobStore`] for objects, [`MetricsSink`] for
+//! timings and [`DataSink`] for the data a request produced. Local and Amazon
+//! implementations are provided.
 //!
-//! Nothing here runs on a thread of its own. Both sinks accumulate on the request
-//! path and spawn their sends, which is what [`accumulator`] exists for.
+//! Nothing here runs on a thread of its own: both sinks accumulate on the request path
+//! and spawn their sends, which is what [`accumulator`] is for.
 
 pub(crate) type FileReaderResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 pub(crate) mod accumulator;
@@ -25,17 +24,10 @@ pub(crate) use model_loader::*;
 
 /// Renders an AWS SDK error together with its whole source chain.
 ///
-/// The SDK's own `Display` is a bare summary; the reason -- no such key, access denied,
-/// no credentials -- is one or two levels down.
-///
-/// The SDK's own `Display` for an operation error is a bare summary such as
-/// "service error"; the part that says *why* -- no such key, access denied, no
-/// credentials found -- sits one or two levels down in
-/// [`std::error::Error::source`]. Formatting only the top level hands an operator a
-/// message with no diagnostic content in it, so walk the chain. The same reasoning
-/// applies to `libloading` in `onnxrt-rs`, which has the same shape of error.
-///
-/// Some layers repeat the layer above, which adds nothing to read.
+/// The SDK's own `Display` is a bare summary such as "service error"; the reason -- no
+/// such key, access denied, no credentials -- sits one or two levels down in
+/// [`std::error::Error::source`]. A layer whose message repeats the layer above it is
+/// skipped.
 pub(crate) fn describe_aws_error(error: &dyn std::error::Error) -> String {
     let mut text = error.to_string();
     let mut cause = error.source();

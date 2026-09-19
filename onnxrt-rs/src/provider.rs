@@ -10,9 +10,8 @@
 //!
 //! # Availability is a property of the loaded library, not of this crate
 //!
-//! This is the thing to internalise before using this module. An EP is compiled
-//! *into* `libonnxruntime`, so which ones you can use is decided by the build you
-//! ship, not by any Cargo feature here:
+//! An EP is compiled *into* `libonnxruntime`, so which ones can be used is decided
+//! by the build that is shipped, not by any Cargo feature here:
 //!
 //! | Distribution | Providers compiled in |
 //! |---|---|
@@ -23,12 +22,11 @@
 //! | ROCm / MIGraphX builds | CPU, ROCm, MIGraphX — from source or AMD's packages |
 //! | XNNPACK | any build configured with `--use_xnnpack` |
 //!
-//! Because the library is resolved at run time, the honest answer to "is TensorRT
-//! available?" can only be obtained at run time. Ask
-//! [`Api::available_providers`]. [`ExecutionProvider::append`] checks against that
-//! list first, so requesting a provider the loaded library lacks produces
-//! [`Error::ProviderUnavailable`], naming what *is* available, instead of an
-//! opaque ONNX Runtime status.
+//! The library is resolved at run time, so the only trustworthy answer to "is
+//! TensorRT available?" comes from [`Api::available_providers`].
+//! [`ExecutionProvider::append`] checks against that list first, so requesting a
+//! provider the loaded library lacks produces [`Error::ProviderUnavailable`],
+//! naming what *is* available.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
@@ -39,12 +37,12 @@ use crate::api::{Api, ort_fn};
 use crate::error::{Error, Result};
 use crate::sys;
 
-/// Creates a provider-options object through ONNX Runtime's own factory, applies
+/// Creates a provider-options object through ONNX Runtime's own factory, applies the
 /// string options to it, registers it, and releases it on every path.
 ///
-/// Using the factory rather than filling a struct means ONNX Runtime supplies the
-/// defaults for every field this crate does not set — which matters because none
-/// of the providers that use this path can be tested on a developer machine.
+/// The factory hands back an object already populated with ONNX Runtime's defaults,
+/// so only the options passed here are overridden. ONNX Runtime copies what it needs
+/// out of the options object during the append, so releasing it afterwards is correct.
 macro_rules! append_via_factory {
     ($api:expr, $options:expr, $kv:expr, $create:ident, $update:ident, $release:ident, $append:ident) => {{
         let api: Api = $api;
@@ -53,18 +51,13 @@ macro_rules! append_via_factory {
         let append = ort_fn!(api, $append);
 
         let mut provider_options = ptr::null_mut();
-        // SAFETY: valid out-parameter; on success ONNX Runtime writes an owned
-        // options object, released below.
         unsafe { api.check(create(&mut provider_options))? };
 
-        // Everything from here must run to the release, so failures are captured
-        // rather than propagated with `?`.
         let outcome = (|| -> Result<()> {
             let (keys, values) = c_pairs($kv)?;
             if !keys.is_empty() {
                 let key_ptrs: Vec<*const c_char> = keys.iter().map(|k| k.as_ptr()).collect();
                 let value_ptrs: Vec<*const c_char> = values.iter().map(|v| v.as_ptr()).collect();
-                // SAFETY: options object is live; keys and values outlive the call.
                 unsafe {
                     api.check(update(
                         provider_options,
@@ -74,13 +67,10 @@ macro_rules! append_via_factory {
                     ))?
                 };
             }
-            // SAFETY: both pointers are live. ONNX Runtime copies what it needs,
-            // so releasing afterwards is correct.
             unsafe { api.check(append($options, provider_options)) }
         })();
 
         if let Some(release) = api.raw().$release {
-            // SAFETY: created by the matching factory, released exactly once.
             unsafe { release(provider_options) };
         }
         outcome
@@ -89,10 +79,7 @@ macro_rules! append_via_factory {
 
 /// Which compute units the CoreML provider may use.
 ///
-/// Maps to CoreML's `MLComputeUnits` provider option. `CpuAndNeuralEngine` is
-/// often the right choice on Apple Silicon for small models: the Neural Engine
-/// has far lower latency than the GPU once the model is resident, and avoids
-/// competing with the display for GPU time.
+/// Maps to CoreML's `MLComputeUnits` provider option.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CoreMlComputeUnits {
     /// CPU, GPU and Neural Engine. CoreML decides placement.
@@ -102,8 +89,7 @@ pub enum CoreMlComputeUnits {
     CpuAndGpu,
     /// CPU and Neural Engine only.
     CpuAndNeuralEngine,
-    /// CPU only. Useful for isolating whether an accuracy change comes from the
-    /// accelerator.
+    /// CPU only.
     CpuOnly,
 }
 
@@ -122,11 +108,8 @@ impl CoreMlComputeUnits {
 /// Which CoreML model format the provider converts a graph into.
 ///
 /// `MlProgram` is the default because `NeuralNetwork` cannot express an N-dimensional
-/// `MatMul`, so it refuses the attention blocks of a transformer and hands most of the
-/// graph back.
-///
-/// `NeuralNetwork` is the older format and remains ONNX Runtime's own default; it is
-/// kept here for a host too old for `MlProgram`, which needs macOS 12 or iOS 15.
+/// `MatMul` and hands those nodes back to the CPU. `MlProgram` needs macOS 12 or
+/// iOS 15; `NeuralNetwork` is the older format, for a host below that.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CoreMlModelFormat {
     /// CoreML's ML Program format. Supports N-dimensional `MatMul`.
@@ -154,13 +137,13 @@ impl CoreMlModelFormat {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExecutionProvider {
     /// The default CPU provider. Always available, and always the final fallback
-    /// even when another provider is registered, so there is rarely a reason to
-    /// name it explicitly.
+    /// even when another provider is registered.
     Cpu,
 
     /// Apple CoreML — Apple Silicon GPU and Neural Engine.
     ///
-    /// Fields:
+    /// # Fields
+    ///
     /// - `compute_units` — which compute units CoreML may use.
     /// - `model_format` — which CoreML format the graph is converted into.
     CoreMl {
@@ -168,7 +151,7 @@ pub enum ExecutionProvider {
         model_format: CoreMlModelFormat,
     },
 
-    /// XNNPACK — heavily optimised CPU kernels, most valuable on ARM.
+    /// XNNPACK — optimised CPU kernels.
     ///
     /// Not in the default ONNX Runtime builds; needs one configured with
     /// `--use_xnnpack`.
@@ -181,14 +164,10 @@ pub enum ExecutionProvider {
     ///
     /// TensorRT compiles the graph ahead of first use, so the first inference is
     /// slow and later ones are usually the fastest available on NVIDIA hardware.
-    /// It is NVIDIA's strategic inference stack, which is why it is the NVIDIA
-    /// option here rather than the plain CUDA provider.
     ///
     /// Note the coverage tradeoff: TensorRT does not implement every ONNX
     /// operator, and nodes it cannot take fall back to **CPU**, which means
-    /// host-device copies mid-graph. For a fully supported graph that costs
-    /// nothing; for a partially supported one it can be slower than CUDA would
-    /// have been.
+    /// host-device copies mid-graph.
     TensorRt {
         /// CUDA device ordinal.
         device_id: i32,
@@ -196,8 +175,7 @@ pub enum ExecutionProvider {
 
     /// AMD, through MIGraphX.
     ///
-    /// MIGraphX is AMD's graph-optimising inference compiler, layered over ROCm,
-    /// and is the AMD option here for the same reason TensorRT is the NVIDIA one.
+    /// MIGraphX is AMD's graph-optimising inference compiler, layered over ROCm.
     /// The same fallback-to-CPU caveat as [`Self::TensorRt`] applies.
     MiGraphx {
         /// HIP device ordinal.
@@ -206,9 +184,8 @@ pub enum ExecutionProvider {
 
     /// Intel's OpenVINO, on Intel CPU, integrated or discrete GPU, or NPU.
     ///
-    /// The provider Intel tunes for its own hardware, and the one to reach for on a Xeon
-    /// rather than the default CPU provider. Not in any prebuilt ONNX Runtime archive: it
-    /// needs a source build with `--use_openvino`, and OpenVINO itself installed.
+    /// Not in any prebuilt ONNX Runtime archive: it needs a source build with
+    /// `--use_openvino`, and OpenVINO itself installed.
     OpenVino {
         /// OpenVINO's `device_type`. `CPU`, `GPU`, `NPU`, `GPU.0`, or one of the
         /// multi-device forms such as `AUTO:GPU,CPU`.
@@ -229,8 +206,8 @@ pub enum ExecutionProvider {
 
     /// Any provider by name, with raw string options.
     ///
-    /// An escape hatch for providers this enum does not model (QNN, OpenVINO,
-    /// WebGPU, VitisAI) and for options added after this crate was written.
+    /// An escape hatch for providers this enum does not model — QNN, WebGPU,
+    /// VitisAI — and for options it does not model.
     Custom {
         /// Either the short or the full registry name, for example `"QNN"` or
         /// `"QNNExecutionProvider"`.
@@ -309,8 +286,8 @@ impl ExecutionProvider {
 
     /// The name ONNX Runtime reports from [`Api::available_providers`].
     ///
-    /// Always the long `…ExecutionProvider` form, which is what the registry
-    /// uses, even though the append call accepts the short form too.
+    /// Always the long `…ExecutionProvider` form, which is what the registry uses,
+    /// even though the append call accepts the short form too.
     pub fn registry_name(&self) -> &str {
         match self {
             Self::Cpu => "CPUExecutionProvider",
@@ -338,8 +315,7 @@ impl ExecutionProvider {
 
     /// The Cargo feature that enables this provider, if it is gated by one.
     ///
-    /// [`Self::Custom`] is not gated: it is the escape hatch for providers this
-    /// enum does not model, so a feature list could not usefully cover it.
+    /// [`Self::Custom`] is not gated, and so returns `None`.
     pub fn required_feature(&self) -> Option<&'static str> {
         match self {
             Self::Cpu => Some("cpu"),
@@ -372,13 +348,19 @@ impl ExecutionProvider {
 
     /// Registers this provider on `options`.
     ///
-    /// Two checks happen first, in order, because they fail for different reasons
-    /// and the messages need to say which:
+    /// The CPU provider is implicit and is not always listed in the registry, so it
+    /// short-circuits before the availability check. MIGraphX has no options factory,
+    /// so its raw struct is filled here with ONNX Runtime's defaults spelled out —
+    /// note that a zero `migraphx_mem_limit` would mean *zero bytes* rather than
+    /// unlimited.
     ///
-    /// 1. [`Self::is_enabled`] — was this crate compiled with the provider's
-    ///    feature? If not, [`Error::ProviderNotEnabled`].
-    /// 2. [`Self::is_available`] — was the loaded `libonnxruntime` built with it?
-    ///    If not, [`Error::ProviderUnavailable`], naming what is available.
+    /// # Errors
+    ///
+    /// [`Error::ProviderNotEnabled`] when this crate was compiled without the
+    /// provider's Cargo feature, and [`Error::ProviderUnavailable`] — naming what is
+    /// available — when the loaded `libonnxruntime` was not built with it. The two are
+    /// checked separately because the feature says the deployment intends to use the
+    /// hardware and the runtime list says the library can.
     pub(crate) fn append(&self, api: Api, options: *mut sys::OrtSessionOptions) -> Result<()> {
         if !self.is_enabled() {
             return Err(Error::ProviderNotEnabled {
@@ -388,8 +370,6 @@ impl ExecutionProvider {
             });
         }
 
-        // The CPU provider is implicit and is not always listed in the registry,
-        // so short-circuit rather than checking availability.
         if matches!(self, Self::Cpu) {
             return Ok(());
         }
@@ -404,8 +384,6 @@ impl ExecutionProvider {
         match self {
             Self::Cpu => Ok(()),
 
-            // CoreML and XNNPACK have no dedicated appender; the header directs
-            // them through the generic string-keyed one.
             Self::CoreMl {
                 compute_units,
                 model_format,
@@ -431,9 +409,6 @@ impl ExecutionProvider {
                 };
                 append_by_name(api, options, "XNNPACK", &opts)
             }
-            // Through the generic appender, like CoreML and XNNPACK. The V2 OpenVINO
-            // entry point takes the same string map, and going through the generic one
-            // keeps this crate from binding a struct whose layout Intel may change.
             Self::OpenVino {
                 device_type,
                 num_of_threads,
@@ -450,10 +425,6 @@ impl ExecutionProvider {
             }
             Self::Custom { name, options: kv } => append_by_name(api, options, name, kv),
 
-            // TensorRT exposes a factory that returns an options object *already
-            // populated with ONNX Runtime's defaults*. Going through it means this
-            // crate never hardcodes a default, which matters because no NVIDIA
-            // hardware is available to test against.
             Self::TensorRt { device_id } => append_via_factory!(
                 api,
                 options,
@@ -463,9 +434,6 @@ impl ExecutionProvider {
                 ReleaseTensorRTProviderOptions,
                 SessionOptionsAppendExecutionProvider_TensorRT_V2
             ),
-            // MIGraphX is the exception: no factory exists, so the struct has to
-            // be filled here. Note `migraphx_mem_limit` — zeroing it would mean
-            // *zero bytes*, not "unlimited", so the defaults are set explicitly.
             Self::MiGraphx { device_id } => {
                 let append = ort_fn!(api, SessionOptionsAppendExecutionProvider_MIGraphX);
                 let migraphx_options = sys::OrtMIGraphXProviderOptions {
@@ -483,8 +451,6 @@ impl ExecutionProvider {
                     migraphx_mem_limit: usize::MAX,
                     migraphx_arena_extend_strategy: 0,
                 };
-                // SAFETY: `options` is a live session-options object and
-                // `migraphx_options` outlives the call, which only reads it.
                 unsafe { api.check(append(options, &migraphx_options)) }
             }
         }
@@ -502,11 +468,28 @@ impl ExecutionProvider {
 /// | `coreml:cpu_and_neural_engine` | CoreML, restricted to CPU and Neural Engine |
 /// | `coreml:cpu_and_neural_engine:neuralnetwork` | the older format, for an old host |
 /// | `xnnpack` | XNNPACK |
+/// | `openvino`, `openvino:gpu:threads=8` | Intel, on the named device |
 /// | `tensorrt`, `trt:0`, `tensorrt:1` | NVIDIA, on device 0 or 1 |
 /// | `migraphx`, `migraphx:0` | AMD |
 ///
-/// Anything else becomes [`ExecutionProvider::Custom`] with no options, so a
-/// provider this enum does not model can still be named in configuration.
+/// The two CoreML suffixes — compute units and model format — are independent, so
+/// either may be omitted and they may appear in either order.
+///
+/// OpenVINO takes its suffixes in any order too: a bare token is the device type,
+/// uppercased, and `key=value` sets `threads` or `streams`, which must be positive.
+/// The device type defaults to `CPU`. A multi-device form carries a colon of its own,
+/// as in `openvino:auto:gpu,cpu`, and the mode and its device list are rejoined.
+///
+/// `cuda` and `rocm` are rejected rather than passed through, because they have
+/// dedicated appenders that the generic path would not reach; use `tensorrt` and
+/// `migraphx`. Anything else becomes [`ExecutionProvider::Custom`] with no options,
+/// so a provider this enum does not model can still be named in configuration.
+///
+/// # Errors
+///
+/// [`Error::InvalidProvider`], naming what was expected, for an unparseable device
+/// id, thread or stream count, an unknown CoreML or OpenVINO option, two device
+/// types for OpenVINO, or one of the two rejected providers.
 impl FromStr for ExecutionProvider {
     type Err = Error;
 
@@ -530,9 +513,6 @@ impl FromStr for ExecutionProvider {
         match head.as_str() {
             "cpu" => Ok(Self::Cpu),
             "coreml" | "core_ml" => {
-                // Two optional suffixes, either order, because "which hardware" and
-                // "which format" are independent choices and a configuration should not
-                // have to name one to reach the other.
                 let mut compute_units = CoreMlComputeUnits::All;
                 let mut model_format = CoreMlModelFormat::default();
                 for part in tail.into_iter().flat_map(|t| t.split(':')) {
@@ -571,13 +551,6 @@ impl FromStr for ExecutionProvider {
                 })
             }
             "openvino" | "open_vino" => {
-                // Tokens in any order, like CoreML: a bare token is the device, and
-                // `key=value` is an option. The device is uppercased because OpenVINO's
-                // own names are, and a lowercase `cpu` in a configuration should not be
-                // a different thing from `CPU`.
-                //
-                // A multi-device form contains a colon of its own -- `AUTO:GPU,CPU` --
-                // so the mode and its device list arrive as two tokens and are rejoined.
                 let mut device: Option<String> = None;
                 let mut num_of_threads = None;
                 let mut num_streams = None;
@@ -592,9 +565,6 @@ impl FromStr for ExecutionProvider {
                     }
                     match part.split_once('=') {
                         Some((key, value)) => {
-                            // The key is checked before the value is parsed, so an
-                            // option this does not model is reported as unknown rather
-                            // than as a number that would not parse.
                             let key = key.trim().to_ascii_lowercase();
                             let slot = match key.as_str() {
                                 "threads" | "num_of_threads" => &mut num_of_threads,
@@ -615,7 +585,6 @@ impl FromStr for ExecutionProvider {
                                 ))
                             })?);
                         }
-                        // A device list following a multi-device mode, rejoined onto it.
                         None if device
                             .as_deref()
                             .is_some_and(|d| matches!(d, "AUTO" | "HETERO" | "MULTI")) =>
@@ -641,8 +610,6 @@ impl FromStr for ExecutionProvider {
                     ));
                 }
                 Ok(Self::OpenVino {
-                    // CPU because that is what this provider is reached for on a server;
-                    // a GPU or NPU has to be named.
                     device_type: device.unwrap_or_else(|| "CPU".to_owned()),
                     num_of_threads,
                     num_streams,
@@ -663,10 +630,6 @@ impl FromStr for ExecutionProvider {
                     }
                 },
             }),
-            // Deliberately rejected rather than passed through: CUDA and ROCm
-            // have dedicated appenders, so treating them as `Custom` would send
-            // them down the generic path and fail confusingly. Naming the
-            // supported option is more useful than either.
             "cuda" => Err(Error::InvalidProvider {
                 input: s.to_owned(),
                 reason: "the CUDA provider is not offered; use \"tensorrt\" for NVIDIA".to_owned(),
@@ -733,6 +696,9 @@ impl Api {
     /// This is the only trustworthy answer to "can I use TensorRT here?", because the
     /// library is resolved at run time.
     ///
+    /// Each name is copied out before `ReleaseAvailableProviders` frees the array; a
+    /// failure to free is ignored, since it is not actionable once the names are copied.
+    ///
     /// ```no_run
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let api = onnxrt_rs::Api::load()?;
@@ -744,22 +710,16 @@ impl Api {
         let get = ort_fn!(*self, GetAvailableProviders);
         let mut raw: *mut *mut c_char = ptr::null_mut();
         let mut len: c_int = 0;
-        // SAFETY: both are valid out-parameters. On success ONNX Runtime writes an
-        // array of `len` C strings, freed by `ReleaseAvailableProviders` below.
         unsafe { self.check(get(&mut raw, &mut len))? };
 
         let count = len.max(0) as usize;
         let mut providers = Vec::with_capacity(count);
         for i in 0..count {
-            // SAFETY: `raw` holds `count` valid C strings, per the call above.
             let name = unsafe { CStr::from_ptr(*raw.add(i)) };
             providers.push(name.to_string_lossy().into_owned());
         }
 
         if let Some(release) = self.raw().ReleaseAvailableProviders {
-            // SAFETY: `raw`/`len` are exactly what `GetAvailableProviders` wrote.
-            // The returned status is ignored: a failure to free is not
-            // actionable, and the names have already been copied out.
             unsafe { release(raw, len) };
         }
 
@@ -769,8 +729,8 @@ impl Api {
 
 /// The accelerator features this build was compiled with.
 ///
-/// Used in error messages so a misconfigured deployment is told what this binary
-/// *can* do, not merely what it cannot.
+/// Used in error messages, so a misconfigured deployment is told what this binary
+/// can do as well as what it cannot.
 pub fn enabled_features() -> Vec<&'static str> {
     let mut features = Vec::new();
     if cfg!(feature = "cpu") {
@@ -800,6 +760,13 @@ fn normalized_provider_name(name: &str) -> String {
 }
 
 /// Appends a provider through the generic string-keyed entry point.
+///
+/// An empty option list passes null rather than the dangling pointer an empty `Vec`
+/// would yield.
+///
+/// # Errors
+///
+/// [`Error::InteriorNul`] if the provider name or any option contains a NUL byte.
 fn append_by_name(
     api: Api,
     options: *mut sys::OrtSessionOptions,
@@ -814,16 +781,12 @@ fn append_by_name(
     let key_ptrs: Vec<*const c_char> = keys.iter().map(|k| k.as_ptr()).collect();
     let value_ptrs: Vec<*const c_char> = values.iter().map(|v| v.as_ptr()).collect();
 
-    // An empty option list passes null rather than a dangling pointer from an
-    // empty Vec, even though ONNX Runtime should not read it when num_keys is 0.
     let (kp, vp) = if key_ptrs.is_empty() {
         (ptr::null(), ptr::null())
     } else {
         (key_ptrs.as_ptr(), value_ptrs.as_ptr())
     };
 
-    // SAFETY: `options` is live; the name, keys and values are valid, NUL-
-    // terminated, and outlive the call, which only reads them.
     unsafe { api.check(append(options, c_name.as_ptr(), kp, vp, key_ptrs.len())) }
 }
 

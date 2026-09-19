@@ -137,20 +137,12 @@ sed 's/^/  /' "$OUT/meta.txt"
 printf '%-26s %7s %9s %7s %8s %8s %8s %6s %7s\n' \
   model offered achieved share p50_ms p95_ms p99_ms shed failed > "$SUMMARY"
 
-# The vocabulary only matters for a configuration with string inputs. Without it those
-# features are sent as words the graph has never seen, which costs the same to look up
-# but exercises only the out-of-vocabulary row.
-VOCAB_ARGS=()
-if [ -f "$GEN_DIR/bench_string_vocabulary.json" ]; then
-  VOCAB_ARGS=(--vocabulary "$GEN_DIR/bench_string_vocabulary.json")
-fi
-
 # One reachability check, so a security group mistake fails in a second rather than
 # looking like a server that sheds everything.
 echo
 echo "checking $SERVER is reachable"
 if ! ./target/release/benchmark-client \
-      --server "$SERVER" --model-config "$config" ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} \
+      --server "$SERVER" --model-config "$config" \
       ${SPEC_ARGS[@]+"${SPEC_ARGS[@]}"} \
       --tps 5 --duration-secs 2 --warmup-secs 0 --rows "$ROWS" --concurrency 4 \
       --label "reachability" > "$OUT/logs/reachability.log" 2>&1; then
@@ -180,7 +172,7 @@ for rate in $TPS; do
   ./target/release/benchmark-client \
     --server "$SERVER" \
     --model-config "$config" \
-    ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} ${INFLIGHT_ARGS[@]+"${INFLIGHT_ARGS[@]}"} \
+    ${INFLIGHT_ARGS[@]+"${INFLIGHT_ARGS[@]}"} \
     ${SPEC_ARGS[@]+"${SPEC_ARGS[@]}"} \
     --tps "$rate" --duration-secs "$DURATION" --warmup-secs "$warm" \
     --rows "$ROWS" \
@@ -204,6 +196,6 @@ still needed for a complete result, from the SERVER host:
   scripts/benchmark/hostinfo.sh                     the server's environment block
   grep '^metrics:' /tmp/hushar-server/*.server.log  the engine's own timings
 
-then: cp benchmark-data/results/TEMPLATE.md \\
+then: cp benchmark-data/TEMPLATE.md \\
         benchmark-data/results/<class>/<instance>-<provider>-$(date -u '+%Y-%m-%d').md
 EOF

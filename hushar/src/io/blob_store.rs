@@ -3,32 +3,15 @@
 
 //! Reading and writing objects, wherever they live.
 //!
-//! Today that means the local filesystem and Amazon S3. The point of the
-//! [`BlobStore`] trait is that it will mean more later without anything above this
-//! module changing: **adding a cloud is one implementation and one arm of
-//! [`open`]**.
-//!
-//! # Why the vendor's SDK rather than a multi-cloud crate
-//!
-//! A crate that abstracts every cloud has to decide what is portable, and that
-//! decision is made by people who do not ship any of the services. Using
-//! Amazon's own SDK means the client tracks S3's features, is maintained by the
-//! team that changes them, and has no opinion to disagree with. The portability
-//! this service needs is small and specific — read an object, write an object —
-//! so it is cheaper to own that interface here than to depend on someone else's
-//! idea of it.
-//!
-//! The cost is real and worth naming: each cloud is hand-written rather than free.
-//! That is the trade, and it is only worth making because the surface is two
-//! methods.
+//! Today that means the local filesystem and Amazon S3. Adding a cloud is one
+//! implementation of [`BlobStore`] and one arm of [`BlobStores::open`]; nothing else in
+//! the service knows where objects live.
 //!
 //! # Adding a cloud
 //!
 //! 1. Implement [`BlobStore`] for it.
 //! 2. Add a scheme to [`Location::parse`].
 //! 3. Add an arm to [`BlobStores::open`].
-//!
-//! Nothing else in the service knows where objects live.
 
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
@@ -38,12 +21,12 @@ use crate::io::FileReaderResult;
 
 /// Where an object or a prefix of objects lives.
 ///
-/// Variants:
-/// - `Local` — a path on the local filesystem.
-/// - `S3` — a bucket and key. The key may be empty, addressing the bucket root.
+/// # Fields
 ///
-/// Parsed once at startup so that an unusable URI fails before the server binds rather
-/// than on the first request that needs it.
+/// * `Local` - a path on the local filesystem
+/// * `S3` - a bucket and key; the key may be empty, addressing the bucket root
+///
+/// Parsed once at startup, so an unusable URI fails before the server binds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Location {
     Local(PathBuf),
@@ -51,20 +34,16 @@ pub(crate) enum Location {
 }
 
 impl Location {
-    /// Parses a URI, treating anything without a recognised scheme as a local
-    /// path.
+    /// Parses a URI, treating anything without a recognised scheme as a local path.
     ///
-    /// The bare-path case is deliberate: existing configurations use plain paths, and
-    /// making local development spell `file://` would be a papercut for nothing.
+    /// The recognised schemes are `s3://` and `file://`. Bare filesystem paths are
+    /// accepted as they are. Only the empty-authority `file:///path` form is a local
+    /// file URL.
     ///
-    /// Only the empty-authority `file:///path` form is accepted -- `file://host/path`
-    /// is legal but meaningless here, so it is refused rather than mishandled. A
-    /// scheme this service does not implement is also refused, listing the ones it
-    /// does, rather than being read as a relative path called `gs:`.
+    /// # Errors
     ///
-    /// `file://host/path` is legal but meaningless here, so only the empty-authority
-    /// form is accepted rather than silently mishandled. A scheme this service does not
-    /// serve should say so, rather than being read as a relative path called "gs:".
+    /// Fails on an `s3://` URI with no bucket name, on a `file://host/path` URI, and on
+    /// any other scheme — the last naming the schemes that are supported.
     pub(crate) fn parse(uri: &str) -> FileReaderResult<Self> {
         if let Some(rest) = uri.strip_prefix("s3://") {
             let (bucket, key) = rest.split_once('/').unwrap_or((rest, ""));
@@ -99,7 +78,7 @@ impl Location {
         Ok(Self::Local(PathBuf::from(uri)))
     }
 
-    /// This location with `suffix` appended.
+    /// This location with `suffix` appended, collapsing slashes on either side.
     ///
     /// Used for inference logs, where the configured URI names a prefix and each
     /// batch becomes one object beneath it.
@@ -145,10 +124,10 @@ pub(crate) trait BlobStore: Debug + Send + Sync {
 
     /// Reads the object at `location` as UTF-8 text.
     ///
-    /// Provided rather than implemented per backend: it is the same for all of
-    /// them, and invalid UTF-8 should be reported the same way wherever it came
-    /// from. Configuration is parsed as JSON, so replacing bad bytes would turn a
-    /// corrupt upload into a baffling parse error further along.
+    /// # Errors
+    ///
+    /// As [`BlobStore::get`], or if the bytes are not valid UTF-8 — invalid bytes are
+    /// reported rather than replaced, so a corrupt object is not read as JSON.
     async fn get_string(&self, location: &Location) -> FileReaderResult<String> {
         let bytes = self.get(location).await?;
         String::from_utf8(bytes)
@@ -161,9 +140,8 @@ pub(crate) trait BlobStore: Debug + Send + Sync {
 pub(crate) struct LocalBlobStore;
 
 #[tonic::async_trait]
-/// Reads and writes on `spawn_blocking`, because filesystem calls are blocking
-/// syscalls and these run on async workers. A model can be tens of megabytes, which is
-/// long enough to matter.
+/// Reads and writes on `spawn_blocking`, since filesystem calls are blocking syscalls
+/// and these run on async workers.
 impl BlobStore for LocalBlobStore {
     fn backend(&self) -> &'static str {
         "local filesystem"
@@ -178,11 +156,8 @@ impl BlobStore for LocalBlobStore {
             .map_err(|e| format!("cannot read {}: {e}", location.uri()).into())
     }
 
-    /// Creates parent directories, which a time-partitioned log key needs and an S3
-    /// key does not -- S3 keys are flat, so there is nothing to create there.
-    ///
-    /// Parents are created because a time-partitioned log key is a directory tree that
-    /// does not exist yet, unlike an S3 key, which is flat.
+    /// Writes `bytes`, creating any parent directories first, as a time-partitioned log
+    /// key needs.
     async fn put(&self, location: &Location, bytes: Vec<u8>) -> FileReaderResult<()> {
         let path = local_path(location)?.to_path_buf();
         let uri = location.uri();
@@ -253,8 +228,8 @@ impl BlobStore for S3BlobStore {
         Ok(bytes.into_bytes().to_vec())
     }
 
-    /// Creates parent directories, which a time-partitioned log key needs and an S3
-    /// key does not -- S3 keys are flat, so there is nothing to create there.
+    /// Writes `bytes` to the location's key. S3 keys are flat, so there are no parents
+    /// to create.
     async fn put(&self, location: &Location, bytes: Vec<u8>) -> FileReaderResult<()> {
         let (bucket, key) = s3_parts(location)?;
         self.client
@@ -289,11 +264,10 @@ fn s3_parts(location: &Location) -> FileReaderResult<(&str, &str)> {
 
 /// Resolves locations to the store that serves them.
 ///
-/// The S3 client is built on first use rather than at startup. That is not a
-/// micro-optimisation: `aws_config::load_from_env` walks the credential chain,
-/// which on a machine with no credentials means waiting on an instance-metadata
-/// probe that will time out. A purely local run should not pay for that, and
-/// before this it did.
+/// The S3 client is built on first use rather than at startup:
+/// `aws_config::load_from_env` walks the credential chain, which on a machine with no
+/// credentials waits on an instance-metadata probe that times out. A local-only run
+/// never builds it.
 #[derive(Debug, Default)]
 pub(crate) struct BlobStores {
     local: Arc<LocalBlobStore>,
@@ -336,7 +310,7 @@ impl BlobStores {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// A bucket with no key addresses its root, which is a legitimate prefix.
+    /// An `s3://` URI splits into bucket and key; a bucket with no key is its root.
     #[test]
     fn s3_uris_split_into_bucket_and_key() {
         assert_eq!(
@@ -367,8 +341,7 @@ mod tests {
         assert!(Location::parse("s3://").is_err());
         assert!(Location::parse("s3:///key-with-no-bucket").is_err());
     }
-    /// Bare paths are the compatibility case: configurations that predate URIs, and
-    /// local development.
+    /// Bare paths and `file:///` URLs both parse to a local location.
     #[test]
     fn bare_paths_and_file_urls_both_mean_the_filesystem() {
         assert_eq!(
@@ -384,8 +357,7 @@ mod tests {
             Location::Local(PathBuf::from("/tmp/model.onnx"))
         );
     }
-    /// The failure that matters for the roadmap: someone points this at Azure before
-    /// Azure exists. It must say so rather than treat "az:" as a directory name.
+    /// An unsupported scheme is refused, naming the schemes that are supported.
     #[test]
     fn an_unsupported_scheme_says_what_is_supported() {
         for uri in ["az://container/key", "gs://bucket/key", "https://host/key"] {
@@ -396,8 +368,8 @@ mod tests {
             );
         }
     }
-    /// A bucket root gains no leading slash, which would be an empty first key segment
-    /// and a different object. Trailing and leading slashes on either side collapse.
+    /// Joining a suffix keeps the backend and collapses slashes on either side; a bucket
+    /// root gains no leading slash.
     #[test]
     fn joining_a_suffix_keeps_the_backend() {
         let s3 = Location::parse("s3://bucket/logs").expect("valid");
@@ -418,9 +390,7 @@ mod tests {
             "/tmp/logs/year=2026/x.pb"
         );
     }
-    /// Cannot happen through `BlobStores`, but the trait is public within the crate and
-    /// a future caller could get it wrong. Saying so beats a panic or a silently empty
-    /// read.
+    /// A location sent to the wrong store is reported rather than panicking.
     #[test]
     fn a_location_sent_to_the_wrong_store_is_reported() {
         let s3 = Location::parse("s3://bucket/key").expect("valid");
@@ -431,8 +401,7 @@ mod tests {
         let err = s3_parts(&local).unwrap_err().to_string();
         assert!(err.contains("not an S3 location"), "got {err}");
     }
-    /// Writing through a prefix creates the intermediate directories, which a
-    /// time-partitioned log key needs and an S3 key does not.
+    /// A local object round-trips through a prefix, creating intermediate directories.
     #[tokio::test]
     async fn a_local_object_round_trips() {
         let dir = std::env::temp_dir().join(format!("hushar-blob-{}", uuid::Uuid::new_v4()));
@@ -487,9 +456,7 @@ mod tests {
 
         std::fs::remove_file(&path).ok();
     }
-    /// The reason the S3 client is lazy: `load_from_env` walks the credential chain,
-    /// and on a machine with none that means waiting for an instance-metadata probe to
-    /// time out. A local run should not pay for it.
+    /// Resolving a local path must not initialise the S3 client.
     #[tokio::test]
     async fn a_local_only_run_never_builds_an_aws_client() {
         let stores = BlobStores::new();

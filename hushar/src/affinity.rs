@@ -3,28 +3,17 @@
 
 //! Which logical CPUs a thread may run on.
 //!
-//! Thread *counts* decide how much work runs at once; affinity decides *where*. The two
-//! are separate problems and this file only does the second. See
+//! Thread *counts* decide how much work runs at once; affinity decides *where*. See
 //! [`crate::config::service_config::ThreadingConfig`] for the counts.
 //!
-//! # Why pin at all
+//! Pinning keeps a thread's cache warm and keeps two pools apart — the async pool on a
+//! couple of cores and the engine on the rest — so connection handling cannot preempt
+//! an inference mid-operator. On a NUMA machine it also keeps a thread on the socket its
+//! weights live on.
 //!
-//! Without affinity the kernel is free to move a thread between cores, and each move
-//! leaves its warm cache behind. That is cheap for a thread that mostly waits and
-//! expensive for one running a matmul over a large weight matrix. Pinning also lets two
-//! pools be kept apart: the async pool on a couple of cores and the engine on the rest,
-//! so a burst of connection handling cannot preempt an inference mid-operator.
-//!
-//! On a NUMA machine it matters more than that, because a thread moved to another socket
-//! reaches its weights across the interconnect.
-//!
-//! # Linux only, and honest about it
-//!
-//! `sched_setaffinity` is a Linux interface. This service is deployed on Linux, so that
-//! is what is implemented. macOS is a development environment: its thread affinity is
-//! advisory, the kernel is free to ignore it, and on Apple Silicon it effectively always
-//! does — so rather than call something that does nothing, the non-Linux build compiles
-//! the pinning out and the banner says the setting was accepted and not applied.
+//! `sched_setaffinity` is a Linux interface, so placement only happens on Linux. On other
+//! targets the pinning compiles out, [`SUPPORTED`] is `false`, and the banner reports the
+//! setting as accepted and not applied.
 
 use std::fmt::Write as _;
 
@@ -36,13 +25,15 @@ use std::fmt::Write as _;
 ///   "0-3,8-11"   both forms, combined
 /// ```
 ///
-/// Returns the cores in ascending order with duplicates removed, so a spec written as
-/// two overlapping ranges pins to the union rather than to a list that repeats.
+/// # Returns
+///
+/// The cores in ascending order with duplicates removed, so overlapping ranges give their
+/// union rather than a list that repeats.
 ///
 /// # Errors
 ///
-/// Reports the offending fragment rather than the whole spec, because a long list is
-/// usually wrong in one place.
+/// Names the offending fragment when a piece is not a core number or a range counts
+/// downwards, and reports the whole spec when it names no cores.
 pub(crate) fn parse_cores(spec: &str) -> Result<Vec<usize>, String> {
     let mut cores = Vec::new();
     for piece in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
@@ -100,15 +91,15 @@ pub(crate) fn describe(cores: &[usize]) -> String {
 
 /// Splits `cores` into `groups` contiguous slices, for one session pool each.
 ///
-/// Contiguous rather than round-robin on purpose: neighbouring core ids are usually on
-/// the same NUMA node and share a cache level, so a pool given `0..8` keeps its threads
-/// close to each other and to the memory they touch. Interleaving would spread every pool
-/// across the whole machine, which is the arrangement this exists to avoid.
+/// A slice is a run of neighbouring ids rather than a stride, so a pool stays on cores
+/// that share a NUMA node and a cache level.
 ///
-/// The remainder is spread over the first slices rather than piled onto the last, so the
-/// largest and smallest differ by at most one. Fewer cores than groups yields empty
-/// slices for the tail, and an empty slice means "place this one anywhere" -- honest, and
-/// better than refusing to start.
+/// # Returns
+///
+/// One slice per group, in order. The remainder is spread over the first slices, so the
+/// largest and the smallest differ by at most one. Fewer cores than groups leaves the
+/// trailing slices empty, and an empty slice means "place this one anywhere". `groups` of
+/// zero gives no slices.
 pub(crate) fn partition(cores: &[usize], groups: usize) -> Vec<Vec<usize>> {
     if groups == 0 {
         return Vec::new();
@@ -128,16 +119,16 @@ pub(crate) fn partition(cores: &[usize], groups: usize) -> Vec<Vec<usize>> {
 /// ONNX Runtime's `session.intra_op_thread_affinities` value, or `None` when there is
 /// nothing to say.
 ///
-/// The format is one entry per intra-op thread **other than the calling thread**, so
-/// `intra_op_threads` of `n` needs `n - 1` entries; ONNX Runtime rejects a count that
-/// disagrees. Cores are handed out round-robin, which gives one core each when there are
-/// at least as many cores as threads and shares them predictably when there are not.
+/// One semicolon-separated entry per intra-op thread **other than the calling thread**,
+/// so `intra_op_threads` of `n` needs `n - 1` entries; ONNX Runtime rejects a count that
+/// disagrees. The calling thread is pinned separately and takes the first core, so the
+/// pool threads take the rest round-robin, wrapping when the list is shorter than the
+/// pool.
 ///
-/// **The ids are 1-based.** ONNX Runtime enforces `processor_id > 0` and then subtracts one
-/// to get the logical processor, so core `0` is written `1`. Emitting the core number
-/// directly both shifts every thread down by one core and fails outright the moment core 0
-/// is in the list -- `Processor id must start from 1: 0` -- which is a startup panic rather
-/// than a warning.
+/// **The ids are 1-based.** ONNX Runtime enforces `processor_id > 0` and then subtracts
+/// one to get the logical processor, so core `0` is written `1`.
+///
+/// # Returns
 ///
 /// `None` when the calling thread is the only one (`n <= 1`), since there is no extra
 /// thread to place, or when no cores were configured.
@@ -146,8 +137,6 @@ pub(crate) fn ort_affinity(cores: &[usize], intra_op_threads: i32) -> Option<Str
     if extra == 0 || cores.is_empty() {
         return None;
     }
-    // The calling thread is pinned separately, by us, so it takes the first core and the
-    // pool threads take the rest -- wrapping if the list is shorter than the pool.
     let mut entries = Vec::with_capacity(extra);
     for slot in 0..extra {
         entries.push((cores[(slot + 1) % cores.len()] + 1).to_string());
@@ -155,20 +144,21 @@ pub(crate) fn ort_affinity(cores: &[usize], intra_op_threads: i32) -> Option<Str
     Some(entries.join(";"))
 }
 
-/// Pins the calling thread to `cores`.
+/// Pins the calling thread to `cores`. An empty list is a no-op.
+///
+/// `sched_setaffinity` is called with pid `0`, which addresses the calling thread rather
+/// than the whole process.
 ///
 /// # Errors
 ///
-/// The message names the syscall and the core list, because the usual cause is a core
-/// that does not exist on this host -- a configuration copied from a larger instance.
+/// Names the syscall and the core list when a core is beyond the kernel's `CPU_SETSIZE`
+/// or `sched_setaffinity` fails -- usually a core that does not exist on this host,
+/// from a configuration copied off a larger instance.
 #[cfg(target_os = "linux")]
 pub(crate) fn pin_current_thread(cores: &[usize]) -> Result<(), String> {
     if cores.is_empty() {
         return Ok(());
     }
-    // SAFETY: `set` is zeroed before use and only touched through the CPU_SET macros,
-    // which bound-check against CPU_SETSIZE. `sched_setaffinity` with pid 0 addresses
-    // the calling thread and reads `size` bytes from the pointer we own.
     unsafe {
         let mut set: libc::cpu_set_t = std::mem::zeroed();
         libc::CPU_ZERO(&mut set);
@@ -192,11 +182,9 @@ pub(crate) fn pin_current_thread(cores: &[usize]) -> Result<(), String> {
     Ok(())
 }
 
-/// Accepts the request and does nothing, on a platform where it would mean nothing.
+/// Accepts the request and does nothing, on a target where placement is not supported.
 ///
-/// Not an error: a developer running the production configuration on a laptop should get
-/// the same service, minus a placement the kernel would have ignored. [`SUPPORTED`] is
-/// what the banner reports, so the difference is stated rather than silent.
+/// Always `Ok`. [`SUPPORTED`] is `false` here, and that is what the banner reports.
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn pin_current_thread(_cores: &[usize]) -> Result<(), String> {
     Ok(())
@@ -215,8 +203,7 @@ mod tests {
         assert_eq!(slices, vec![vec![0, 1], vec![2, 3], vec![4, 5], vec![6, 7]]);
     }
 
-    /// Contiguous, not interleaved: neighbouring ids share a NUMA node and a cache level,
-    /// and spreading a pool across the machine is the thing this avoids.
+    /// A slice is a run of neighbouring ids, not a stride.
     #[test]
     fn a_slice_is_a_run_of_neighbours_not_a_stride() {
         let slices = partition(&(0..192).collect::<Vec<_>>(), 24);
@@ -226,8 +213,7 @@ mod tests {
         assert_eq!(slices[23].last(), Some(&191));
     }
 
-    /// The remainder is spread over the first slices, so the largest and the smallest
-    /// differ by one rather than the last group taking everything left over.
+    /// An uneven split spreads the remainder over the first slices and places every core.
     #[test]
     fn an_uneven_split_differs_by_at_most_one() {
         let slices = partition(&(0..10).collect::<Vec<_>>(), 4);
@@ -240,8 +226,7 @@ mod tests {
         );
     }
 
-    /// Every core appears exactly once across the slices, whatever the split -- two pools
-    /// sharing a core is the contention this exists to remove.
+    /// Every core appears exactly once across the slices, whatever the split.
     #[test]
     fn slices_are_disjoint_and_cover_everything() {
         for groups in 1..=17 {
@@ -252,8 +237,7 @@ mod tests {
         }
     }
 
-    /// Fewer cores than groups leaves empty slices rather than failing: an empty slice
-    /// means "place this one anywhere", which is better than refusing to start.
+    /// Fewer cores than groups leaves empty slices rather than failing.
     #[test]
     fn more_groups_than_cores_leaves_empty_slices() {
         let slices = partition(&[0, 1], 4);
@@ -280,8 +264,7 @@ mod tests {
         assert_eq!(parse_cores("0-2,5,8-9").unwrap(), vec![0, 1, 2, 5, 8, 9]);
     }
 
-    /// Overlapping ranges are a union, not a list that repeats: pinning to the same core
-    /// twice is meaningless, and the count is used to report how many cores were taken.
+    /// Overlapping ranges give their union, sorted and deduplicated.
     #[test]
     fn overlapping_ranges_are_deduplicated_and_sorted() {
         assert_eq!(parse_cores("4-6,2-5").unwrap(), vec![2, 3, 4, 5, 6]);
@@ -310,7 +293,7 @@ mod tests {
         assert!(parse_cores("  ,  ").is_err());
     }
 
-    /// Round-trips through the compact form, since the banner prints it.
+    /// Runs of neighbouring cores collapse into ranges in the compact form.
     #[test]
     fn describing_a_core_list_collapses_runs() {
         assert_eq!(describe(&[0, 1, 2, 3]), "0-3");
@@ -320,8 +303,7 @@ mod tests {
         assert_eq!(describe(&[]), "");
     }
 
-    /// One entry per intra-op thread other than the caller, which is the format ONNX
-    /// Runtime checks against the thread count when the session is built.
+    /// The affinity string carries one entry per intra-op thread other than the caller.
     #[test]
     fn the_affinity_string_has_one_entry_per_extra_thread() {
         let cores = parse_cores("2-9").unwrap();
@@ -333,9 +315,7 @@ mod tests {
         );
     }
 
-    /// ONNX Runtime enforces `processor_id > 0` and then subtracts one, so the ids in this
-    /// string are 1-based. Emitting the core number directly shifts every pool thread down
-    /// by one core, and panics at startup as soon as core 0 is in the list.
+    /// Affinity ids are 1-based, and never 0 even when the round-robin wraps onto core 0.
     #[test]
     fn affinity_ids_are_one_based() {
         assert_eq!(
@@ -343,8 +323,6 @@ mod tests {
             "2;3;4",
             "cores 1,2,3 are written 2,3,4"
         );
-        // The case that used to fail the build of the session outright: a slice small
-        // enough that the round-robin wraps back onto core 0.
         let wrapped = ort_affinity(&[0, 1], 4).expect("3 extra threads");
         assert!(
             !wrapped.split(';').any(|id| id == "0"),
@@ -353,8 +331,7 @@ mod tests {
         assert_eq!(wrapped, "2;1;2");
     }
 
-    /// Nothing to place when the calling thread is the whole pool, which is the default
-    /// configuration -- so the common case sets no entry at all.
+    /// A single-thread pool, or no cores, produces no affinity string.
     #[test]
     fn one_thread_or_fewer_needs_no_affinity_string() {
         let cores = parse_cores("0-7").unwrap();
@@ -363,8 +340,7 @@ mod tests {
         assert_eq!(ort_affinity(&[], 8), None, "no cores, nothing to say");
     }
 
-    /// More threads than cores is legal and shares them, rather than failing or
-    /// silently dropping the surplus threads.
+    /// More threads than cores shares the cores round-robin rather than failing.
     #[test]
     fn more_threads_than_cores_wraps_round_robin() {
         let cores = parse_cores("4-5").unwrap();

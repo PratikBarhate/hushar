@@ -3,7 +3,7 @@
 
 //! Service configuration: what is true of the server rather than of the model.
 //!
-//! The model, its execution provider and its feature configuration all live in
+//! The model, its execution provider and its feature configuration live in
 //! [`crate::config::model_config`], beside the model they apply to. Everything else
 //! about the process is here — the listener, where observability goes, and how much it
 //! is allowed to cost.
@@ -30,29 +30,10 @@
 //! ```
 //!
 //! `threading` is absent above, which is the usual case: every one of its fields has a
-//! default, and the two that matter — how many inferences run at once and how many
-//! requests a connection may have in flight — are the group's whole subject. See
-//! [`ThreadingConfig`].
+//! default. See [`ThreadingConfig`].
 //!
-//! # Why one file rather than a file and a command line
-//!
-//! These settings were split: the listener and the model pointer here, and the log
-//! destination, the sampling rate and both sinks' batch sizes as command-line flags.
-//! The split did not follow anything — `threading.connection_concurrency` is no more a
-//! property of the deployment than `inference_log.uri` is — and it meant the destination
-//! a deployment writes to could not be versioned alongside the deployment.
-//!
-//! One exception is forced. `--config-uri` says where *this* file is, so it cannot
-//! live in it. `--port` and `--bind-address` remain as overrides for running two
-//! instances on one host, which is a developer concern rather than a deployment one.
-//!
-//! # Nested rather than flat
-//!
-//! `batch_size` means a different thing to each sink — 500 scored batches of timings
-//! against 5000 requests' worth of feature maps — and the same is true of
-//! `max_sends_in_flight`, which bounds memory as `batch_size × (n + 1)` in each. A flat
-//! `metrics_batch_size`/`data_batch_size` pair only reads as parallel to someone who
-//! already knows that; grouping puts each number beside the thing it describes.
+//! `--config-uri` says where *this* file is, so it cannot live in it. `--port` and
+//! `--bind-address` remain as overrides for running two instances on one host.
 
 use std::net::IpAddr;
 
@@ -70,24 +51,18 @@ fn default_port_number() -> u16 {
 
 /// In-flight requests allowed per connection, when the configuration does not give one.
 ///
-/// 500, and deliberately generous. This is an **admission** ceiling on one HTTP/2
-/// connection, not a bound on work: `threading.inference_concurrency` is what decides how
-/// many inferences run at once, and a request admitted past it queues rather than
-/// consuming a core. Sizing admission from the core count instead — which this once did —
-/// made a single-connection client the ceiling on a large host, because one tonic
-/// `Channel` is one connection and the limit applies per connection.
-///
-/// Low enough to stay a ceiling rather than an invitation to unbounded queueing, and
-/// well above what any one caller pipelines.
+/// Defaults to 500. This is an **admission** ceiling on one HTTP/2 connection, not a
+/// bound on work: `threading.inference_concurrency` decides how many inferences run at
+/// once, and a request admitted past it queues rather than consuming a core. The limit
+/// applies per connection, and one tonic `Channel` is one connection.
 pub fn default_connection_concurrency() -> u16 {
     500
 }
 
 /// Threads ONNX Runtime may use inside one operator, the calling thread included.
 ///
-/// One, because concurrent requests already keep every core busy and a second thread
-/// inside an operator then only contends with them. Raise it when latency matters more
-/// than requests per second, and lower `threading.inference_concurrency` to match.
+/// One. Raise it when latency matters more than requests per second, and lower
+/// `threading.inference_concurrency` to match.
 fn default_intra_op_threads() -> i32 {
     1
 }
@@ -114,20 +89,18 @@ fn default_max_sends_in_flight() -> usize {
 
 /// Where inference logs go, and how much they are allowed to cost.
 ///
-/// Fields:
-/// - `uri` — the destination. `kinesis://stream-name` selects a data stream; anything
+/// # Fields
+///
+/// * `uri` - the destination. `kinesis://stream-name` selects a data stream; anything
 ///   else is a blob-store prefix, written beneath and partitioned by time. Same URI
-///   rules as `model_config_path`.
-/// - `batch_size` — batches accumulated before a send. Larger means fewer, bigger
-///   writes and more memory held. Kinesis caps one call at 500 records, so a larger
-///   number is capped there; a blob store takes an object of any size, which is why the
-///   default is well above what a stream can use.
-/// - `sample_rate` — fraction of requests whose features are recorded, in `0.0..=1.0`.
-///   The cheapest lever over what the log costs, and the only one that also removes
-///   work: an unsampled request never copies its feature values anywhere.
-/// - `max_sends_in_flight` — sends that may be in the air before the oldest batch is
-///   dropped and reported. Holds at most `batch_size × (this + 1)` records, so raising
-///   it buys tolerance of a slow destination and costs memory in proportion.
+///   rules as `model_config_path`
+/// * `batch_size` - batches accumulated before a send. Default 5000. Kinesis caps one
+///   call at 500 records, so a larger number is capped there; a blob store takes an
+///   object of any size
+/// * `sample_rate` - fraction of requests whose features are recorded, in `0.0..=1.0`.
+///   Default 1.0. An unsampled request never copies its feature values anywhere
+/// * `max_sends_in_flight` - sends that may be in the air before the oldest batch is
+///   dropped and reported. Default 4. Holds at most `batch_size × (this + 1)` records
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct InferenceLogConfig {
@@ -142,15 +115,15 @@ pub struct InferenceLogConfig {
 
 /// Where timings go, and how often.
 ///
-/// Fields:
-/// - `cloudwatch_namespace` — publish to CloudWatch under this namespace. Absent means
-///   summarise to stderr instead, which is what a local run wants and needs no
-///   credentials.
-/// - `batch_size` — scored batches accumulated before a send, and the number of batches
-///   per stderr summary line. CloudWatch takes at most 1000 data points per call and
-///   each batch contributes three, so a larger number is capped at 333 there.
-/// - `max_sends_in_flight` — as in [`InferenceLogConfig`], but over a much smaller
-///   record, so the memory this implies is a fraction of the log's.
+/// # Fields
+///
+/// * `cloudwatch_namespace` - publish to CloudWatch under this namespace. Absent
+///   summarises to stderr instead, which needs no credentials
+/// * `batch_size` - scored batches accumulated before a send, and the number of batches
+///   per stderr summary line. Default 500. CloudWatch takes at most 1000 data points per
+///   call and each batch contributes three, so a larger number is capped at 333 there
+/// * `max_sends_in_flight` - as in [`InferenceLogConfig`], but over a much smaller
+///   record. Default 4
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MetricsConfig {
@@ -162,8 +135,7 @@ pub struct MetricsConfig {
 }
 
 impl Default for MetricsConfig {
-    /// Absent `metrics` is stderr at the default batch size — the same as a local run
-    /// with nothing configured, so a minimal configuration still starts.
+    /// Absent `metrics` is stderr at the default batch size.
     fn default() -> Self {
         Self {
             cloudwatch_namespace: None,
@@ -175,10 +147,9 @@ impl Default for MetricsConfig {
 
 /// How the process spends the host's cores, and how much it lets in.
 ///
-/// Two of these numbers multiply, which is the whole reason they are one group: the load a
-/// configuration puts on the CPU is `inference_concurrency × intra_op_threads`, and
-/// choosing either without the other is how a service ends up with more runnable threads
-/// than cores. The first is the gate in front of them.
+/// The CPU load a configuration implies is `inference_concurrency × intra_op_threads`, so
+/// the two are chosen together or the process ends up with more runnable threads than
+/// cores. `connection_concurrency` is the gate in front of them.
 ///
 /// ```text
 ///   connection_concurrency  requests one connection may have in flight. Admission,
@@ -191,50 +162,49 @@ impl Default for MetricsConfig {
 ///                           calling thread included.
 /// ```
 ///
-/// # The dial this is
+/// These choose where the parallelism goes rather than buying throughput, since the total
+/// work in a request is fixed. `inference_concurrency = cores, intra_op_threads = 1` runs
+/// one inference per core: the most requests per second, each as slow as one core can
+/// manage. `inference_concurrency = 1, intra_op_threads = cores` puts the whole machine
+/// behind one request: the same rows per second, a fraction of the latency, and almost
+/// nothing in flight.
 ///
-/// The total work in a request is fixed, so these do not buy throughput — they choose
-/// where the parallelism goes. `inference_concurrency = cores, intra_op_threads = 1` runs
-/// one inference per core: the most requests per second, and each one as slow as a single
-/// core can manage. `inference_concurrency = 1, intra_op_threads = cores` puts the whole
-/// machine behind one request: the same rows per second, a fraction of the latency, and
-/// almost nothing in flight.
+/// # Fields
 ///
-/// Admission belongs here rather than beside the port because it is the front of the same
-/// queue: `connection_concurrency` decides how deep the line in front of
-/// `inference_concurrency` may get on one connection, and the two are read together or
-/// neither makes sense.
-///
-/// Fields:
-/// - `connection_concurrency` — in-flight requests allowed **per connection**, both as a
+/// * `connection_concurrency` - in-flight requests allowed **per connection**, both as a
 ///   tower concurrency limit and as HTTP/2's `MAX_CONCURRENT_STREAMS`. Default 500. It
-///   bounds one connection and not the process: ten connections admit ten times this.
-/// - `worker_threads` — tokio async workers. Absent means one per core, which is
-///   generous: this pool does no inference. Two or three is usually enough, and the
-///   cores it does not take are cores the engine can have.
-/// - `inference_concurrency` — the ceiling on concurrent inferences, which is the size of
+///   bounds one connection and not the process: ten connections admit ten times this
+/// * `worker_threads` - tokio async workers. Absent means one per core. This pool does no
+///   inference, so two or three is usually enough
+/// * `inference_concurrency` - the ceiling on concurrent inferences, which is the size of
 ///   tokio's blocking pool, and the queue in front of the engine. Absent means one per
-///   core.
-/// - `intra_op_threads` — passed to ONNX Runtime. `1` keeps each inference on its
-///   calling thread. `0` leaves the runtime's own default, which is the physical core
-///   count. Note the pool is **per session and shared**, so `n` concurrent callers do
-///   not get `n` pools.
-/// - `worker_cores`, `compute_cores` — which logical CPUs each pool may run on, as a
+///   core
+/// * `intra_op_threads` - passed to ONNX Runtime. Default 1, which keeps each inference
+///   on its calling thread. `0` leaves the runtime's own default, which is the physical
+///   core count. The pool is **per session and shared**, so `n` concurrent callers do not
+///   get `n` pools
+/// * `inter_op_threads` - the alternative to the above, and **only one of the two may
+///   exceed 1**. Intra-op spends threads inside a single operator; inter-op spends them on
+///   operators that do not depend on each other. Setting this switches ONNX Runtime to its
+///   parallel executor, which is worth doing only on a branching graph — two towers, a
+///   trunk with several output heads. A chain of transformer blocks has no branches, and
+///   attention heads are not branches either: they are a dimension inside one batched
+///   operator, which the intra-op pool already splits. Absent means intra-op
+/// * `worker_cores`, `compute_cores` - which logical CPUs each pool may run on, as a
 ///   `taskset`-style list such as `"0-1"` or `"2-9,12"`. Absent leaves placement to the
-///   kernel. Keeping the two lists disjoint is the point: a burst of connection handling
-///   then cannot preempt an inference mid-operator. Applied on Linux; accepted and
-///   reported as not applied elsewhere, since macOS affinity is advisory.
-/// - `allow_spinning` — whether idle ONNX Runtime intra-op threads spin waiting for
-///   work. `true` is the runtime's own default and trades CPU for latency. Set it
-///   `false` when the pool is larger than the cores it has, where spinning threads
-///   steal time from the ones doing work.
-/// - `sessions_per_model` — independent ONNX Runtime sessions each model is loaded into.
-///   The intra-op pool belongs to the **session**, so with one session every concurrent
-///   request to a model queues for the same pool and latency climbs with load on an
-///   otherwise idle machine. `n` gives `n` pools per model, each pinned to its own slice
-///   of the compute cores, so a request gets a pool to itself. There are `n` slices, not
+///   kernel. Keeping the two lists disjoint stops a burst of connection handling
+///   preempting an inference mid-operator. Applied on Linux; accepted and reported as not
+///   applied elsewhere, since macOS affinity is advisory
+/// * `allow_spinning` - whether idle ONNX Runtime intra-op threads spin waiting for work.
+///   Absent leaves the runtime's own default of `true`, which trades CPU for latency. Set
+///   it `false` when the pool is larger than the cores it has, where spinning threads
+///   steal time from the ones doing work
+/// * `sessions_per_model` - independent ONNX Runtime sessions each model is loaded into.
+///   Default 1. The intra-op pool belongs to the **session**, so with one session every
+///   concurrent request to a model queues for the same pool. `n` gives `n` pools per
+///   model, each pinned to its own slice of the compute cores. There are `n` slices, not
 ///   `models × n`: replica `i` of every model shares slice `i`. Costs one copy of the
-///   weights per session, so `models × n` copies. Default 1.
+///   weights per session, so `models × n` copies
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ThreadingConfig {
@@ -247,6 +217,8 @@ pub struct ThreadingConfig {
     #[serde(default = "default_intra_op_threads")]
     pub intra_op_threads: i32,
     #[serde(default)]
+    pub inter_op_threads: Option<i32>,
+    #[serde(default)]
     pub worker_cores: Option<String>,
     #[serde(default)]
     pub compute_cores: Option<String>,
@@ -258,14 +230,14 @@ pub struct ThreadingConfig {
 
 impl Default for ThreadingConfig {
     /// Absent `threading` is one thread per core on both pools, no intra-op parallelism
-    /// and 500 admitted per connection — the throughput end of the dial, and what the
-    /// service did before these were configurable.
+    /// and 500 admitted per connection.
     fn default() -> Self {
         Self {
             connection_concurrency: default_connection_concurrency(),
             worker_threads: None,
             inference_concurrency: None,
             intra_op_threads: default_intra_op_threads(),
+            inter_op_threads: None,
             worker_cores: None,
             compute_cores: None,
             allow_spinning: None,
@@ -287,8 +259,8 @@ impl ThreadingConfig {
 
     /// The logical CPUs the async pool may use, empty when unset.
     ///
-    /// Already validated, so the parse cannot fail here — [`Self::validate_cores`] runs
-    /// from `validate` and reports a bad list with the field name.
+    /// [`Self::validate_cores`] has already refused an unparseable list at startup, so
+    /// the parse cannot fail here.
     pub fn worker_cores(&self) -> Vec<usize> {
         self.worker_cores
             .as_deref()
@@ -318,28 +290,74 @@ impl ThreadingConfig {
         Ok(())
     }
 
+    /// Which pool carries the width, and how wide it is.
+    ///
+    /// Inter-op when `inter_op_threads` asks for more than one thread, intra-op otherwise.
+    /// [`Self::validate_parallelism`] has already refused a configuration that asks for
+    /// both, so this does not have to choose between them.
+    pub fn parallelism(&self) -> Parallelism {
+        match self.inter_op_threads {
+            Some(n) if n > 1 => Parallelism::Inter(n),
+            _ => Parallelism::Intra(self.intra_op_threads),
+        }
+    }
+
+    /// Refuses a configuration that spends threads on both pools.
+    ///
+    /// The two are alternatives: intra-op widens one operator, inter-op overlaps several.
+    /// Asking for both multiplies the pools per session, which no longer divides into the
+    /// compute cores the way [`Self::slice_pressure`] reports, so the placement the banner
+    /// prints would stop describing the process.
+    ///
+    /// Choosing inter-op requires `intra_op_threads` to be exactly 1, and that includes
+    /// refusing 0. Zero is not "no intra-op pool" — it is ONNX Runtime's own default of one
+    /// thread per physical core — so a session with `inter_op_threads` of 8 and
+    /// `intra_op_threads` of 0 would claim the machine eight times over, quietly.
+    fn validate_parallelism(&self) -> Result<(), InferenceError> {
+        let inter = self.inter_op_threads.unwrap_or(1);
+        if inter < 0 {
+            return Err(format!(
+                "\"threading.inter_op_threads\" is {inter}; use a count of 1 or more, or 0 to \
+                 leave it to the runtime"
+            )
+            .into());
+        }
+        if inter > 1 && self.intra_op_threads != 1 {
+            let intra = self.intra_op_threads;
+            let because = if intra == 0 {
+                "0 is not \"none\" -- it is one intra-op thread per physical core, which this \
+                 session would hold alongside the inter-op pool"
+            } else {
+                "only one of the two may exceed 1, since intra-op widens a single operator \
+                 and inter-op overlaps independent ones"
+            };
+            return Err(format!(
+                "\"threading.inter_op_threads\" is {inter} and \"threading.intra_op_threads\" \
+                 is {intra}; set intra-op to 1 when choosing inter-op, because {because}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     /// Sessions to load each model into, never zero.
     ///
-    /// Per model, so the total is `models × this`. The **slices** are not: there are
-    /// `this` many, and replica `i` of every model shares slice `i`, so a thread that
-    /// serves the control and then the candidate stays on the same cores. That asymmetry
-    /// is why a candidate adds a pool to each slice without adding a core to it.
+    /// Per model, so the total is `models × this`. The slices are not: there are `this`
+    /// many, and replica `i` of every model shares slice `i`.
     pub fn sessions_per_model(&self) -> usize {
         self.sessions_per_model.max(1)
     }
 
-    /// Intra-op threads that can be runnable on one slice, and that slice's width.
+    /// Threads in the chosen pool that can be runnable on one slice, and that slice's
+    /// width.
     ///
-    /// The comparison the banner makes, and it is per slice because that is where
-    /// contention happens — the whole-host thread total hides it. Replica `i` of every
-    /// model shares slice `i` and each session owns a pool, so the threads on a slice are
-    /// `models × intra_op_threads` against that slice's cores.
-    ///
-    /// Exceeding the width is not automatically a cost. Measured at the same nominal 2.0x:
-    /// 6 requests a slice cost 20 % of p50, while 1 request a slice gave the tightest tail
-    /// on the host, because the second pool only sleeps. The banner says which case it is.
+    /// Replica `i` of every model shares slice `i` and each session owns a pool, so the
+    /// threads on a slice are `models × pool width` against that slice's cores. An absent
+    /// `compute_cores` makes the width the host's `cores` divided by the replicas.
     pub fn slice_pressure(&self, cores: usize, models: usize) -> (usize, usize) {
-        let pool = usize::try_from(self.intra_op_threads).unwrap_or(1).max(1);
+        let pool = usize::try_from(self.parallelism().width())
+            .unwrap_or(1)
+            .max(1);
         let replicas = self.sessions_per_model();
         let width = self.compute_cores().len();
         let width = if width == 0 { cores } else { width };
@@ -348,22 +366,21 @@ impl ThreadingConfig {
 
     /// Compute threads this configuration can have runnable at once.
     ///
-    /// `inference_concurrency` calling threads, plus the `intra_op_threads - 1` extra
-    /// threads in each session's pool. `sessions` is the **total** across models, because
-    /// the pool belongs to the session and not to the process: a candidate model resident
-    /// alongside the control brings its own pools, and `sessions_per_model` multiplies
-    /// both. So this figure moves with a deployment's model count even though the
-    /// configuration has not changed — measured at 20 % of p50 when it does.
+    /// `inference_concurrency` calling threads, plus the `width - 1` extra threads in each
+    /// session's pool, where the width is whichever of intra-op or inter-op was chosen.
+    /// Counts threads that *exist* rather than threads running: only
+    /// `inference_concurrency` inferences run at once, so with several sessions per model
+    /// most pools are idle at any instant — free when `allow_spinning` is false, and not
+    /// when it is true.
     ///
-    /// Note this counts threads that *exist*. Only `inference_concurrency` inferences run
-    /// at once, so with several sessions per model most pools are idle at any instant —
-    /// which is free when `allow_spinning` is false and very much not when it is true.
+    /// # Arguments
     ///
-    /// Compared against the core count in the banner, because either side of that
-    /// comparison being a surprise is expensive. Too many threads oversubscribes; too few
-    /// leaves an expensive machine idle, and this figure is what says which.
+    /// * `cores` - logical CPUs, used when `inference_concurrency` is absent
+    /// * `sessions` - the **total** sessions across models, since the pool belongs to the
+    ///   session and not to the process: a candidate model resident alongside the control
+    ///   brings its own pools, and `sessions_per_model` multiplies both
     pub fn compute_threads(&self, cores: usize, sessions: usize) -> usize {
-        let per_pool = usize::try_from(self.intra_op_threads)
+        let per_pool = usize::try_from(self.parallelism().width())
             .unwrap_or(0)
             .saturating_sub(1);
         self.inference_concurrency(cores)
@@ -371,24 +388,65 @@ impl ThreadingConfig {
     }
 }
 
+/// Which of ONNX Runtime's two thread pools carries a session's width.
+///
+/// The pools are alternatives rather than a pair to tune together: the configuration
+/// permits only one of the counts to exceed 1, so this records which was chosen. That
+/// keeps the thread budget a single number — see
+/// [`ThreadingConfig::compute_threads`] — instead of a product of two.
+///
+/// The choice is not symmetric, and the asymmetry is placement. ONNX Runtime pins each
+/// intra-op thread to a named core through `session.intra_op_thread_affinities`; it has no
+/// equivalent for the inter-op pool. An inter-op pool is therefore only as confined as the
+/// mask of the thread that created the session, which is why sessions are built on a
+/// thread pinned to their own slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Parallelism {
+    /// Threads split the work inside one operator. `1` is no parallelism at all, and `0`
+    /// leaves ONNX Runtime to pick.
+    Intra(i32),
+    /// Threads run operators that do not depend on each other. Needs a branching graph to
+    /// be worth anything.
+    Inter(i32),
+}
+
+impl Parallelism {
+    /// Threads in the chosen pool, counting the calling thread.
+    pub fn width(self) -> i32 {
+        match self {
+            Self::Intra(n) | Self::Inter(n) => n,
+        }
+    }
+
+    /// Whether ONNX Runtime should run operators concurrently.
+    pub fn is_parallel(self) -> bool {
+        matches!(self, Self::Inter(_))
+    }
+
+    /// The pool's name, for the banner.
+    pub fn pool_name(self) -> &'static str {
+        match self {
+            Self::Intra(_) => "intra-op",
+            Self::Inter(_) => "inter-op",
+        }
+    }
+}
+
 /// A second model to serve alongside the first, and how much traffic it takes.
 ///
 /// This is a roll-out: `model_config_path` is the control, this is the candidate, and
-/// `traffic_percent` is the share the candidate serves. Stating only the candidate's
-/// share is how a roll-out is actually described — "ten percent on the new model" — and
-/// it makes the two numbers impossible to contradict.
-///
-/// Fields:
-/// - `config_path` — the candidate's own model configuration, with its own URI scheme.
-///   It carries its own `vectorization_config`, so the candidate may take its features
-///   differently from the control: a request is named values, not a tensor, so one
-///   request can feed a vectorized model and a named one.
-/// - `traffic_percent` — whole percent, `0..=100`, that the candidate serves. `0` loads
-///   it and sends it nothing, which is how you check it loads before it serves anyone.
-///   `100` sends everything to it, which is the end of a roll-out.
+/// `traffic_percent` is the share the candidate serves.
 ///
 /// A caller naming a model in its request overrides this entirely — see
 /// `InferenceRequest.model_id`.
+///
+/// # Fields
+///
+/// * `config_path` - the candidate's own model configuration, with its own URI scheme. It
+///   carries its own `vectorization_config`, so the candidate may take its features
+///   differently from the control
+/// * `traffic_percent` - whole percent, `0..=100`, that the candidate serves. `0` loads
+///   it and sends it nothing; `100` sends everything to it
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CandidateModelConfig {
@@ -398,20 +456,19 @@ pub struct CandidateModelConfig {
 
 /// The server process's own settings.
 ///
-/// Fields:
-/// - `bind_address` — address to listen on. `0.0.0.0` accepts from anywhere, which is
-///   what a container wants; `127.0.0.1` restricts to the host. `--bind-address`
-///   overrides it.
-/// - `port_number` — the port to listen on, which `--port` overrides.
-/// - `model_config_path` — where the model's own configuration is. Carries its own URI
-///   scheme, so a model configuration in S3 beside a service configuration on local
-///   disk is expressible. This is the control arm when a candidate is configured.
-/// - `threading` — [`ThreadingConfig`]. Optional; absent is one thread per core on both
-///   pools, no intra-op parallelism, and 500 requests admitted per connection.
-/// - `candidate_model` — [`CandidateModelConfig`]. Optional; absent serves one model.
-/// - `inference_log` — [`InferenceLogConfig`]. Required, because a service that records
-///   nothing is a decision rather than a default.
-/// - `metrics` — [`MetricsConfig`]. Optional; absent means stderr.
+/// # Fields
+///
+/// * `bind_address` - address to listen on. Default `0.0.0.0`, which accepts from
+///   anywhere; `127.0.0.1` restricts to the host. `--bind-address` overrides it
+/// * `port_number` - the port to listen on. Default 8279, which `--port` overrides
+/// * `model_config_path` - where the model's own configuration is. Carries its own URI
+///   scheme, so a model configuration in S3 beside a service configuration on local disk
+///   is expressible. This is the control arm when a candidate is configured
+/// * `threading` - [`ThreadingConfig`]. Optional; absent is one thread per core on both
+///   pools, no intra-op parallelism, and 500 requests admitted per connection
+/// * `candidate_model` - [`CandidateModelConfig`]. Optional; absent serves one model
+/// * `inference_log` - [`InferenceLogConfig`]. Required
+/// * `metrics` - [`MetricsConfig`]. Optional; absent means stderr
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct HusharServiceConfig {
@@ -430,12 +487,12 @@ pub struct HusharServiceConfig {
 }
 
 impl HusharServiceConfig {
-    /// Parses and then checks. Both failures are startup failures.
+    /// Parses a service configuration from JSON and validates it.
     ///
-    /// `serde` establishes that the fields are present and of the right type;
-    /// [`Self::validate`] establishes that the numbers are ones the process can honour.
-    /// Keeping the second step separate means a configuration built in a test can be
-    /// checked the same way as one read from disk.
+    /// # Errors
+    ///
+    /// Returns an error if the JSON is missing a required field or has one of the wrong
+    /// type, or if [`Self::validate`] refuses a value.
     pub fn from_json(json_str: &str) -> Result<Self, InferenceError> {
         let config: HusharServiceConfig = serde_json::from_str(json_str)?;
         config.validate()?;
@@ -444,12 +501,17 @@ impl HusharServiceConfig {
 
     /// Refuses values a sink or sampler could not honour, naming the field and the range.
     ///
-    /// Refused rather than clamped. `"sample_rate": 10` is someone who meant 10%, and
-    /// reading it as "log everything" is the reading least likely to be what they
-    /// wanted; `"max_sends_in_flight": 0` would leave no slot for a send to start in.
-    /// The startup banner prints these numbers, so a silently corrected one would
-    /// misreport the memory bound in force — which is the kind of thing discovered while
-    /// wondering why a limit is not what was configured.
+    /// Values are refused rather than clamped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero `threading.connection_concurrency`,
+    /// `threading.worker_threads` or `threading.inference_concurrency`; a negative
+    /// `threading.intra_op_threads`; a core list that will not parse; an empty
+    /// `candidate_model.config_path` or a `traffic_percent` above 100; an
+    /// `inference_log.sample_rate` outside `0.0..=1.0`; a zero `batch_size` in either
+    /// group; a `max_sends_in_flight` that is zero or above `u32::MAX` in either group;
+    /// or an empty `metrics.cloudwatch_namespace`.
     pub fn validate(&self) -> Result<(), InferenceError> {
         if self.threading.connection_concurrency == 0 {
             return Err(format!(
@@ -476,6 +538,7 @@ impl HusharServiceConfig {
             }
         }
         self.threading.validate_cores()?;
+        self.threading.validate_parallelism()?;
         if self.threading.intra_op_threads < 0 {
             return Err(format!(
                 "\"threading.intra_op_threads\" is {}, which is not a thread count; \
@@ -528,7 +591,7 @@ impl HusharServiceConfig {
     }
 }
 
-/// A batch of zero would send an empty payload on every request.
+/// Checks a batch size, refusing zero because every batch would then be sent empty.
 fn validate_batch_size(field: &str, size: usize) -> Result<(), InferenceError> {
     if size == 0 {
         return Err(format!(
@@ -541,6 +604,12 @@ fn validate_batch_size(field: &str, size: usize) -> Result<(), InferenceError> {
 }
 
 /// Checks the in-flight bound, refusing what a sink could not honour.
+///
+/// # Errors
+///
+/// Returns an error if `sends` is zero, which would leave no slot for a send to start in,
+/// or above `u32::MAX`: draining at shutdown acquires every permit at once, and the
+/// semaphore counts them in a `u32`.
 fn validate_sends_in_flight(field: &str, sends: usize) -> Result<(), InferenceError> {
     if sends == 0 {
         return Err(format!(
@@ -549,8 +618,6 @@ fn validate_sends_in_flight(field: &str, sends: usize) -> Result<(), InferenceEr
         )
         .into());
     }
-    // Draining at shutdown acquires every permit at once, which the semaphore counts in
-    // a `u32`, so a wider bound could not be waited on.
     if sends > u32::MAX as usize {
         return Err(format!(
             "{field:?} is {sends}, more sends than can be tracked; the practical range \
@@ -577,15 +644,14 @@ fn validate_sample_rate(rate: f64) -> Result<(), InferenceError> {
 mod tests {
     use super::*;
 
-    /// The smallest configuration that starts, for tests about something else.
+    /// The smallest configuration that starts.
     const MINIMAL: &str = r#"{
         "model_config_path": "/tmp/model.json",
         "inference_log": { "uri": "/tmp/logs" }
     }"#;
 
-    /// Slots are absolute: the same configuration keeps its geometry when a candidate
-    /// arrives or leaves, and only the session count moves. This is the property that
-    /// lets one deployment configuration serve a roll-out and a single model.
+    /// Asserts slice geometry is fixed by the configuration and does not move with the
+    /// model count.
     #[test]
     fn slices_do_not_move_with_the_model_count() {
         let threading = ThreadingConfig {
@@ -599,7 +665,6 @@ mod tests {
             4,
             "sessions per model are configured, not derived"
         );
-        // Threads on a slice scale with the models resident; the slice itself does not.
         let (one_model, width) = threading.slice_pressure(96, 1);
         let (two_models, width_again) = threading.slice_pressure(96, 2);
         assert_eq!(
@@ -614,8 +679,7 @@ mod tests {
         );
     }
 
-    /// The oversubscription the banner warns about is a per-slice property, so it must be
-    /// computed from the slice width and not from the host's core count.
+    /// Asserts pressure is computed from the slice width, not the host's core count.
     #[test]
     fn slice_pressure_uses_the_slice_not_the_host() {
         let threading = ThreadingConfig {
@@ -632,7 +696,7 @@ mod tests {
         );
     }
 
-    /// An absent `compute_cores` means the whole host, so the width still has to divide.
+    /// Asserts an absent `compute_cores` divides the host's cores across the slices.
     #[test]
     fn slice_pressure_falls_back_to_the_host_width() {
         let threading = ThreadingConfig {
@@ -690,8 +754,8 @@ mod tests {
         assert_eq!(config.metrics.max_sends_in_flight, 2);
     }
 
-    /// Everything but the model and the log destination has a default, so the shortest
-    /// useful configuration is two fields.
+    /// Asserts only the model path and the log destination are required, everything else
+    /// taking its default.
     #[test]
     fn only_the_model_path_and_the_log_destination_are_required() {
         let config = HusharServiceConfig::from_json(MINIMAL).expect("valid");
@@ -714,7 +778,7 @@ mod tests {
         );
     }
 
-    /// The default has to need no credentials, or a local run cannot start.
+    /// Asserts timings go to stderr when no CloudWatch namespace is configured.
     #[test]
     fn metrics_go_to_stderr_unless_a_namespace_is_given() {
         let config = HusharServiceConfig::from_json(MINIMAL).expect("valid");
@@ -734,8 +798,7 @@ mod tests {
         );
     }
 
-    /// Recording nothing is a decision, so it has to be stated rather than defaulted
-    /// into. A missing destination is the one field a deployment cannot forget.
+    /// Asserts a missing `inference_log` is refused with the field named in the error.
     #[test]
     fn a_missing_inference_log_is_refused_by_name() {
         let err = HusharServiceConfig::from_json(r#"{"model_config_path": "/tmp/m.json"}"#)
@@ -757,9 +820,7 @@ mod tests {
         );
     }
 
-    /// These were command-line flags. Rejecting the old names means an operator
-    /// upgrading gets an error naming the field rather than a service that starts and
-    /// silently logs everywhere it used to be told not to.
+    /// Asserts a flat top-level sink field is refused rather than silently ignored.
     #[test]
     fn a_flat_field_from_the_old_command_line_is_refused_rather_than_ignored() {
         for stale in [
@@ -781,7 +842,7 @@ mod tests {
         }
     }
 
-    /// These moved into the model configuration.
+    /// Asserts a model-level field name is refused in the service configuration.
     #[test]
     fn a_stale_model_field_is_refused_rather_than_ignored() {
         for stale in ["model_path", "model_id", "vectorization_instruction_path"] {
@@ -808,7 +869,7 @@ mod tests {
         );
     }
 
-    /// Typed, so this cannot reach the runtime and fail there.
+    /// Asserts a malformed bind address is refused and an IPv6 address is accepted.
     #[test]
     fn a_bad_bind_address_is_refused_and_ipv6_is_accepted() {
         let with = |address: &str| {
@@ -836,9 +897,8 @@ mod tests {
         }
     }
 
-    /// `"sample_rate": 10` is someone who meant 10%, and reading it as "log everything"
-    /// is the reading least likely to be what they wanted. Refusing it with the range in
-    /// the message is the only outcome that tells them.
+    /// Asserts a sample rate outside `0.0..=1.0` is refused, with the field and range in
+    /// the message.
     #[test]
     fn a_sampling_rate_outside_the_range_is_refused_with_an_explanation() {
         for rate in ["10", "-0.5", "1.5"] {
@@ -859,9 +919,7 @@ mod tests {
         }
     }
 
-    /// Admission is a fixed number rather than one derived from the host: sizing it from
-    /// the cores made a single-connection client the ceiling on a large instance, since
-    /// the limit is per connection and one tonic `Channel` is one connection.
+    /// Asserts admission defaults to 500 per connection, independently of the host.
     #[test]
     fn the_concurrency_limit_defaults_to_five_hundred_per_connection() {
         let config = HusharServiceConfig::from_json(MINIMAL).expect("valid");
@@ -869,9 +927,7 @@ mod tests {
         assert_eq!(default_connection_concurrency(), 500);
     }
 
-    /// It moved into `threading`, so the old spelling has to fail loudly rather than be
-    /// accepted and ignored — a silently dropped admission limit is invisible until a
-    /// benchmark disagrees with its own report.
+    /// Asserts a top-level `connection_concurrency` is refused by name.
     #[test]
     fn a_top_level_concurrency_limit_is_refused_now_that_it_lives_in_threading() {
         let json = r#"{"model_config_path": "/tmp/m.json",
@@ -884,8 +940,7 @@ mod tests {
         );
     }
 
-    /// Configured wins, and is not second-guessed against the core count: a benchmark
-    /// pinning every host to the same number is the reason the field exists.
+    /// Asserts a configured admission limit is used as given, not adjusted to the host.
     #[test]
     fn a_configured_concurrency_limit_is_used_as_given() {
         let json = r#"{"model_config_path": "/tmp/m.json",
@@ -898,8 +953,7 @@ mod tests {
         );
     }
 
-    /// Zero would let connections in and serve none of them -- a hang rather than an
-    /// error, which is the worst way for a configuration mistake to present.
+    /// Asserts a zero admission limit is refused, naming the field and the remedy.
     #[test]
     fn a_concurrency_limit_of_zero_is_refused() {
         let json = r#"{"model_config_path": "/tmp/m.json",
@@ -936,8 +990,7 @@ mod tests {
         assert_eq!(candidate.traffic_percent, 10);
     }
 
-    /// Both ends of a roll-out are legitimate configurations: 0 loads the candidate
-    /// without serving it, 100 has finished moving over.
+    /// Asserts both ends of a roll-out, 0 and 100 percent, are accepted.
     #[test]
     fn the_ends_of_a_rollout_are_accepted() {
         for percent in [0, 100] {
@@ -953,7 +1006,7 @@ mod tests {
         }
     }
 
-    /// A share above 100 is not a share. Refused by name and by range, like the rest.
+    /// Asserts a `traffic_percent` above 100 is refused by name and range.
     #[test]
     fn a_share_above_a_hundred_is_refused() {
         let json = r#"{"model_config_path": "/tmp/c.json",
@@ -972,8 +1025,7 @@ mod tests {
         );
     }
 
-    /// Above `u8::MAX` serde refuses on the type, which is the earlier and clearer
-    /// failure -- worth pinning so the field's type is not widened without thought.
+    /// Asserts a share above `u8::MAX` is refused by serde on the field's type.
     #[test]
     fn a_share_beyond_the_field_is_refused_on_type() {
         let json = r#"{"model_config_path": "/tmp/c.json",
@@ -993,16 +1045,14 @@ mod tests {
             err.to_string().contains("candidate_model.config_path"),
             "the error should name the field: {err}"
         );
-        // And the field is required within the block, so omitting it is also refused.
         let json = r#"{"model_config_path": "/tmp/c.json",
                        "candidate_model": {"traffic_percent": 10},
                        "inference_log": {"uri": "/tmp/logs"}}"#;
         assert!(HusharServiceConfig::from_json(json).is_err());
     }
 
-    /// The share is required rather than defaulted. A candidate loaded with an implied
-    /// share would be a guess about how much production traffic to move, which is not
-    /// a guess this service gets to make.
+    /// Asserts `traffic_percent` is required rather than defaulted, and named in the
+    /// error.
     #[test]
     fn a_candidate_without_a_share_is_refused() {
         let json = r#"{"model_config_path": "/tmp/c.json",
@@ -1024,8 +1074,8 @@ mod tests {
         assert!(HusharServiceConfig::from_json(json).is_err());
     }
 
-    /// Parsed at startup rather than at first pin, so a list copied from a larger
-    /// instance fails while someone is watching.
+    /// Asserts an unparseable core list is refused at startup, naming the field and the
+    /// offending fragment.
     #[test]
     fn a_core_list_that_will_not_parse_is_refused_by_field() {
         for field in ["worker_cores", "compute_cores"] {
@@ -1057,8 +1107,8 @@ mod tests {
         assert_eq!(config.threading.compute_cores(), vec![2, 3, 4, 5, 9]);
     }
 
-    /// Absent means "leave placement to the kernel", which has to be distinguishable
-    /// from an empty list rather than collapsing into it.
+    /// Asserts absent core lists and `allow_spinning` pin nothing, leaving placement to
+    /// the kernel.
     #[test]
     fn absent_core_lists_pin_nothing() {
         let config = HusharServiceConfig::from_json(MINIMAL).expect("valid");
@@ -1067,10 +1117,7 @@ mod tests {
         assert_eq!(config.threading.allow_spinning, None);
     }
 
-    /// The intra-op pool belongs to the session, so a resident candidate model brings a
-    /// second one. Getting this wrong under-reports the thread budget by almost half on an
-    /// A/B roll-out, and the banner is where an operator learns how much of the host the
-    /// configuration can actually use.
+    /// Asserts a second resident session adds a second intra-op pool to the thread count.
     #[test]
     fn a_resident_candidate_model_doubles_the_intra_op_pool() {
         let config = ThreadingConfig {
@@ -1090,16 +1137,13 @@ mod tests {
             48,
             "two sessions: 8 calling threads + two pools of 20, not one"
         );
-        // The point of the count: on a 192-core host this configuration can keep a quarter
-        // of it busy, so no request rate will ever saturate the machine.
         assert!(
             config.compute_threads(192, 2) * 2 <= 192,
             "48 of 192 cores is the undersubscription the banner has to report"
         );
     }
 
-    /// `intra_op_threads` of 0 means "the runtime's own default", and 1 means "no pool at
-    /// all". Neither may underflow the subtraction into a huge pool count.
+    /// Asserts `intra_op_threads` of 0 or 1 adds no pool threads and does not underflow.
     #[test]
     fn a_pool_of_one_or_fewer_adds_no_threads() {
         for intra_op in [0, 1] {
@@ -1116,6 +1160,114 @@ mod tests {
         }
     }
 
+    /// Asserts the width is read from whichever pool was chosen, so an inter-op session
+    /// budgets its threads exactly as an intra-op one of the same width does.
+    #[test]
+    fn the_chosen_pool_carries_the_width() {
+        let intra = ThreadingConfig {
+            inference_concurrency: Some(8),
+            intra_op_threads: 14,
+            ..ThreadingConfig::default()
+        };
+        let inter = ThreadingConfig {
+            inference_concurrency: Some(8),
+            intra_op_threads: 1,
+            inter_op_threads: Some(14),
+            ..ThreadingConfig::default()
+        };
+
+        assert_eq!(intra.parallelism(), Parallelism::Intra(14));
+        assert_eq!(inter.parallelism(), Parallelism::Inter(14));
+        assert!(!intra.parallelism().is_parallel());
+        assert!(inter.parallelism().is_parallel());
+        assert_eq!(
+            inter.compute_threads(64, 4),
+            intra.compute_threads(64, 4),
+            "the same width costs the same threads whichever pool holds it"
+        );
+        assert_eq!(
+            inter.slice_pressure(64, 1),
+            intra.slice_pressure(64, 1),
+            "and divides into the slices the same way"
+        );
+    }
+
+    /// Asserts an inter-op count of 1 or less is not a choice, so the default stays intra-op
+    /// and nothing switches ONNX Runtime's executor by accident.
+    #[test]
+    fn a_narrow_inter_op_pool_is_not_a_choice() {
+        for inter in [None, Some(0), Some(1)] {
+            let config = ThreadingConfig {
+                intra_op_threads: 7,
+                inter_op_threads: inter,
+                ..ThreadingConfig::default()
+            };
+            assert_eq!(
+                config.parallelism(),
+                Parallelism::Intra(7),
+                "inter_op_threads {inter:?} should leave the width on the intra-op pool"
+            );
+        }
+    }
+
+    /// Asserts both pools cannot be widened at once, and that the refusal names both counts.
+    #[test]
+    fn spending_threads_on_both_pools_is_refused() {
+        let json = r#"{"model_config_path": "/tmp/m.json",
+                       "threading": {"intra_op_threads": 8, "inter_op_threads": 4},
+                       "inference_log": {"uri": "/tmp/logs"}}"#;
+        let err = HusharServiceConfig::from_json(json).expect_err("both pools widened");
+        let message = err.to_string();
+        for expected in ["intra_op_threads", "inter_op_threads", "8", "4"] {
+            assert!(
+                message.contains(expected),
+                "the error should name {expected}: {message}"
+            );
+        }
+    }
+
+    /// Asserts inter-op alongside `intra_op_threads` of 0 is refused.
+    ///
+    /// The quiet one: 0 is not "no pool", it is one intra-op thread per physical core, so
+    /// this pairing would hold the machine once for each pool and the banner's thread count
+    /// would be wrong by a factor of the core count.
+    #[test]
+    fn inter_op_with_the_runtime_default_intra_op_is_refused() {
+        let json = r#"{"model_config_path": "/tmp/m.json",
+                       "threading": {"intra_op_threads": 0, "inter_op_threads": 8},
+                       "inference_log": {"uri": "/tmp/logs"}}"#;
+        let err = HusharServiceConfig::from_json(json).expect_err("0 is one thread per core");
+        let message = err.to_string();
+        assert!(
+            message.contains("per physical core"),
+            "the error should explain what 0 means: {message}"
+        );
+    }
+
+    /// Asserts choosing inter-op alone is accepted, since the intra-op default is already 1.
+    #[test]
+    fn inter_op_alone_needs_no_other_field() {
+        let json = r#"{"model_config_path": "/tmp/m.json",
+                       "threading": {"inter_op_threads": 8},
+                       "inference_log": {"uri": "/tmp/logs"}}"#;
+        let config = HusharServiceConfig::from_json(json).expect("valid");
+        assert_eq!(config.threading.parallelism(), Parallelism::Inter(8));
+        assert_eq!(config.threading.parallelism().pool_name(), "inter-op");
+    }
+
+    /// Asserts a negative inter-op count is refused rather than wrapping into a huge pool.
+    #[test]
+    fn a_negative_inter_op_count_is_refused() {
+        let json = r#"{"model_config_path": "/tmp/m.json",
+                       "threading": {"inter_op_threads": -2},
+                       "inference_log": {"uri": "/tmp/logs"}}"#;
+        let err = HusharServiceConfig::from_json(json).expect_err("negative count");
+        assert!(
+            err.to_string().contains("inter_op_threads"),
+            "the error should name the field: {err}"
+        );
+    }
+
     #[test]
     fn spinning_is_a_tri_state() {
         for (json_value, expected) in [("true", Some(true)), ("false", Some(false))] {
@@ -1129,9 +1281,8 @@ mod tests {
         }
     }
 
-    /// Refused rather than clamped, because the banner prints this number and a
-    /// silently corrected one would misreport the memory bound. Checked in both groups,
-    /// since each has its own bound now.
+    /// Asserts a zero send bound is refused in either group, with the reason and the
+    /// group in the message.
     #[test]
     fn a_send_bound_of_zero_is_refused_with_an_explanation() {
         let cases = [
@@ -1188,8 +1339,8 @@ mod tests {
         }
     }
 
-    /// An empty namespace would be sent to CloudWatch and rejected there, on the first
-    /// publish, long after startup.
+    /// Asserts an empty CloudWatch namespace is refused at startup rather than at the
+    /// first publish.
     #[test]
     fn an_empty_cloudwatch_namespace_is_refused() {
         let json = r#"{"model_config_path": "/tmp/m.json",
@@ -1202,12 +1353,7 @@ mod tests {
         );
     }
 
-    /// A complete configuration must parse, read from a file.
-    ///
-    /// This is not only about the field names: `port_number` is a `u16`, and a
-    /// configuration once carried 827942, which cannot be one. The fixture belongs to
-    /// this test rather than being borrowed from `benchmark-data/generated`, whose files
-    /// are generated and change shape when the benchmark does.
+    /// Asserts the shipped `test-data/service_config.json` fixture parses.
     #[test]
     fn a_complete_service_configuration_parses() {
         let path = std::path::Path::new("test-data/service_config.json");
@@ -1220,12 +1366,6 @@ mod tests {
             default_connection_concurrency(),
             "the shipped example omits admission, which is the shape a fleet should copy"
         );
-        // Present for the opposite reason to `connection_concurrency` above: that one is
-        // left out to show the defaulted shape, whereas these are spelled out so the file
-        // proves the `threading` section parses and matches the worked example in
-        // documentation/configuration.md. A fleet is free to omit the two counts and take
-        // one per core; `intra_op_threads` is the one that is a real decision, since its
-        // default of 1 gives a single request no parallelism at all.
         assert_eq!(config.threading.worker_threads, Some(2));
         assert_eq!(config.threading.inference_concurrency, Some(8));
         assert_eq!(config.threading.intra_op_threads, 1);

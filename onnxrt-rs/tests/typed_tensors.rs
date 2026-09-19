@@ -3,15 +3,13 @@
 
 //! Typed, heterogeneous tensor I/O against a real ONNX Runtime.
 //!
-//! These are the tests for the capability the crate did not have:
-//! [`onnxrt_rs::Session::run`] is generic over one [`onnxrt_rs::Element`], so
-//! every input in a call had to hold the same Rust type. A model taking a float
-//! feature vector *and* a string vector was unrepresentable — not for want of a
-//! dtype, but because of that single type parameter.
+//! [`onnxrt_rs::Session::run`] is generic over one [`onnxrt_rs::Element`], so every
+//! input in such a call holds the same Rust type; `run_many` and `run_named` take
+//! inputs of differing element types.
 //!
-//! The fixtures come from `scripts/generate_typed_test_models.py`, which writes
-//! them into this crate's own `test-data`. Like the rest of the suite, each test
-//! skips with a reason when no runtime can be loaded.
+//! The fixtures come from `scripts/generate_typed_test_models.py`, which writes them
+//! into this crate's own `test-data`. Each test skips with a reason when no runtime can
+//! be loaded.
 
 use onnxrt_rs::{DataType, Error, InputValue, Session, SessionBuilder};
 
@@ -19,6 +17,7 @@ mod common;
 
 use common::{api, fixture};
 
+/// Builds a single-threaded CPU session from the named fixture.
 fn session_for(name: &str) -> Session {
     SessionBuilder::new(&common::environment())
         .expect("session builder")
@@ -34,13 +33,14 @@ const EXPECTED_SCORES: [f32; 2] = [0.9568927, 0.9568927];
 const EXPECTED_EMBEDDING: [f32; 4] = [3.2, 3.8, 4.4, 5.0];
 const EXPECTED_CODE: i64 = 20;
 
+/// Asserts one f32 and one string input run in a single `run_many` call, and all four
+/// outputs read back as expected — floats within 1e-5, and the `codes` output, which
+/// only a genuinely read string input can produce.
 #[test]
 fn inputs_of_different_element_types_run_in_one_call() {
     let Some(api) = api() else { return };
     let session = session_for("mixed_io.onnx");
 
-    // The whole point: one f32 tensor and one string tensor, same call. This does
-    // not compile against `run`, whose single `T: Element` forces both to agree.
     let mut numbers = vec![1.0f32, 2.0, 3.0];
     let outputs = session
         .run_many(&[
@@ -67,8 +67,6 @@ fn inputs_of_different_element_types_run_in_one_call() {
         );
     }
 
-    // Reached only by consuming the string input, so this is what proves the
-    // string tensor was genuinely read rather than accepted and ignored.
     let codes = outputs[2].as_slice::<i64>().expect("i64 codes");
     assert_eq!(codes, [EXPECTED_CODE]);
 
@@ -76,12 +74,13 @@ fn inputs_of_different_element_types_run_in_one_call() {
     assert_eq!(echoed, vec!["beta".to_owned()]);
 }
 
+/// Asserts one call returns four outputs carrying their own element types and shapes,
+/// each row encoded from its own tag and in order.
+///
+/// The outputs in index order are logits (one row per input row), embedding, label, and
+/// echoed text.
 #[test]
 fn outputs_carry_their_own_types_and_shapes() {
-    // The claim from the design: named, typed, shaped outputs cover multi-head
-    // classification, regression, embeddings and forecasts without four code
-    // paths. This fixture returns four outputs of three different element types
-    // and three different shapes from one call, which is that claim in miniature.
     let Some(api) = api() else { return };
     let session = session_for("mixed_io.onnx");
 
@@ -101,10 +100,10 @@ fn outputs_carry_their_own_types_and_shapes() {
     assert_eq!(
         described,
         vec![
-            (DataType::F32, vec![2, 2]), // logits, one row per input row
-            (DataType::F32, vec![2, 4]), // embedding
-            (DataType::I64, vec![2]),    // label
-            (DataType::String, vec![2]), // echoed text
+            (DataType::F32, vec![2, 2]),
+            (DataType::F32, vec![2, 4]),
+            (DataType::I64, vec![2]),
+            (DataType::String, vec![2]),
         ]
     );
 
@@ -115,14 +114,13 @@ fn outputs_carry_their_own_types_and_shapes() {
     );
 }
 
+/// Asserts `run_named` matches inputs by name, supplying them in the opposite order to
+/// the model's declaration.
 #[test]
 fn run_named_matches_inputs_by_name_not_position() {
     let Some(api) = api() else { return };
     let session = session_for("mixed_io.onnx");
 
-    // Supplied in the opposite order to the model's declaration. If names were
-    // ignored and position used, ONNX Runtime would be handed a string where it
-    // wants floats and the call would fail.
     let mut numbers = vec![1.0f32, 2.0, 3.0];
     let outputs = session
         .run_named(&[
@@ -143,6 +141,7 @@ fn run_named_matches_inputs_by_name_not_position() {
     );
 }
 
+/// Asserts omitting a declared input is an `InputNotSuppliedOnce` with a count of 0.
 #[test]
 fn run_named_rejects_an_input_that_was_not_supplied() {
     let Some(api) = api() else { return };
@@ -165,13 +164,13 @@ fn run_named_rejects_an_input_that_was_not_supplied() {
     }
 }
 
+/// Asserts an undeclared input name is an `UnknownInput` listing the real names, rather
+/// than being silently dropped.
 #[test]
 fn run_named_rejects_an_unknown_input_name() {
     let Some(api) = api() else { return };
     let session = session_for("mixed_io.onnx");
 
-    // A typo in a tensor name is the failure this guards: without the check the
-    // extra input would be silently dropped and the model would run on defaults.
     let mut numbers = vec![1.0f32, 2.0, 3.0];
     let err = session
         .run_named(&[
@@ -202,6 +201,8 @@ fn run_named_rejects_an_unknown_input_name() {
     }
 }
 
+/// Asserts supplying one input twice is an `InputNotSuppliedOnce` reporting the count,
+/// rather than resolving the ambiguity.
 #[test]
 fn run_named_rejects_a_duplicated_input() {
     let Some(api) = api() else { return };
@@ -235,11 +236,12 @@ fn run_named_rejects_a_duplicated_input() {
     }
 }
 
+/// Asserts `half::f16` really is ONNX's FLOAT16 layout, by round-tripping through a
+/// doubling model.
+///
+/// The comparison is exact: the inputs and their doubles are all representable in f16.
 #[test]
 fn f16_tensors_survive_a_round_trip() {
-    // `half::f16` is claimed to be ONNX's FLOAT16 layout. Compiling proves
-    // nothing about that; the runtime doubling the values and giving back what we
-    // expect does.
     let Some(api) = api() else { return };
     let session = session_for("f16_identity.onnx");
 
@@ -261,10 +263,11 @@ fn f16_tensors_survive_a_round_trip() {
         .map(|h| h.to_f32())
         .collect();
 
-    // Exact: all three inputs and their doubles are representable in f16.
     assert_eq!(got, vec![3.0, -4.5, 0.25]);
 }
 
+/// Asserts bool tensors round-trip through a `Not` model, coming back negated rather
+/// than zeroed.
 #[test]
 fn bool_tensors_survive_a_round_trip() {
     let Some(api) = api() else { return };
@@ -276,17 +279,16 @@ fn bool_tensors_survive_a_round_trip() {
         .expect("bool inference should succeed");
 
     assert_eq!(outputs[0].data_type().expect("dtype"), DataType::Bool);
-    // Negated, so an implementation that returned zeroes would fail here.
     assert_eq!(
         outputs[0].bools().expect("bool output"),
         vec![false, true, false, false]
     );
 }
 
+/// Asserts a session reports its own input and output names, element types and shapes,
+/// with -1 for a dynamic batch axis.
 #[test]
 fn the_model_describes_its_own_inputs_and_outputs() {
-    // This is what replaces `input_width() -> usize`. A caller reading these can
-    // build a request for any model without the service knowing what it serves.
     let Some(_api) = api() else { return };
     let session = session_for("mixed_io.onnx");
 
@@ -318,6 +320,8 @@ fn the_model_describes_its_own_inputs_and_outputs() {
     );
 }
 
+/// Asserts a string tensor whose value count disagrees with its shape is a
+/// `ShapeMismatch` naming both counts, before the runtime is called.
 #[test]
 fn a_string_tensor_with_a_wrong_shape_is_rejected_before_the_runtime_sees_it() {
     let Some(api) = api() else { return };
@@ -337,6 +341,9 @@ fn a_string_tensor_with_a_wrong_shape_is_rejected_before_the_runtime_sees_it() {
     );
 }
 
+/// Asserts reading a tensor as the wrong element type is an `ElementTypeMismatch`, for
+/// `i64` as `f64` — the same width, a different meaning — and for a string tensor as
+/// `f32`.
 #[test]
 fn reading_a_tensor_as_the_wrong_type_is_an_error_not_reinterpreted_bytes() {
     let Some(api) = api() else { return };
@@ -350,8 +357,6 @@ fn reading_a_tensor_as_the_wrong_type_is_an_error_not_reinterpreted_bytes() {
         ])
         .expect("inference");
 
-    // `codes` is i64. Asking for f64 -- same width, different meaning -- is
-    // exactly the mistake that would otherwise produce plausible garbage.
     let err = outputs[2]
         .as_slice::<f64>()
         .expect_err("i64 must not be readable as f64");
@@ -366,7 +371,6 @@ fn reading_a_tensor_as_the_wrong_type_is_an_error_not_reinterpreted_bytes() {
         "expected ElementTypeMismatch, got {err:?}"
     );
 
-    // And a string tensor is not a numeric slice at all.
     let err = outputs[3]
         .as_slice::<f32>()
         .expect_err("a string tensor must not be readable as f32");
@@ -376,6 +380,7 @@ fn reading_a_tensor_as_the_wrong_type_is_an_error_not_reinterpreted_bytes() {
     );
 }
 
+/// Asserts reading an f32 tensor with `strings()` is an `ElementTypeMismatch`.
 #[test]
 fn strings_reader_rejects_a_numeric_tensor() {
     let Some(api) = api() else { return };
@@ -398,12 +403,14 @@ fn strings_reader_rejects_a_numeric_tensor() {
     );
 }
 
+/// Asserts a borrowed numeric input and an owned `'static` string input can share one
+/// call.
+///
+/// Numeric inputs borrow the caller's buffer, which must outlive the call; string inputs
+/// own runtime memory and are `'static`. `InputValue`'s lifetime is therefore covariant,
+/// without which the two could not sit in one slice and this would not compile.
 #[test]
 fn a_borrowed_tensor_and_an_owned_one_can_share_a_call() {
-    // Lifetime check as much as a behaviour check. Numeric inputs borrow the
-    // caller's buffer; string inputs own runtime memory and are `'static`. If
-    // `InputValue`'s lifetime were invariant the two could not sit in one slice,
-    // and this would not compile.
     let Some(api) = api() else { return };
     let session = session_for("mixed_io.onnx");
 

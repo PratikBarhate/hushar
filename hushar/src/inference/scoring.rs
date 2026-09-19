@@ -3,46 +3,35 @@
 
 //! Turning a request into model outputs.
 //!
-//! One way in. [`score_features`] takes named feature values per row and hands them
-//! to an [`InputBuilder`], which was settled against the model's signature at
-//! startup. Everything after that is shared: one engine call, one output-checking
-//! rule, one set of timings.
+//! [`score_features`] takes named feature columns and hands them to an [`InputBuilder`]
+//! resolved against the model's signature at startup. A caller that has already
+//! vectorized sends its vector as one `FixedSizeList` column, which a pass-through
+//! transformation hands to the model unchanged.
 //!
-//! There is no second entry point taking tensors. A caller that has already
-//! vectorized sends its vector as one feature whose value is a `FloatArray`, which a
-//! pass-through transformation hands to the model unchanged. That keeps one request
-//! shape and removes a class of malformed request outright: no shape disagreeing
-//! with the element count, and no input name matching nothing.
-//!
-//! The engine is reached only through [`InferenceBackend`], so none of this changes
-//! for ONNX Runtime, Neuron, or anything added later.
+//! The engine is reached only through [`InferenceBackend`].
 
-use hushar::hushar_proto::{
-    DoubleArray, FloatArray, InferenceLogRow, InputRow, OutputRow, ScoreType,
-    score_type::ScoreType as Scores,
-};
-use std::collections::HashMap;
+use hushar::hushar_proto::{DoubleArray, FloatArray, ScoreType, score_type::ScoreType as Scores};
+use std::ops::Range;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use crate::inference::InferenceMicros;
 use crate::inference::backend::InferenceBackend;
 use crate::inference::batch::{InputBatch, Output, ScoreData};
-use crate::inference::input_builder::InputBuilder;
+use crate::inference::input_builder::{InputBuilder, RequestColumns};
 
 /// One scored batch.
 ///
-/// Fields:
-/// - `outputs` — one row per input row, in the same order.
-/// - `logs` — the same rows for the inference log, carrying the features as received.
-/// - `timings` — how long each stage took.
+/// # Fields
 ///
-/// A struct rather than a tuple because it carries three things, and
-/// `(Vec<OutputRow>, Vec<InferenceLogRow>, InferenceMicros)` at a call site says nothing
-/// about which is which.
+/// * `scores` - every row's scores back to back, row-major, in the model's own precision
+/// * `timings` - how long each stage took
+///
+/// The features are not here: the builder only borrows them, so they stay in the
+/// request's columns and move into the log from there.
 #[derive(Debug)]
 pub struct ScoredBatch {
-    pub outputs: Vec<OutputRow>,
-    pub logs: Vec<InferenceLogRow>,
+    pub scores: ScoreData,
     pub timings: InferenceMicros,
 }
 
@@ -50,8 +39,7 @@ impl ScoredBatch {
     /// The result of scoring nothing.
     fn empty() -> Self {
         Self {
-            outputs: Vec::new(),
-            logs: Vec::new(),
+            scores: ScoreData::F32(Vec::new()),
             timings: InferenceMicros {
                 vec_time: 0,
                 tensor_time: 0,
@@ -61,22 +49,10 @@ impl ScoredBatch {
     }
 }
 
-/// The `row_id` given to a padding row.
-///
-/// It never reaches a caller or a log -- padding rows are dropped before either -- so
-/// this exists to make a padded row obvious in a debugger or a backend that prints its
-/// input, rather than to be matched on.
-const PAD_ROW_ID: &str = "__hushar_pad__";
-
 /// Whether a request's features are kept for the inference log.
 ///
-/// Decided per request *before* scoring, by
-/// [`Sampler`](crate::io::Sampler), which is what makes sampling a saving rather
-/// than a filter: a request that will not be logged never has its feature values moved
-/// anywhere, and `Skip` allocates no log rows at all.
-///
-/// A `bool` would read as `score_features(.., true)` at the call site, which says
-/// nothing about which `true`.
+/// Decided per request before scoring, by [`Sampler`](crate::io::Sampler): a request that
+/// will not be logged never has its feature values moved anywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeatureLogging {
     /// Keep the features and scores for this request.
@@ -85,47 +61,26 @@ pub enum FeatureLogging {
     Skip,
 }
 
-/// Scores rows of named features.
-///
-/// Each row's features are recorded for the inference log **as received, before any
-/// transformation**, and the whole map is kept -- including keys the configuration
-/// ignores -- so the log shows what the caller actually sent rather than what was
-/// made of it. Debugging a bad prediction means knowing what came in.
-///
-/// # Nothing is copied to log it
-///
-/// `rows` is taken by value, and the features are *moved* out of it into the log rows
-/// once the inputs have been built. Feature values are the largest thing a request
-/// carries -- a map per row, holding strings and arrays -- and this function used to
-/// deep-clone all of it before building anything, so that the originals were still
-/// around afterwards. Owning the rows means the log gets the values themselves. The
-/// only thing copied per row is its `row_id`, which a response and a log row both
-/// need.
-///
-/// Every check that does not need a request has already run, when the builder was
-/// resolved against the model's signature at startup. What is left here is what only
-/// a request can be wrong about: a feature of the wrong type for a verbatim input,
-/// and a row that produces a different number of values from its neighbours.
-///
 /// How a request's rows are cut into batches for the engine.
 ///
-/// `size` rows per batch; `is_fixed` pads the last one up to `size` rather than sending
-/// it short. Constructed from the model configuration's `mini_batch_size` and
-/// `is_fixed`, which is where both are documented.
+/// # Fields
+///
+/// * `size` - rows per batch
+/// * `is_fixed` - pad the last batch up to `size` rather than sending it short
+///
+/// Constructed from the model configuration's `mini_batch_size` and `is_fixed`, which is
+/// where both are documented.
 #[derive(Debug, Clone, Copy)]
 pub struct MiniBatch {
     pub size: usize,
     pub is_fixed: bool,
 }
 
-/// Turns named feature values into model outputs.
+/// The pool the mini batches run on.
 ///
-/// # Mini batches
-///
-/// `mini_batch` cuts the rows into batches and scores them **at the same time**, one
-/// scoped thread each and the last on this thread. Without it a request is one
-/// batch, which is the default and the only path a single-batch request takes -- no
-/// fan-out, nothing to pay for.
+/// A request's rows are cut into batches and scored at the same time, one thread each
+/// from this pool, which the calling thread joins for the duration. Without a
+/// `mini_batch` a request is one batch and never reaches the pool.
 ///
 /// ```text
 /// mini_batch { size: 4, is_fixed: false },  request of 6 rows
@@ -137,112 +92,147 @@ pub struct MiniBatch {
 ///   └────── 6 rows out ─┘       order preserved, whichever finishes first
 /// ```
 ///
-/// Why this lowers latency is in [`crate::config::model_config::ModelConfig`]: threads
-/// inside one operator stop helping well before the core count, because the operators
-/// are a chain of barriers, while separate mini-batches share no barrier at all.
+/// Why splitting lowers latency is in [`crate::config::model_config::ModelConfig`].
+static FAN_OUT: OnceLock<rayon::ThreadPool> = OnceLock::new();
+
+/// Installs the mini-batch pool. Call once, before serving.
 ///
-/// **Timings when the batches overlap.** Each stage is reported as the **longest single
-/// mini-batch's**, not the sum: the batches run together, so summing would report more
-/// engine time than the request spent. With one batch the two are identical. The
-/// client-side latency remains the number that decides anything.
+/// Separate from rayon's global pool so its threads can be pinned to the compute cores
+/// and counted against them.
 ///
-/// Rows come back in request order however the batches interleave, because the results
-/// are collected per batch and concatenated rather than appended as they arrive.
+/// # Errors
+///
+/// Returns the pool back if one is already installed.
+pub fn init_fan_out(pool: rayon::ThreadPool) -> Result<(), rayon::ThreadPool> {
+    FAN_OUT.set(pool)
+}
+
+/// The installed pool, or a default built on first use.
+///
+/// The default is unpinned and exists for a caller with no `main` to install one, such as
+/// the unit tests.
+fn fan_out() -> &'static rayon::ThreadPool {
+    FAN_OUT.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .thread_name(|i| format!("hushar-fanout-{i}"))
+            .build()
+            .expect("a default rayon pool is buildable")
+    })
+}
+
+/// Scores a request's rows, cutting them into mini batches when `mini_batch` is set.
+///
+/// Rows come back in request order however the batches interleave. An empty request is
+/// answered without calling the engine. A request's features are read from `columns` and
+/// left there, so the caller still owns them afterwards for the inference log. They reach
+/// the log as they were received, before any transformation, and the whole feature map is
+/// kept including keys the configuration ignores.
+///
+/// # Arguments
+///
+/// * `backend` - the engine to run
+/// * `columns` - the request's rows, one column per feature
+/// * `builder` - the inputs, resolved against the model's signature at startup
+/// * `mini_batch` - how to cut the rows; `None` scores the whole request as one batch
+/// * `logging` - whether the features are kept for the inference log
+///
+/// # Returns
+///
+/// The batch's scores, row-major, and how long each stage took. When mini batches
+/// overlap, a stage is reported as the longest single batch's rather than the sum of all
+/// of them.
+///
+/// # Errors
+///
+/// Fails if the inputs cannot be built from the request, if the engine fails, or if a
+/// mini batch panics -- a panic is turned into an error rather than unwinding into the
+/// pool.
 pub fn score_features(
     backend: &dyn InferenceBackend,
-    rows: Vec<InputRow>,
+    columns: &RequestColumns,
     builder: &InputBuilder,
     mini_batch: Option<MiniBatch>,
     logging: FeatureLogging,
 ) -> Result<ScoredBatch, crate::inference::InferenceError> {
-    if rows.is_empty() {
+    let total = columns.rows();
+    if total == 0 {
         return Ok(ScoredBatch::empty());
     }
-
-    let total = rows.len();
-    // A request scored whole is the degenerate case of one batch holding everything, so
-    // the fan-out below has one shape rather than a branch that could diverge.
     let (size, pad_to) = match mini_batch {
         Some(m) => (m.size.max(1), m.is_fixed.then(|| m.size.max(1))),
         None => (total, None),
     };
 
-    // Consumed rather than indexed, so each batch owns its rows and the features can be
-    // handed to the log instead of copied for it.
-    let mut remaining = rows.into_iter();
-    let mut chunks: Vec<Vec<InputRow>> = Vec::with_capacity(total.div_ceil(size));
-    loop {
-        let chunk: Vec<InputRow> = remaining.by_ref().take(size).collect();
-        if chunk.is_empty() {
-            break;
-        }
-        chunks.push(chunk);
+    let mut chunks: Vec<Range<usize>> = Vec::with_capacity(total.div_ceil(size));
+    let mut at = 0;
+    while at < total {
+        let end = (at + size).min(total);
+        chunks.push(at..end);
+        at = end;
     }
 
-    // One batch is the common case and must not pay for a fan-out it does not use.
     if chunks.len() == 1 {
         let mut scored = empty_scored(total, logging);
-        let chunk = chunks.pop().unwrap_or_default();
-        score_chunk(backend, chunk, builder, pad_to, &mut scored, logging)?;
+        let chunk = chunks.pop().unwrap_or(0..total);
+        score_chunk(
+            backend,
+            columns,
+            chunk,
+            builder,
+            pad_to,
+            &mut scored,
+            logging,
+        )?;
         return Ok(scored);
     }
 
-    // A scoped thread per mini batch but the last, which this thread scores itself: the
-    // caller is already a blocking thread with nothing else to do, and one fewer spawn is
-    // one fewer delay before the fan-out is complete.
-    //
-    // Scoped OS threads rather than a work-stealing pool, and that was measured rather
-    // than assumed. A pool bounds the thread count, which looked necessary -- 16 requests
-    // splitting into 20 is 320 threads on 88 cores -- but at that shape the two were
-    // indistinguishable: 299.7 requests a second against 298.5, both shedding, both at
-    // 54 % CPU. What caps throughput there is memory rather than scheduling, so the pool
-    // bought nothing and is not worth a dependency. Scoped threads also inherit this
-    // thread's CPU affinity, which a pool cannot: the caller was pinned to its session's
-    // slice of the cores, so the mini batches land on the same cores as the session they
-    // call into. That does mean a split wants few sessions and wide slices --
-    // `sessions_per_model: 1` gives the whole compute set -- since a request can only
-    // spread as wide as its own slice.
-    let mine = chunks.pop().unwrap_or_default();
-    let mut parts: Vec<Result<ScoredBatch, crate::inference::InferenceError>> =
-        Vec::with_capacity(chunks.len() + 1);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = chunks
-            .into_iter()
-            .map(|chunk| {
-                scope.spawn(move || {
-                    let mut part = empty_scored(chunk.len(), logging);
-                    score_chunk(backend, chunk, builder, pad_to, &mut part, logging)?;
-                    Ok(part)
-                })
-            })
-            .collect();
-
-        // Scored here while the spawned batches run, so the calling thread is not idle.
-        let own = {
-            let mut part = empty_scored(mine.len(), logging);
-            score_chunk(backend, mine, builder, pad_to, &mut part, logging).map(|()| part)
+    let mine = chunks.pop().unwrap_or(0..total);
+    let scores_one =
+        |chunk: Range<usize>| -> Result<ScoredBatch, crate::inference::InferenceError> {
+            let mut part = empty_scored(chunk.end - chunk.start, logging);
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                score_chunk(
+                    backend,
+                    columns,
+                    chunk.clone(),
+                    builder,
+                    pad_to,
+                    &mut part,
+                    logging,
+                )
+            })) {
+                Ok(Ok(())) => Ok(part),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(crate::inference::InferenceError::from(
+                    "a mini batch panicked while scoring",
+                )),
+            }
         };
 
-        // Joined in spawn order, which is request order. A panicking batch becomes an
-        // error rather than unwinding through the scope, so one bad batch fails one
-        // request instead of the process.
-        for handle in handles {
-            parts.push(handle.join().unwrap_or_else(|_| {
-                Err(crate::inference::InferenceError::from(
-                    "a mini batch panicked while scoring",
-                ))
-            }));
+    let mut slots: Vec<Option<Result<ScoredBatch, crate::inference::InferenceError>>> =
+        (0..chunks.len()).map(|_| None).collect();
+    let own = fan_out().in_place_scope(|scope| {
+        for (chunk, slot) in chunks.into_iter().zip(slots.iter_mut()) {
+            scope.spawn(|_| *slot = Some(scores_one(chunk)));
         }
-        parts.push(own);
+        scores_one(mine)
     });
+
+    let mut parts: Vec<Result<ScoredBatch, crate::inference::InferenceError>> =
+        Vec::with_capacity(slots.len() + 1);
+    for slot in slots {
+        parts.push(slot.unwrap_or_else(|| {
+            Err(crate::inference::InferenceError::from(
+                "a mini batch never reported a result",
+            ))
+        }));
+    }
+    parts.push(own);
 
     let mut scored = empty_scored(total, logging);
     for part in parts {
         let part = part?;
-        scored.outputs.extend(part.outputs);
-        scored.logs.extend(part.logs);
-        // The longest batch, not the total: they ran together, so a sum would claim more
-        // time than the request spent in the engine.
+        append_scores(&mut scored.scores, part.scores)?;
         scored.timings.vec_time = scored.timings.vec_time.max(part.timings.vec_time);
         scored.timings.tensor_time = scored.timings.tensor_time.max(part.timings.tensor_time);
         scored.timings.inference_time = scored
@@ -255,13 +245,13 @@ pub fn score_features(
 }
 
 /// An empty result sized for the rows it is about to hold.
-fn empty_scored(rows: usize, logging: FeatureLogging) -> ScoredBatch {
+///
+/// The score precision is settled by the first batch appended, so an empty request has
+/// none.
+fn empty_scored(rows: usize, _logging: FeatureLogging) -> ScoredBatch {
+    let _ = rows;
     ScoredBatch {
-        outputs: Vec::with_capacity(rows),
-        logs: match logging {
-            FeatureLogging::Record => Vec::with_capacity(rows),
-            FeatureLogging::Skip => Vec::new(),
-        },
+        scores: ScoreData::F32(Vec::new()),
         timings: InferenceMicros {
             vec_time: 0,
             tensor_time: 0,
@@ -273,17 +263,14 @@ fn empty_scored(rows: usize, logging: FeatureLogging) -> ScoredBatch {
 /// Scores one batch, padding it up to `pad_to` first when that is set, and appends the
 /// real rows' results to `scored`.
 ///
-/// Padding is appended to the chunk this function already owns, so a short batch costs
-/// only the padding rows -- where an earlier version cloned every real row to make room
-/// for them. The padding is then truncated away before the rows are handed on, which is
-/// what keeps a synthetic row out of both the response and the log without anything
-/// downstream having to know padding exists.
-///
-/// `pad_to` is `None` for a model whose row axis is dynamic, which is the common case
-/// and the one that does no padding work at all.
+/// Padding is added at the end of each input buffer rather than by appending rows, so no
+/// synthetic row is built and none can reach the response or the log. `pad_to` is `None`
+/// for a model whose row axis is dynamic.
+#[allow(clippy::too_many_arguments)]
 fn score_chunk(
     backend: &dyn InferenceBackend,
-    mut chunk: Vec<InputRow>,
+    columns: &RequestColumns,
+    chunk: Range<usize>,
     builder: &InputBuilder,
     pad_to: Option<usize>,
     scored: &mut ScoredBatch,
@@ -291,28 +278,15 @@ fn score_chunk(
 ) -> Result<(), crate::inference::InferenceError> {
     let vec_start = Instant::now();
 
-    let real = chunk.len();
-    if let Some(size) = pad_to.filter(|&size| real < size) {
-        chunk.resize(
-            size,
-            InputRow {
-                row_id: PAD_ROW_ID.to_owned(),
-                features: HashMap::new(),
-            },
-        );
-    }
-    let sent = chunk.len();
+    let real = chunk.end - chunk.start;
+    let sent = pad_to.filter(|&size| real < size).unwrap_or(real);
 
-    let inputs = builder.build(&chunk)?;
+    let inputs = builder.build_padded(columns, chunk.clone(), sent)?;
     let build_start = Instant::now();
-
-    // The engine has what it needs, and `InputBatch` owns its buffers, so the padding
-    // rows are of no further use to anyone.
-    chunk.truncate(real);
 
     run_batch(
         backend,
-        chunk,
+        &columns.row_ids()[chunk],
         inputs,
         sent,
         vec_start,
@@ -324,29 +298,34 @@ fn score_chunk(
 
 /// Runs the model and turns its primary output into rows.
 ///
-/// The log stores scores as floats whatever the model's precision, because it is read
-/// by batch jobs and training pipelines that want one stable column.
+/// Only the model's first output is returned -- class probabilities, a regression value,
+/// a flattened forecast horizon or an embedding -- each one numeric vector per row.
 ///
-/// `sent` is how many rows the engine was given, which is `kept.len()` plus any
-/// padding. The engine is held to returning one row per row it was *sent*, and only the
-/// first `kept.len()` are read back -- so a padded row is scored and dropped, never
-/// reaching a response or a log. Checking against `sent` rather than against the rows
-/// kept is what makes that distinction, and it is why a model returning the wrong row
-/// count is still caught.
+/// # Arguments
 ///
-/// `kept` is consumed: each row's `features` map moves into its log row, and its
-/// `row_id` moves into whichever of the two does not need a copy.
+/// * `backend` - the engine to run
+/// * `kept` - the chunk's slice of the request's row ids, cloned rather than moved
+///   because the columns they came from are shared across mini batches
+/// * `inputs` - the built inputs, already padded to `sent` rows
+/// * `sent` - how many rows the engine was given, which is `kept.len()` plus any padding.
+///   Only the first `kept.len()` rows are read back, so a padded row is scored and
+///   dropped.
+/// * `stage_start` - when building the inputs began; `stage_start` to `build_start` is
+///   charged to the vectorization stage
+/// * `build_start` - when the inputs were ready; `build_start` to the engine call is
+///   charged to the tensor stage, and the call itself to the inference stage
+/// * `scored` - the accumulator the rows' scores are appended to and the three stage
+///   timings are added onto
+/// * `logging` - whether this request's features are kept for the inference log
 ///
-/// # Only the first output is returned
+/// # Errors
 ///
-/// A model may declare several; the first is the one scored. That covers every model
-/// family this serves -- class probabilities, a regression value, a flattened
-/// forecast horizon, an embedding -- each of which is one numeric vector per row. A
-/// model whose extra outputs matter would need a richer response, and none does.
+/// Fails if the model returns no outputs, if it does not return one row per row sent, or
+/// if its primary output is shorter than the rows kept.
 #[allow(clippy::too_many_arguments)]
 fn run_batch(
     backend: &dyn InferenceBackend,
-    kept: Vec<InputRow>,
+    kept: &[String],
     inputs: InputBatch,
     sent: usize,
     stage_start: Instant,
@@ -368,34 +347,22 @@ fn run_batch(
         .into());
     }
 
-    for (i, row) in kept.into_iter().enumerate() {
-        let scores = primary.row_as_f32(i).ok_or_else(|| {
-            format!(
-                "model output {:?} returned no values for row {i}",
-                primary.name
-            )
-        })?;
-        let score_type = Some(to_score_type(primary, i, &scores));
-
-        match logging {
-            // The id is the one thing both rows need, so it is the one thing copied.
-            FeatureLogging::Record => {
-                scored.outputs.push(OutputRow {
-                    row_id: row.row_id.clone(),
-                    scores: score_type,
-                });
-                scored.logs.push(InferenceLogRow {
-                    row_id: row.row_id,
-                    features: row.features,
-                    scores,
-                });
-            }
-            FeatureLogging::Skip => scored.outputs.push(OutputRow {
-                row_id: row.row_id,
-                scores: score_type,
-            }),
-        }
-    }
+    let width = primary.width();
+    let keep = kept.len() * width;
+    let taken = match &primary.data {
+        ScoreData::F32(v) => ScoreData::F32(
+            v.get(..keep)
+                .ok_or_else(|| short_output(primary, keep, v.len()))?
+                .to_vec(),
+        ),
+        ScoreData::F64(v) => ScoreData::F64(
+            v.get(..keep)
+                .ok_or_else(|| short_output(primary, keep, v.len()))?
+                .to_vec(),
+        ),
+    };
+    append_scores(&mut scored.scores, taken)?;
+    let _ = logging;
 
     scored.timings.vec_time += (build_start - stage_start).as_micros();
     scored.timings.tensor_time += (inference_start - build_start).as_micros();
@@ -404,27 +371,54 @@ fn run_batch(
     Ok(())
 }
 
-/// One row's scores in the model's own precision.
+/// A whole batch's scores in the model's own precision, as a [`ScoreType`].
 ///
-/// `FP64` is kept as doubles rather than narrowed, which is the whole reason
-/// [`ScoreType`] exists: a model asked for double precision should not have it thrown
-/// away on the way out. `f32` values are already to hand, so they are reused.
-///
-/// Infallible, and that is a property of the type rather than of this code: an
-/// [`Output`] is `FP32` or `FP64` by construction, so there is no third case to report.
-/// The caller has already established that this row exists.
-fn to_score_type(primary: &Output, row: usize, as_f32: &[f32]) -> ScoreType {
-    let score_type = match &primary.data {
-        ScoreData::F64(_) => Scores::DoubleScores(DoubleArray {
-            values: primary.row_f64(row).unwrap_or_default().to_vec(),
-        }),
-        ScoreData::F32(_) => Scores::FloatScores(FloatArray {
-            values: as_f32.to_vec(),
-        }),
-    };
+/// `FP64` is kept as doubles rather than narrowed. Infallible: scores are `FP32` or
+/// `FP64` by construction.
+pub fn to_score_type(scores: ScoreData) -> ScoreType {
     ScoreType {
-        score_type: Some(score_type),
+        score_type: Some(match scores {
+            ScoreData::F32(values) => Scores::FloatScores(FloatArray { values }),
+            ScoreData::F64(values) => Scores::DoubleScores(DoubleArray { values }),
+        }),
     }
+}
+
+/// Appends one batch's scores onto the accumulator, in one precision.
+///
+/// An empty accumulator has no precision yet, so the first batch settles it.
+///
+/// # Errors
+///
+/// Fails if the accumulator and the batch disagree about precision, which would otherwise
+/// silently drop half a response.
+fn append_scores(
+    into: &mut ScoreData,
+    from: ScoreData,
+) -> Result<(), crate::inference::InferenceError> {
+    match (into, from) {
+        (ScoreData::F32(acc), ScoreData::F32(more)) => acc.extend(more),
+        (ScoreData::F64(acc), ScoreData::F64(more)) => acc.extend(more),
+        (acc @ ScoreData::F32(_), more) if acc.len() == 0 => *acc = more,
+        (acc, more) => {
+            return Err(format!(
+                "mini batches disagree about precision: {} then {}",
+                acc.element_type(),
+                more.element_type()
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// An output shorter than the rows it was asked to score.
+fn short_output(primary: &Output, wanted: usize, got: usize) -> crate::inference::InferenceError {
+    format!(
+        "model output {:?} returned {got} values, but {wanted} were needed for the rows kept",
+        primary.name
+    )
+    .into()
 }
 
 #[cfg(test)]
@@ -435,14 +429,13 @@ mod tests {
         DoubleBackend, FailingBackend, MultiOutputBackend, PerFeatureBackend, RecordingBackend,
         SlowBackend, SummingBackend,
     };
-    use hushar::hushar_proto::DataType as WireValue;
-    use hushar::hushar_proto::data_type::DataType as Value;
+    use crate::inference::input_builder::test_support::{V, request, row};
     use std::time::Duration;
 
     /// A builder for `backend`, from the given configuration JSON.
     fn builder_for(backend: &dyn InferenceBackend, json: &str) -> InputBuilder {
         let config = VectorizationConfig::from_json(json).expect("valid configuration");
-        InputBuilder::resolve(Some(config), backend.inputs()).expect("fits the model")
+        InputBuilder::resolve(config, backend.inputs()).expect("fits the model")
     }
 
     /// A vectorised configuration of `width` pass-through features named `f0..`.
@@ -454,64 +447,67 @@ mod tests {
         )
     }
 
-    fn row(row_id: &str, features: &[(&str, Value)]) -> InputRow {
-        InputRow {
-            row_id: row_id.to_owned(),
-            features: features
-                .iter()
-                .map(|(name, value)| {
-                    (
-                        (*name).to_owned(),
-                        WireValue {
-                            data_type: Some(value.clone()),
-                        },
-                    )
-                })
-                .collect(),
+    /// A request of `rows` rows whose features `f0..fn` all hold `value`.
+    fn numeric_request(rows: usize, width: usize, value: f32) -> RequestColumns {
+        let ids: Vec<String> = (0..rows).map(|r| format!("row-{r}")).collect();
+        let names: Vec<String> = (0..width).map(|i| format!("f{i}")).collect();
+        let features: Vec<(&str, V)> = names
+            .iter()
+            .map(|name| (name.as_str(), V::f32(value)))
+            .collect();
+        let built: Vec<_> = ids.iter().map(|id| row(id, &features)).collect();
+        request(&built)
+    }
+
+    /// The features an inference log batch carries: the request's own map, given back.
+    type LoggedFeatures = std::collections::HashMap<String, hushar::hushar_proto::Feature>;
+
+    /// The text one feature carries in the map handed to the inference log.
+    ///
+    /// The log carries the request's own features, so this reads them back the way an
+    /// offline consumer would.
+    fn logged_text(features: &LoggedFeatures, rows: usize, name: &str) -> Vec<String> {
+        let columns = crate::inference::proto_columns::decode(features.clone(), rows)
+            .expect("the log carries what the request sent");
+        match columns.get(name) {
+            Some(crate::inference::batch::FeatureData::Str(values)) => values.clone(),
+            other => panic!("expected text for feature {name:?}, got {other:?}"),
         }
     }
 
-    /// `rows` rows whose feature `f0..fn` all hold `value`.
-    fn numeric_rows(rows: usize, width: usize, value: f32) -> Vec<InputRow> {
-        (0..rows)
-            .map(|r| {
-                let features: Vec<(String, Value)> = (0..width)
-                    .map(|i| (format!("f{i}"), Value::FloatValue(value)))
-                    .collect();
-                InputRow {
-                    row_id: format!("row-{r}"),
-                    features: features
-                        .into_iter()
-                        .map(|(name, value)| {
-                            (
-                                name,
-                                WireValue {
-                                    data_type: Some(value),
-                                },
-                            )
-                        })
-                        .collect(),
-                }
-            })
-            .collect()
+    /// How many features the logged map carries.
+    fn logged_count(features: &LoggedFeatures, rows: usize) -> usize {
+        crate::inference::proto_columns::decode(features.clone(), rows)
+            .expect("the log carries what the request sent")
+            .len()
     }
 
-    fn float_scores(output: &OutputRow) -> Vec<f32> {
-        match output.scores.as_ref().and_then(|s| s.score_type.as_ref()) {
-            Some(Scores::FloatScores(f)) => f.values.clone(),
+    /// Row `r`'s slice of the batch's one flat buffer, of `rows` rows.
+    ///
+    /// The buffer is row-major, so the width is `len / rows` and row `r` is
+    /// `r * width .. (r + 1) * width`.
+    fn float_row(scores: &ScoreData, rows: usize, r: usize) -> Vec<f32> {
+        match scores {
+            ScoreData::F32(v) => {
+                let width = v.len() / rows.max(1);
+                v[r * width..(r + 1) * width].to_vec()
+            }
             other => panic!("expected float scores, got {other:?}"),
         }
     }
 
-    fn double_scores(output: &OutputRow) -> Vec<f64> {
-        match output.scores.as_ref().and_then(|s| s.score_type.as_ref()) {
-            Some(Scores::DoubleScores(d)) => d.values.clone(),
+    /// The same, for a model kept at double precision.
+    fn double_row(scores: &ScoreData, rows: usize, r: usize) -> Vec<f64> {
+        match scores {
+            ScoreData::F64(v) => {
+                let width = v.len() / rows.max(1);
+                v[r * width..(r + 1) * width].to_vec()
+            }
             other => panic!("expected double scores, got {other:?}"),
         }
     }
 
-    // ------------------------------------------------------------ the happy path
-
+    /// Every row is scored, and the scores land back to back in one buffer.
     #[test]
     fn the_feature_path_scores_every_row() {
         let backend = SummingBackend::new(3, 2);
@@ -519,26 +515,21 @@ mod tests {
 
         let scored = score_features(
             &backend,
-            numeric_rows(4, 3, 1.0),
+            &numeric_request(4, 3, 1.0),
             &builder,
             None,
             FeatureLogging::Record,
         )
         .expect("scored");
 
-        assert_eq!(scored.outputs.len(), 4);
-        assert_eq!(scored.logs.len(), 4);
+        assert_eq!(
+            scored.scores.len(),
+            8,
+            "four rows of two scores, back to back in one buffer"
+        );
     }
 
-    /// Timings are in microseconds, so the engine call is made to take a duration far
-    /// longer than that and the reading is checked against it. Asserting merely that some
-    /// stage is non-zero would be asserting that the machine is slow: a mock backend
-    /// scoring four rows finishes inside a microsecond, and zero has to stay a legitimate
-    /// reading for `an_empty_batch_is_not_sent_to_the_engine`.
-    ///
-    /// The bound is deliberately loose. A sleep may overrun and the surrounding stages add
-    /// their own time, but neither can make the engine call appear *shorter* than it was,
-    /// so there is no upper bound worth asserting and no way for this to flake.
+    /// A slow engine call is reported against the inference stage, not vectorisation.
     #[test]
     fn inference_time_measures_the_engine_call() {
         let delay = Duration::from_millis(5);
@@ -547,7 +538,7 @@ mod tests {
 
         let scored = score_features(
             &backend,
-            numeric_rows(4, 3, 1.0),
+            &numeric_request(4, 3, 1.0),
             &builder,
             None,
             FeatureLogging::Record,
@@ -561,8 +552,6 @@ mod tests {
              got {}us",
             scored.timings.inference_time,
         );
-        // The sleep is inside `run`, so it must land on the engine's stage rather than on
-        // vectorisation -- which is what makes this a test of attribution, not of a total.
         assert!(
             scored.timings.vec_time < scored.timings.inference_time,
             "the delay belongs to the engine call, but vectorisation reported {}us \
@@ -572,102 +561,94 @@ mod tests {
         );
     }
 
-    /// The backend sums each row, so a transposition between rows changes the answer --
-    /// which a constant-returning backend could not catch.
+    /// Each row is scored from its own values, in request order.
     #[test]
     fn each_row_receives_its_own_scores() {
         let backend = SummingBackend::new(2, 1);
         let builder = builder_for(&backend, &vector_config(2, "float"));
 
-        let rows = vec![
-            row(
-                "a",
-                &[
-                    ("f0", Value::FloatValue(1.0)),
-                    ("f1", Value::FloatValue(1.0)),
-                ],
-            ),
-            row(
-                "b",
-                &[
-                    ("f0", Value::FloatValue(5.0)),
-                    ("f1", Value::FloatValue(5.0)),
-                ],
-            ),
-        ];
-        let scored =
-            score_features(&backend, rows, &builder, None, FeatureLogging::Record).expect("scored");
+        let columns = request(&[
+            row("a", &[("f0", V::f32(1.0)), ("f1", V::f32(1.0))]),
+            row("b", &[("f0", V::f32(5.0)), ("f1", V::f32(5.0))]),
+        ]);
+        let scored = score_features(&backend, &columns, &builder, None, FeatureLogging::Record)
+            .expect("scored");
 
-        assert_eq!(scored.outputs[0].row_id, "a");
-        assert_eq!(float_scores(&scored.outputs[0]), vec![2.0]);
-        assert_eq!(scored.outputs[1].row_id, "b");
-        assert_eq!(float_scores(&scored.outputs[1]), vec![10.0]);
+        assert_eq!(columns.row_ids(), ["a".to_owned(), "b".to_owned()]);
+        assert_eq!(float_row(&scored.scores, 2, 0), vec![2.0]);
+        assert_eq!(float_row(&scored.scores, 2, 1), vec![10.0]);
     }
 
-    /// Including a key the configuration ignores: the log is for debugging what
-    /// arrived, not for reporting what vectorization made of it.
+    /// The columns handed to the log hold every feature sent, ignored keys included.
     #[test]
-    fn the_log_records_the_features_as_received() {
+    fn the_columns_handed_to_the_log_keep_every_feature_sent() {
         let backend = SummingBackend::new(1, 1);
         let builder = builder_for(&backend, &vector_config(1, "float"));
 
-        let rows = vec![row(
+        let columns = request(&[row(
             "a",
-            &[
-                ("f0", Value::FloatValue(2.0)),
-                ("ignored", Value::StringValue("kept anyway".into())),
-            ],
-        )];
-        let scored =
-            score_features(&backend, rows, &builder, None, FeatureLogging::Record).expect("scored");
+            &[("f0", V::f32(2.0)), ("ignored", V::str("kept anyway"))],
+        )]);
+        let scored = score_features(&backend, &columns, &builder, None, FeatureLogging::Record)
+            .expect("scored");
 
-        let logged = &scored.logs[0].features;
-        assert_eq!(logged.len(), 2, "both keys survive into the log");
-        assert!(logged.contains_key("ignored"));
-        assert_eq!(scored.logs[0].scores, vec![2.0]);
+        assert_eq!(scored.scores.as_f32(), vec![2.0]);
+
+        let (row_ids, features) = columns.into_wire();
+        assert_eq!(
+            row_ids,
+            vec!["a".to_owned()],
+            "the row ids reach the log as their own column, beside the features"
+        );
+        assert_eq!(
+            logged_count(&features, 1),
+            2,
+            "both configured keys survive into the log, the ignored one included"
+        );
+        assert_eq!(
+            logged_text(&features, 1, "ignored"),
+            vec!["kept anyway".to_owned()]
+        );
     }
 
-    /// `FailingBackend` fails whenever it is called, so reaching it would fail.
+    /// An empty request returns without calling the engine.
     #[test]
     fn an_empty_batch_is_not_sent_to_the_engine() {
         let backend = FailingBackend;
         let builder = builder_for(&backend, &vector_config(1, "float"));
 
-        let scored = score_features(&backend, Vec::new(), &builder, None, FeatureLogging::Record)
-            .expect("nothing to do");
-        assert!(scored.outputs.is_empty());
-        assert!(scored.logs.is_empty());
+        let scored = score_features(
+            &backend,
+            &request(&[]),
+            &builder,
+            None,
+            FeatureLogging::Record,
+        )
+        .expect("nothing to do");
+        assert_eq!(scored.scores.len(), 0);
         assert_eq!(scored.timings.inference_time, 0);
     }
 
-    // ------------------------------------------------------------- sampling
-
-    /// What an unsampled request costs: a response, and nothing else. The features are
-    /// dropped with the request rather than copied into a log nobody asked for.
+    /// `Skip` is a logging lever only: every row is still scored.
     #[test]
-    fn a_skipped_request_is_scored_and_logs_nothing() {
+    fn a_skipped_request_is_still_scored() {
         let backend = SummingBackend::new(2, 1);
         let builder = builder_for(&backend, &vector_config(2, "float"));
 
         let scored = score_features(
             &backend,
-            numeric_rows(3, 2, 2.0),
+            &numeric_request(3, 2, 2.0),
             &builder,
             None,
             FeatureLogging::Skip,
         )
         .expect("scored");
 
-        assert_eq!(scored.outputs.len(), 3, "every row is still answered");
-        assert_eq!(float_scores(&scored.outputs[0]), vec![4.0]);
-        assert!(
-            scored.logs.is_empty(),
-            "a skipped request should carry no log rows at all"
-        );
+        assert_eq!(scored.scores.len(), 3, "every row is still answered");
+        assert_eq!(float_row(&scored.scores, 3, 0), vec![4.0]);
     }
 
-    /// Sampling must not be observable by a caller. Anything else would make the lever
-    /// a correctness decision rather than an observability one.
+    /// The logging decision does not change the scores a caller receives.
     #[test]
     fn skipping_the_log_does_not_change_the_response() {
         let recorded = {
@@ -675,7 +656,7 @@ mod tests {
             let builder = builder_for(&backend, &vector_config(2, "float"));
             score_features(
                 &backend,
-                numeric_rows(4, 2, 1.5),
+                &numeric_request(4, 2, 1.5),
                 &builder,
                 Some(fixed(3)),
                 FeatureLogging::Record,
@@ -687,7 +668,7 @@ mod tests {
             let builder = builder_for(&backend, &vector_config(2, "float"));
             score_features(
                 &backend,
-                numeric_rows(4, 2, 1.5),
+                &numeric_request(4, 2, 1.5),
                 &builder,
                 Some(fixed(3)),
                 FeatureLogging::Skip,
@@ -695,19 +676,11 @@ mod tests {
             .expect("scored")
         };
 
-        assert_eq!(recorded.outputs.len(), skipped.outputs.len());
-        for (a, b) in recorded.outputs.iter().zip(skipped.outputs.iter()) {
-            assert_eq!(a.row_id, b.row_id);
-            assert_eq!(float_scores(a), float_scores(b));
-        }
-        assert_eq!(recorded.logs.len(), 4);
-        assert!(skipped.logs.is_empty());
+        assert_eq!(recorded.scores, skipped.scores);
+        assert_eq!(recorded.scores.len(), 4);
     }
 
-    /// The values in the log are the request's own, moved rather than copied. A test
-    /// cannot observe an address, but it can observe that nothing was lost on the way:
-    /// a string feature arrives intact, which a move preserves and a partial copy would
-    /// not.
+    /// A long text feature reaches the log intact.
     #[test]
     fn the_log_receives_the_requests_own_feature_values() {
         let backend = PerFeatureBackend::new();
@@ -722,23 +695,21 @@ mod tests {
         );
 
         let long_text = "x".repeat(4096);
-        let rows = vec![row(
+        let columns = request(&[row(
             "a",
-            &[
-                ("age", Value::FloatValue(1.0)),
-                ("tags", Value::StringValue(long_text.clone())),
-            ],
-        )];
-        let scored =
-            score_features(&backend, rows, &builder, None, FeatureLogging::Record).expect("scored");
+            &[("age", V::f32(1.0)), ("tags", V::str(&long_text))],
+        )]);
+        score_features(&backend, &columns, &builder, None, FeatureLogging::Record).expect("scored");
 
+        let (_, features) = columns.into_wire();
         assert_eq!(
-            scored.logs[0].features["tags"].data_type,
-            Some(Value::StringValue(long_text)),
+            logged_text(&features, 1, "tags"),
+            vec![long_text],
             "the whole value should arrive in the log"
         );
     }
 
+    /// An engine failure is returned to the caller.
     #[test]
     fn an_engine_failure_is_propagated() {
         let backend = FailingBackend;
@@ -746,7 +717,7 @@ mod tests {
 
         let err = score_features(
             &backend,
-            numeric_rows(1, 1, 1.0),
+            &numeric_request(1, 1, 1.0),
             &builder,
             None,
             FeatureLogging::Record,
@@ -755,12 +726,10 @@ mod tests {
         assert!(err.to_string().contains("engine exploded"), "got {err}");
     }
 
-    // ------------------------------------------------------- named-input models
-
-    /// Two inputs of different element types in one call: the case a single float
-    /// matrix cannot express. score = age + total length of the row's tags.
+    /// A model with two inputs of different element types is fed from the request's
+    /// columns.
     #[test]
-    fn a_named_input_model_is_fed_from_a_feature_map() {
+    fn a_named_input_model_is_fed_from_the_requests_columns() {
         let backend = PerFeatureBackend::new();
         let builder = builder_for(
             &backend,
@@ -772,29 +741,18 @@ mod tests {
             }"#,
         );
 
-        let rows = vec![
-            row(
-                "a",
-                &[
-                    ("age", Value::FloatValue(10.0)),
-                    ("tags", Value::StringValue("abc".into())),
-                ],
-            ),
-            row(
-                "b",
-                &[
-                    ("age", Value::FloatValue(20.0)),
-                    ("tags", Value::StringValue("de".into())),
-                ],
-            ),
-        ];
-        let scored =
-            score_features(&backend, rows, &builder, None, FeatureLogging::Record).expect("scored");
+        let columns = request(&[
+            row("a", &[("age", V::f32(10.0)), ("tags", V::str("abc"))]),
+            row("b", &[("age", V::f32(20.0)), ("tags", V::str("de"))]),
+        ]);
+        let scored = score_features(&backend, &columns, &builder, None, FeatureLogging::Record)
+            .expect("scored");
 
-        assert_eq!(float_scores(&scored.outputs[0]), vec![13.0]);
-        assert_eq!(float_scores(&scored.outputs[1]), vec![22.0]);
+        assert_eq!(float_row(&scored.scores, 2, 0), vec![13.0]);
+        assert_eq!(float_row(&scored.scores, 2, 1), vec![22.0]);
     }
 
+    /// A text feature reaches the log as text, not as whatever number it became.
     #[test]
     fn a_text_feature_is_logged_as_the_text_it_was() {
         let backend = PerFeatureBackend::new();
@@ -808,27 +766,27 @@ mod tests {
             }"#,
         );
 
-        let rows = vec![row(
+        let columns = request(&[row(
             "a",
-            &[
-                ("age", Value::FloatValue(1.0)),
-                ("tags", Value::StringValue("london".into())),
-            ],
-        )];
-        let scored =
-            score_features(&backend, rows, &builder, None, FeatureLogging::Record).expect("scored");
+            &[("age", V::f32(1.0)), ("tags", V::str("london"))],
+        )]);
+        score_features(&backend, &columns, &builder, None, FeatureLogging::Record).expect("scored");
 
+        let (_, features) = columns.into_wire();
         assert_eq!(
-            scored.logs[0].features["tags"].data_type,
-            Some(Value::StringValue("london".into())),
+            logged_text(&features, 1, "tags"),
+            vec!["london".to_owned()],
             "the log keeps text as text rather than as whatever number it became"
         );
     }
 
-    /// A partial request is normal on a serving path. The empty string reaches the
-    /// model, and the row still gets a score.
+    /// A verbatim input whose feature was never sent is refused, naming the feature.
+    ///
+    /// Never sent is the only way a feature can be missing now: a record batch's columns
+    /// are all the same length, so a feature sent for *some* rows is not expressible, and
+    /// a column that does not cover every row is refused as the payload is decoded.
     #[test]
-    fn an_absent_text_feature_scores_rather_than_failing() {
+    fn an_absent_text_feature_is_refused() {
         let backend = PerFeatureBackend::new();
         let builder = builder_for(
             &backend,
@@ -840,16 +798,17 @@ mod tests {
             }"#,
         );
 
-        let rows = vec![row("a", &[("age", Value::FloatValue(3.0))])];
-        let scored = score_features(&backend, rows, &builder, None, FeatureLogging::Record)
-            .expect("a partial row scores");
-        assert_eq!(
-            float_scores(&scored.outputs[0]),
-            vec![3.0],
-            "an empty tag adds no length"
+        let columns = request(&[row("a", &[("age", V::f32(3.0))])]);
+        let err = score_features(&backend, &columns, &builder, None, FeatureLogging::Record)
+            .expect_err("a named input has no default to fall back on");
+        let m = err.to_string();
+        assert!(
+            m.contains("tags") && m.contains("does not send"),
+            "the refusal should name the missing feature and say it was not sent; got {m}"
         );
     }
 
+    /// A feature of the wrong type for a verbatim input is refused, naming the feature.
     #[test]
     fn a_feature_of_the_wrong_type_for_a_verbatim_input_is_refused() {
         let backend = PerFeatureBackend::new();
@@ -863,21 +822,14 @@ mod tests {
             }"#,
         );
 
-        let rows = vec![row(
-            "r9",
-            &[
-                ("age", Value::FloatValue(1.0)),
-                ("tags", Value::LongValue(7)),
-            ],
-        )];
-        let err = score_features(&backend, rows, &builder, None, FeatureLogging::Record)
+        let columns = request(&[row("r9", &[("age", V::f32(1.0)), ("tags", V::i64(7))])]);
+        let err = score_features(&backend, &columns, &builder, None, FeatureLogging::Record)
             .expect_err("a long is not text");
         let m = err.to_string();
-        assert!(m.contains("r9") && m.contains("tags"), "got {m}");
+        assert!(m.contains("tags") && m.contains("must be text"), "got {m}");
     }
 
-    // ------------------------------------------------------------- precision
-
+    /// A single-precision model's scores come back as floats.
     #[test]
     fn a_single_precision_model_returns_float_scores() {
         let backend = SummingBackend::new(2, 1);
@@ -885,49 +837,52 @@ mod tests {
 
         let scored = score_features(
             &backend,
-            numeric_rows(1, 2, 1.5),
+            &numeric_request(1, 2, 1.5),
             &builder,
             None,
             FeatureLogging::Record,
         )
         .expect("scored");
         assert!(matches!(
-            scored.outputs[0].scores.as_ref().unwrap().score_type,
+            to_score_type(scored.scores).score_type,
             Some(Scores::FloatScores(_))
         ));
     }
 
-    /// 0.1 has no exact f32, so this is the test that nothing narrowed on either the
-    /// way in or the way out.
+    /// A double-precision model's scores are narrowed neither on the way in nor out; 0.1
+    /// has no exact `f32`.
     #[test]
     fn a_double_precision_model_returns_double_scores_unnarrowed() {
         let backend = DoubleBackend::new(1);
         let builder = builder_for(&backend, &vector_config(1, "double"));
 
-        let rows = vec![row("a", &[("f0", Value::DoubleValue(0.1))])];
-        let scored =
-            score_features(&backend, rows, &builder, None, FeatureLogging::Record).expect("scored");
-        assert_eq!(double_scores(&scored.outputs[0]), vec![0.1]);
+        let columns = request(&[row("a", &[("f0", V::f64(0.1))])]);
+        let scored = score_features(&backend, &columns, &builder, None, FeatureLogging::Record)
+            .expect("scored");
+        assert_eq!(double_row(&scored.scores, 1, 0), vec![0.1]);
+        assert!(matches!(
+            to_score_type(scored.scores).score_type,
+            Some(Scores::DoubleScores(_))
+        ));
     }
 
+    /// Double scores are read from the row they belong to.
     #[test]
     fn double_scores_are_read_from_the_right_row() {
         let backend = DoubleBackend::new(1);
         let builder = builder_for(&backend, &vector_config(1, "double"));
 
-        let rows = vec![
-            row("a", &[("f0", Value::DoubleValue(0.25))]),
-            row("b", &[("f0", Value::DoubleValue(0.75))]),
-        ];
-        let scored =
-            score_features(&backend, rows, &builder, None, FeatureLogging::Record).expect("scored");
-        assert_eq!(double_scores(&scored.outputs[0]), vec![0.25]);
-        assert_eq!(double_scores(&scored.outputs[1]), vec![0.75]);
+        let columns = request(&[
+            row("a", &[("f0", V::f64(0.25))]),
+            row("b", &[("f0", V::f64(0.75))]),
+        ]);
+        let scored = score_features(&backend, &columns, &builder, None, FeatureLogging::Record)
+            .expect("scored");
+        assert_eq!(double_row(&scored.scores, 2, 0), vec![0.25]);
+        assert_eq!(double_row(&scored.scores, 2, 1), vec![0.75]);
     }
 
-    // ------------------------------------------------------------ many outputs
-
-    /// `scores` is [sum, -sum]; the embedding and the total are not returned.
+    /// Only the model's first output reaches the score buffer.
     #[test]
     fn only_the_models_first_output_is_returned() {
         let backend = MultiOutputBackend::new(2);
@@ -935,32 +890,17 @@ mod tests {
 
         let scored = score_features(
             &backend,
-            numeric_rows(2, 2, 1.5),
+            &numeric_request(2, 2, 1.5),
             &builder,
             None,
             FeatureLogging::Record,
         )
         .expect("scored");
 
-        assert_eq!(float_scores(&scored.outputs[0]), vec![3.0, -3.0]);
-        assert_eq!(scored.logs[0].scores, vec![3.0, -3.0]);
+        assert_eq!(float_row(&scored.scores, 2, 0), vec![3.0, -3.0]);
+        assert_eq!(scored.scores.as_f32(), vec![3.0, -3.0, 3.0, -3.0]);
     }
 
-    // ---- Fixed batch size -------------------------------------------------------
-    //
-    // A pinned model can only be given one batch size, so the service makes any request
-    // fit: rows are cut into batches of that size and the last one is padded. What these
-    // tests hold onto is that the adjustment is invisible from outside -- the caller gets
-    // one row out per row in, with the same scores it would have got unpinned.
-    //
-    // `RecordingBackend` reports the size of every batch it ran, which is the only way to
-    // tell "padded to four" from "ran three rows" -- both return three rows.
-
-    /// `rows` rows of `width` features, where row `r` holds `r` in every feature.
-    ///
-    /// Its sum is therefore `width * r`, so a row's scores name the row they came from.
-    /// A padding row holds no features and sums to 0, so it is distinguishable from
-    /// every real row but the first.
     /// A padded split, which is what a pinned graph needs.
     fn fixed(size: usize) -> MiniBatch {
         MiniBatch {
@@ -969,7 +909,7 @@ mod tests {
         }
     }
 
-    /// A split whose last batch is however many rows remain -- the latency case.
+    /// A split whose last batch is however many rows remain.
     fn dynamic(size: usize) -> MiniBatch {
         MiniBatch {
             size,
@@ -977,25 +917,28 @@ mod tests {
         }
     }
 
-    fn ramp_rows(rows: usize, width: usize) -> Vec<InputRow> {
-        (0..rows)
-            .map(|r| InputRow {
-                row_id: format!("row-{r}"),
-                features: (0..width)
-                    .map(|i| {
-                        (
-                            format!("f{i}"),
-                            WireValue {
-                                data_type: Some(Value::FloatValue(r as f32)),
-                            },
-                        )
-                    })
-                    .collect(),
+    /// A request of `rows` rows of `width` features, where row `r` holds `r` in every
+    /// feature.
+    ///
+    /// A row's sum is therefore `width * r`, so its scores name the row they came from.
+    fn ramp_request(rows: usize, width: usize) -> RequestColumns {
+        let ids: Vec<String> = (0..rows).map(|r| format!("row-{r}")).collect();
+        let names: Vec<String> = (0..width).map(|i| format!("f{i}")).collect();
+        let built: Vec<_> = ids
+            .iter()
+            .enumerate()
+            .map(|(r, id)| {
+                let features: Vec<(&str, V)> = names
+                    .iter()
+                    .map(|name| (name.as_str(), V::f32(r as f32)))
+                    .collect();
+                row(id, &features)
             })
-            .collect()
+            .collect();
+        request(&built)
     }
 
-    /// The reason this path exists: a pinned model serves a request of any size.
+    /// A request larger than the fixed size is split into batches of it, in row order.
     #[test]
     fn a_request_larger_than_the_fixed_size_is_split_into_batches_of_it() {
         let backend = RecordingBackend::new(3, 1);
@@ -1003,24 +946,21 @@ mod tests {
 
         let scored = score_features(
             &backend,
-            ramp_rows(6, 3),
+            &ramp_request(6, 3),
             &builder,
             Some(fixed(4)),
             FeatureLogging::Record,
         )
         .expect("six rows against a size of four");
 
-        // Two engine calls of exactly four rows; the second held two real rows and two
-        // padding rows.
         assert_eq!(backend.batches(), vec![4, 4]);
-        // Six rows in, six rows out, in order, each with its own scores.
-        assert_eq!(scored.outputs.len(), 6);
+        assert_eq!(scored.scores.len(), 6);
         for r in 0..6 {
-            assert_eq!(scored.outputs[r].row_id, format!("row-{r}"));
-            assert_eq!(float_scores(&scored.outputs[r]), vec![3.0 * r as f32]);
+            assert_eq!(float_row(&scored.scores, 6, r), vec![3.0 * r as f32]);
         }
     }
 
+    /// A request smaller than the fixed size is padded up to it, and the ballast dropped.
     #[test]
     fn a_request_smaller_than_the_fixed_size_is_padded_up_to_it() {
         let backend = RecordingBackend::new(3, 1);
@@ -1028,7 +968,7 @@ mod tests {
 
         let scored = score_features(
             &backend,
-            ramp_rows(1, 3),
+            &ramp_request(1, 3),
             &builder,
             Some(fixed(4)),
             FeatureLogging::Record,
@@ -1036,10 +976,10 @@ mod tests {
         .expect("one row against a size of four");
 
         assert_eq!(backend.batches(), vec![4]);
-        assert_eq!(scored.outputs.len(), 1);
-        assert_eq!(scored.outputs[0].row_id, "row-0");
+        assert_eq!(scored.scores.len(), 1);
     }
 
+    /// An exact multiple of the fixed size is split evenly, with nothing padded.
     #[test]
     fn an_exact_multiple_of_the_fixed_size_is_split_evenly() {
         let backend = RecordingBackend::new(3, 1);
@@ -1047,7 +987,7 @@ mod tests {
 
         let scored = score_features(
             &backend,
-            ramp_rows(8, 3),
+            &ramp_request(8, 3),
             &builder,
             Some(fixed(4)),
             FeatureLogging::Record,
@@ -1055,13 +995,48 @@ mod tests {
         .expect("eight rows against a size of four");
 
         assert_eq!(backend.batches(), vec![4, 4]);
-        assert_eq!(scored.outputs.len(), 8);
-        assert_eq!(float_scores(&scored.outputs[7]), vec![21.0]);
+        assert_eq!(scored.scores.len(), 8);
+        assert_eq!(float_row(&scored.scores, 8, 7), vec![21.0]);
     }
 
-    /// The padded rows are scored -- the engine has no way not to -- and then dropped.
-    /// A caller must never see one, and neither must the inference log, which feeds
-    /// training pipelines that would treat a synthetic row as real data.
+    /// Padding a pass-through configuration needs no features, so no synthetic row is
+    /// built and no ballast score reaches the caller.
+    #[test]
+    fn a_fixed_size_pads_a_pass_through_configuration_without_inventing_rows() {
+        let backend = PerFeatureBackend::new();
+        let builder = builder_for(
+            &backend,
+            r#"{
+                "model_inputs": {
+                    "age": {"data_type": "float"},
+                    "tags": {"data_type": "string"}
+                }
+            }"#,
+        );
+
+        let columns = request(&[
+            row("a", &[("age", V::f32(1.0)), ("tags", V::str("x"))]),
+            row("b", &[("age", V::f32(2.0)), ("tags", V::str("y"))]),
+            row("c", &[("age", V::f32(3.0)), ("tags", V::str("z"))]),
+        ]);
+        let scored = score_features(
+            &backend,
+            &columns,
+            &builder,
+            Some(fixed(4)),
+            FeatureLogging::Record,
+        )
+        .expect("padding must not require features the caller never sent");
+
+        assert_eq!(scored.scores.len(), 3, "only the real rows come back");
+        assert_eq!(
+            scored.scores.as_f32(),
+            vec![2.0, 3.0, 4.0],
+            "no ballast score reaches the caller"
+        );
+    }
+
+    /// No padded row's score reaches the response or the log.
     #[test]
     fn padding_reaches_neither_the_response_nor_the_log() {
         let backend = RecordingBackend::new(3, 1);
@@ -1069,7 +1044,7 @@ mod tests {
 
         let scored = score_features(
             &backend,
-            ramp_rows(5, 3),
+            &ramp_request(5, 3),
             &builder,
             Some(fixed(4)),
             FeatureLogging::Record,
@@ -1077,14 +1052,15 @@ mod tests {
         .expect("five rows against a size of four");
 
         assert_eq!(backend.batches(), vec![4, 4]);
-        assert_eq!(scored.outputs.len(), 5);
-        assert_eq!(scored.logs.len(), 5);
-        assert!(!scored.outputs.iter().any(|o| o.row_id == PAD_ROW_ID));
-        assert!(!scored.logs.iter().any(|l| l.row_id == PAD_ROW_ID));
+        assert_eq!(scored.scores.len(), 5);
+        assert_eq!(
+            scored.scores.as_f32(),
+            vec![0.0, 3.0, 6.0, 9.0, 12.0],
+            "the three ballast rows scored 0 and none of them survived"
+        );
     }
 
-    /// The size the benchmark's pinned models use, and the worst case for padding: one
-    /// engine call per row.
+    /// A fixed size of one runs one batch per row.
     #[test]
     fn a_fixed_size_of_one_runs_a_batch_per_row() {
         let backend = RecordingBackend::new(3, 1);
@@ -1092,7 +1068,7 @@ mod tests {
 
         let scored = score_features(
             &backend,
-            ramp_rows(3, 3),
+            &ramp_request(3, 3),
             &builder,
             Some(fixed(1)),
             FeatureLogging::Record,
@@ -1100,14 +1076,13 @@ mod tests {
         .expect("three rows against a size of one");
 
         assert_eq!(backend.batches(), vec![1, 1, 1]);
-        assert_eq!(scored.outputs.len(), 3);
-        assert_eq!(float_scores(&scored.outputs[2]), vec![6.0]);
+        assert_eq!(scored.scores.len(), 3);
+        assert_eq!(float_row(&scored.scores, 3, 2), vec![6.0]);
     }
 
-    /// The latency case, and the one `is_fixed: false` exists for: the rows are split but
-    /// the last batch is however many remain, so nothing is padded and no synthetic row
-    /// is scored. Batch sizes are sorted before comparing because the batches run at the
-    /// same time and finish in whatever order the scheduler gives them.
+    /// A dynamic split leaves the last batch short rather than padding it. Batch sizes
+    /// are sorted before comparing, because the batches finish in whatever order the
+    /// scheduler gives them.
     #[test]
     fn a_dynamic_split_leaves_the_last_batch_short() {
         let backend = RecordingBackend::new(3, 1);
@@ -1115,7 +1090,7 @@ mod tests {
 
         let scored = score_features(
             &backend,
-            ramp_rows(6, 3),
+            &ramp_request(6, 3),
             &builder,
             Some(dynamic(4)),
             FeatureLogging::Record,
@@ -1129,17 +1104,76 @@ mod tests {
             vec![2, 4],
             "the last batch carries the two rows that remain, unpadded"
         );
-        assert_eq!(scored.outputs.len(), 6);
         assert_eq!(
-            scored.logs.len(),
+            scored.scores.len(),
             6,
-            "no padding row reaches the log, because none was made"
+            "no padding row reaches the response or the log, because none was made"
         );
     }
 
-    /// The property the fan-out has to keep: rows come back in the order they were sent,
-    /// however the batches interleave. Twenty batches of one row make the ordering
-    /// non-trivial -- an implementation appending results as they arrive fails this.
+    /// Rows stay in request order when the batches finish in the reverse of the order
+    /// they were submitted.
+    #[test]
+    fn request_order_survives_batches_finishing_out_of_order() {
+        const ROWS: usize = 16;
+
+        #[derive(Debug)]
+        struct ReverseDelay {
+            inner: SummingBackend,
+        }
+
+        impl InferenceBackend for ReverseDelay {
+            fn name(&self) -> &str {
+                "test/reverse-delay"
+            }
+            fn inputs(&self) -> &[crate::inference::batch::IoSpec] {
+                self.inner.inputs()
+            }
+            fn outputs(&self) -> &[crate::inference::batch::IoSpec] {
+                self.inner.outputs()
+            }
+            fn run(
+                &self,
+                inputs: InputBatch,
+            ) -> Result<crate::inference::batch::OutputBatch, crate::inference::InferenceError>
+            {
+                let sum: f32 = inputs
+                    .get(self.inner.input_name())
+                    .and_then(|c| c.row_as_f32(0).map(|r| r.iter().sum()))
+                    .unwrap_or_default();
+                let steps = (3 * (ROWS - 1)) as f32 - sum;
+                std::thread::sleep(Duration::from_millis(2 * steps.max(0.0) as u64));
+                self.inner.run(inputs)
+            }
+        }
+
+        let backend = ReverseDelay {
+            inner: SummingBackend::new(3, 1),
+        };
+        let builder = builder_for(&backend, &vector_config(3, "float"));
+
+        let scored = score_features(
+            &backend,
+            &ramp_request(ROWS, 3),
+            &builder,
+            Some(dynamic(1)),
+            FeatureLogging::Record,
+        )
+        .expect("sixteen single-row batches");
+
+        assert_eq!(scored.scores.len(), ROWS);
+        for r in 0..ROWS {
+            assert_eq!(
+                float_row(&scored.scores, ROWS, r),
+                vec![3.0 * r as f32],
+                "row {r} is out of place, so the fan-out collected on completion"
+            );
+        }
+        let ramp: Vec<f32> = (0..ROWS).map(|r| 3.0 * r as f32).collect();
+        assert_eq!(scored.scores.as_f32(), ramp);
+    }
+
+    /// Twenty single-row batches come back in request order.
     #[test]
     fn mini_batches_return_rows_in_request_order() {
         let backend = RecordingBackend::new(3, 1);
@@ -1147,7 +1181,7 @@ mod tests {
 
         let scored = score_features(
             &backend,
-            ramp_rows(20, 3),
+            &ramp_request(20, 3),
             &builder,
             Some(dynamic(1)),
             FeatureLogging::Record,
@@ -1155,15 +1189,17 @@ mod tests {
         .expect("twenty single-row batches");
 
         assert_eq!(backend.batches().len(), 20);
+        assert_eq!(scored.scores.len(), 20);
         for r in 0..20 {
-            assert_eq!(scored.outputs[r].row_id, format!("row-{r}"));
-            assert_eq!(scored.logs[r].row_id, format!("row-{r}"));
-            assert_eq!(float_scores(&scored.outputs[r]), vec![3.0 * r as f32]);
+            assert_eq!(
+                float_row(&scored.scores, 20, r),
+                vec![3.0 * r as f32],
+                "row {r} came back out of request order"
+            );
         }
     }
 
-    /// Splitting must not change a row's scores, only when they are computed. The same
-    /// rows are scored whole and in mini batches, and the two agree row for row.
+    /// Splitting the rows changes when they are scored, not what they score.
     #[test]
     fn a_dynamic_split_does_not_change_a_rows_scores() {
         let whole = RecordingBackend::new(3, 1);
@@ -1172,7 +1208,7 @@ mod tests {
 
         let one = score_features(
             &whole,
-            ramp_rows(7, 3),
+            &ramp_request(7, 3),
             &builder,
             None,
             FeatureLogging::Skip,
@@ -1180,7 +1216,7 @@ mod tests {
         .expect("scored whole");
         let many = score_features(
             &split,
-            ramp_rows(7, 3),
+            &ramp_request(7, 3),
             &builder,
             Some(dynamic(3)),
             FeatureLogging::Skip,
@@ -1191,19 +1227,18 @@ mod tests {
         let mut sizes = split.batches();
         sizes.sort_unstable();
         assert_eq!(sizes, vec![1, 3, 3]);
-        assert_eq!(one.outputs.len(), many.outputs.len());
+        assert_eq!(one.scores.len(), many.scores.len());
         for r in 0..7 {
-            assert_eq!(one.outputs[r].row_id, many.outputs[r].row_id);
             assert_eq!(
-                float_scores(&one.outputs[r]),
-                float_scores(&many.outputs[r]),
+                float_row(&one.scores, 7, r),
+                float_row(&many.scores, 7, r),
                 "row {r} scored differently when split"
             );
         }
+        assert_eq!(one.scores, many.scores);
     }
 
-    /// No declaration means no chunking, which is what a dynamic model wants and what
-    /// this function did before it knew about batch sizes at all.
+    /// With no mini batch declared, the whole request runs as one batch.
     #[test]
     fn a_dynamic_deployment_runs_the_whole_request_as_one_batch() {
         let backend = RecordingBackend::new(3, 1);
@@ -1211,7 +1246,7 @@ mod tests {
 
         let scored = score_features(
             &backend,
-            ramp_rows(6, 3),
+            &ramp_request(6, 3),
             &builder,
             None,
             FeatureLogging::Record,
@@ -1219,11 +1254,10 @@ mod tests {
         .expect("scored");
 
         assert_eq!(backend.batches(), vec![6]);
-        assert_eq!(scored.outputs.len(), 6);
+        assert_eq!(scored.scores.len(), 6);
     }
 
-    /// An empty request runs no model, pinned or not -- so a pinned deployment does not
-    /// turn "nothing to score" into a batch of pure padding.
+    /// An empty request runs no batch even when a fixed size is set.
     #[test]
     fn an_empty_request_runs_no_batch_even_when_pinned() {
         let backend = RecordingBackend::new(3, 1);
@@ -1231,7 +1265,7 @@ mod tests {
 
         let scored = score_features(
             &backend,
-            Vec::new(),
+            &request(&[]),
             &builder,
             Some(fixed(4)),
             FeatureLogging::Record,
@@ -1239,21 +1273,18 @@ mod tests {
         .expect("nothing");
 
         assert!(backend.batches().is_empty());
-        assert!(scored.outputs.is_empty());
-        assert!(scored.logs.is_empty());
+        assert_eq!(scored.scores.len(), 0);
     }
 
-    /// The property that makes padding safe to do at all: a row's scores do not depend
-    /// on what shared its batch. Scoring the same rows whole and in padded batches of
-    /// two must agree row for row -- if padding leaked into a neighbour, or a batch were
-    /// stitched back in the wrong order, this is what would catch it.
+    /// A row's scores do not depend on what shared its batch: the same rows scored whole
+    /// and in padded batches of two agree row for row.
     #[test]
     fn chunking_and_padding_do_not_change_a_rows_scores() {
         let dynamic = RecordingBackend::new(3, 1);
         let dynamic_builder = builder_for(&dynamic, &vector_config(3, "float"));
         let whole = score_features(
             &dynamic,
-            ramp_rows(7, 3),
+            &ramp_request(7, 3),
             &dynamic_builder,
             None,
             FeatureLogging::Record,
@@ -1264,7 +1295,7 @@ mod tests {
         let pinned_builder = builder_for(&pinned, &vector_config(3, "float"));
         let split = score_features(
             &pinned,
-            ramp_rows(7, 3),
+            &ramp_request(7, 3),
             &pinned_builder,
             Some(fixed(2)),
             FeatureLogging::Record,
@@ -1272,13 +1303,42 @@ mod tests {
         .expect("scored");
 
         assert_eq!(dynamic.batches(), vec![7]);
-        // Three full batches and a fourth holding one real row and one padding row.
         assert_eq!(pinned.batches(), vec![2, 2, 2, 2]);
 
-        assert_eq!(whole.outputs.len(), split.outputs.len());
-        for (w, s) in whole.outputs.iter().zip(split.outputs.iter()) {
-            assert_eq!(w.row_id, s.row_id);
-            assert_eq!(float_scores(w), float_scores(s));
+        assert_eq!(whole.scores.len(), split.scores.len());
+        for r in 0..7 {
+            assert_eq!(
+                float_row(&whole.scores, 7, r),
+                float_row(&split.scores, 7, r),
+                "row {r} scored differently when split and padded"
+            );
         }
+        assert_eq!(whole.scores, split.scores);
+    }
+
+    /// A `ScoreType` copied for the log holds the response's own numbers, unnarrowed.
+    #[test]
+    fn the_log_and_the_response_carry_the_same_scores() {
+        let doubles = to_score_type(ScoreData::F64(vec![0.1, 0.2]));
+        let logged = doubles.clone();
+
+        match (
+            doubles.score_type.expect("set"),
+            logged.score_type.expect("set"),
+        ) {
+            (Scores::DoubleScores(response), Scores::DoubleScores(log)) => {
+                assert_eq!(response.values, vec![0.1, 0.2]);
+                assert_eq!(
+                    log.values, response.values,
+                    "the log holds the response's own numbers"
+                );
+            }
+            _ => panic!("a double-precision batch must reach both sides as doubles"),
+        }
+
+        assert!(matches!(
+            to_score_type(ScoreData::F32(vec![0.5])).score_type,
+            Some(Scores::FloatScores(_))
+        ));
     }
 }

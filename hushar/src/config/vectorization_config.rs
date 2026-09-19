@@ -1,10 +1,10 @@
 // Copyright (c) 2025 Pratik Barhate
 // Licensed under the MIT License. See the LICENSE file in the project root for more information.
 
-//! How a request's named features become a model's inputs, declared rather than guessed.
+//! How a request's named features become a model's inputs.
 //!
-//! Two shapes, and a configuration is exactly one of them. Which one is decided by
-//! the field that is present, so there is no mode to spell and no mode to spell wrong:
+//! Two shapes, and a configuration is exactly one of them. Which one is decided by the
+//! field that is present:
 //!
 //! **Vectorised** — one model input, every feature transformed and concatenated in
 //! `feature_order`. Strict tabular data: `rows × width` of one float type.
@@ -17,24 +17,17 @@
 //! }
 //! ```
 //!
-//! **Named** — one model input per feature, each with its own declared type. This is
-//! the shape that can carry text into the graph, or hand a model raw numbers to
-//! normalise itself.
+//! **Named** — one model input per feature, each with its own declared type, taken from
+//! the request verbatim. It transforms nothing, so it declares no transformations.
 //!
 //! ```json
 //! {
-//!   "feature_transformations": { "age": { "type": "standardization32", ... } },
 //!   "model_inputs": {
 //!     "age":  { "data_type": "float" },
 //!     "city": { "data_type": "string" }
 //!   }
 //! }
 //! ```
-//!
-//! An earlier version derived the mapping by reading the model's signature and
-//! matching input names against feature names. That worked, but every way the guess
-//! could be ambiguous needed its own error. A model file does not record the schema of
-//! the data it was trained on, so the schema is asked for instead of guessed.
 
 use crate::inference::batch::ElementType;
 use crate::inference::transformations::{
@@ -46,10 +39,9 @@ use std::collections::{BTreeMap, HashMap};
 
 /// What one named model input carries.
 ///
-/// The scalar and array spellings differ only in expected width, and that is the
-/// point: `float` declares one value per row, so a transformation producing five is
-/// a configuration error caught at startup rather than a shape that happens to work
-/// until a one-hot encoding gains a category.
+/// The scalar and array spellings differ in expected width: `float` declares one value
+/// per row, `float_array` more than one. A width that disagrees with the model is a
+/// configuration error caught at startup.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InputDataType {
@@ -89,7 +81,7 @@ impl InputDataType {
         )
     }
 
-    /// The spelling used in configuration, so an error names what the operator wrote.
+    /// The spelling this type takes in configuration.
     pub fn name(&self) -> &'static str {
         match self {
             InputDataType::Float => "float",
@@ -113,9 +105,6 @@ impl std::fmt::Display for InputDataType {
 }
 
 /// One entry of `model_inputs`.
-///
-/// A struct holding a single field rather than a bare `InputDataType`, so that
-/// per-input options can be added later without rewriting every configuration.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelInput {
@@ -124,9 +113,7 @@ pub struct ModelInput {
 
 /// The float type of a vectorised batch.
 ///
-/// `double` exists because a tree ensemble is not a continuous function: a feature
-/// value nudged across a split by a narrowing cast does not shift the prediction
-/// slightly, it selects a different leaf.
+/// Accepts `float` and `double`. Defaults to `float`.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VectorType {
@@ -146,16 +133,18 @@ impl VectorType {
 
 /// How features reach the model.
 ///
-/// Variants:
-/// - `Vectorised` — one input, carrying every feature concatenated in `feature_order`.
-/// - `Named` — one input per named feature, each with its own type. Held in a
-///   `BTreeMap` so the startup banner and every error list inputs the same way twice
-///   running, which a `HashMap` would not.
-#[derive(Clone, Debug, PartialEq)]
+/// # Fields
+///
+/// * `Vectorised` - one input, carrying every feature transformed and concatenated in
+///   `feature_order`; the only mode that transforms
+/// * `Named` - one input per named feature, each with its own type, taken from the
+///   request verbatim; held in a `BTreeMap`, so inputs are always reported in name order
+#[derive(Debug)]
 pub enum InputMode {
     Vectorised {
         feature_order: Vec<String>,
         data_type: VectorType,
+        transformations: HashMap<String, Box<dyn Transformation>>,
     },
     Named {
         model_inputs: BTreeMap<String, InputDataType>,
@@ -164,25 +153,23 @@ pub enum InputMode {
 
 /// Configuration for turning a request's features into model inputs.
 ///
-/// Fields:
-/// - `feature_transformations` — feature name to the transformation applied to it.
-/// - `mode` — which of the two shapes this configuration is.
+/// # Fields
+///
+/// * `mode` - which of the two shapes this configuration is; transformations live inside
+///   `InputMode::Vectorised`, so a `Named` configuration cannot carry any, and
+///   [`VectorizationConfig::from_json`] rejects the JSON that asks for it
 ///
 /// After [`VectorizationConfig::from_json`] this is not a literal reading of the JSON: a
 /// feature named in `feature_order` with no transformation has been given an identity
-/// one, so `vector_width` can be answered without a model. Named-mode defaults cannot be
-/// filled here because an array input's width comes from the model, so those are filled
-/// when the configuration meets the signature.
+/// one.
 #[derive(Debug)]
 pub struct VectorizationConfig {
-    pub feature_transformations: HashMap<String, Box<dyn Transformation>>,
     pub mode: InputMode,
 }
 
 /// Every available transformation, for deserialization.
 ///
-/// The tag lives in the JSON as `"type"`, which is what lets a single map hold
-/// transformations that take different parameters.
+/// The variant is chosen by the JSON `type` field.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum TransformationType {
@@ -210,10 +197,6 @@ impl TransformationType {
 }
 
 /// The JSON as written, before either shape has been established.
-///
-/// Both shapes are read into one struct and resolved by hand rather than by an
-/// untagged enum, because serde's failure for an untagged enum is "data did not
-/// match any variant", which tells an operator nothing about which field to fix.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawVectorizationConfig {
@@ -228,8 +211,14 @@ impl VectorizationConfig {
     /// Reads a configuration and applies the defaults it can apply without a model.
     ///
     /// A feature listed in `feature_order` with no transformation is given an identity
-    /// one here, rather than at use, so that [`VectorizationConfig::vector_width`] can
-    /// be answered without a model.
+    /// one here, so [`VectorizationConfig::vector_width`] can be answered without a
+    /// model.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if neither or both of `feature_order` and `model_inputs` are
+    /// declared, if `feature_transformations` or `data_type` appear alongside
+    /// `model_inputs`, or if [`VectorizationConfig::validate`] refuses the result.
     pub fn from_json(json: &str) -> Result<Self, crate::inference::InferenceError> {
         let raw: RawVectorizationConfig = serde_json::from_str(json)?;
 
@@ -263,9 +252,23 @@ impl VectorizationConfig {
                 InputMode::Vectorised {
                     feature_order,
                     data_type: raw.data_type.unwrap_or_default(),
+                    transformations: feature_transformations,
                 }
             }
             (None, Some(model_inputs)) => {
+                if !feature_transformations.is_empty() {
+                    let mut named: Vec<&str> =
+                        feature_transformations.keys().map(String::as_str).collect();
+                    named.sort_unstable();
+                    return Err(format!(
+                        "\"model_inputs\" feeds every input from the request verbatim, so \
+                         a transformation would never run: {}. Remove \
+                         \"feature_transformations\", or use \"feature_order\" to \
+                         concatenate transformed features into one input.",
+                        named.join(", ")
+                    )
+                    .into());
+                }
                 if raw.data_type.is_some() {
                     return Err("\"data_type\" sets the element type of the single \
                          concatenated input, so it belongs with \"feature_order\". With \
@@ -281,10 +284,7 @@ impl VectorizationConfig {
             }
         };
 
-        let config = VectorizationConfig {
-            feature_transformations,
-            mode,
-        };
+        let config = VectorizationConfig { mode };
         config.validate()?;
         Ok(config)
     }
@@ -295,16 +295,27 @@ impl VectorizationConfig {
     /// ones the model actually has -- is checked when the two meet, in
     /// `InputBuilder::resolve`.
     ///
-    /// A transformation produces floats, so one configured for a non-float input could
-    /// only be applied by rounding or by inventing text. That is refused here rather
-    /// than converted quietly.
+    /// # Errors
+    ///
+    /// Returns an error if a transformation is itself invalid, if `feature_order` is
+    /// empty or repeats a feature, if a transformation names a feature absent from
+    /// `feature_order`, or if `model_inputs` is empty.
     pub fn validate(&self) -> Result<(), crate::inference::InferenceError> {
-        for (name, transformation) in &self.feature_transformations {
-            transformation.validate(name)?;
+        if let InputMode::Vectorised {
+            transformations, ..
+        } = &self.mode
+        {
+            for (name, transformation) in transformations {
+                transformation.validate(name)?;
+            }
         }
 
         match &self.mode {
-            InputMode::Vectorised { feature_order, .. } => {
+            InputMode::Vectorised {
+                feature_order,
+                transformations,
+                ..
+            } => {
                 if feature_order.is_empty() {
                     return Err("\"feature_order\" is empty, so there is nothing to \
                          concatenate into the model's input"
@@ -320,7 +331,7 @@ impl VectorizationConfig {
                         .into());
                     }
                 }
-                for name in self.feature_transformations.keys() {
+                for name in transformations.keys() {
                     if !feature_order.contains(name) {
                         return Err(format!(
                             "feature {name:?} has a transformation but is not in \
@@ -337,29 +348,6 @@ impl VectorizationConfig {
                          fed"
                     .into());
                 }
-                for (name, data_type) in model_inputs {
-                    if !data_type.element_type().is_float()
-                        && self.feature_transformations.contains_key(name)
-                    {
-                        return Err(format!(
-                            "input {name:?} is declared {data_type}, but it has a \
-                             transformation. Transformations produce floats, so a \
-                             {data_type} input is passed through from the request \
-                             verbatim. Remove the transformation, or declare the input \
-                             as float or double."
-                        )
-                        .into());
-                    }
-                }
-                for name in self.feature_transformations.keys() {
-                    if !model_inputs.contains_key(name) {
-                        return Err(format!(
-                            "feature {name:?} has a transformation but is not declared \
-                             in model_inputs, so it would never reach the model"
-                        )
-                        .into());
-                    }
-                }
             }
         }
         Ok(())
@@ -367,32 +355,39 @@ impl VectorizationConfig {
 
     /// Elements the concatenated input carries per row.
     ///
-    /// Answerable without a model, which is what makes it useful for reporting and
-    /// for checking a configuration on its own. The builder computes the same sum
-    /// through [`vector_width`] after it has taken ownership of the transformations.
+    /// # Errors
+    ///
+    /// Returns an error if this configuration feeds named inputs, which have no single
+    /// concatenated width, if a feature in `feature_order` has no transformation, or if
+    /// the widths overflow.
     #[allow(dead_code)]
     pub fn vector_width(&self) -> Result<usize, crate::inference::InferenceError> {
-        let InputMode::Vectorised { feature_order, .. } = &self.mode else {
+        let InputMode::Vectorised {
+            feature_order,
+            transformations,
+            ..
+        } = &self.mode
+        else {
             return Err(
                 "this configuration feeds named inputs, so it has no single \
                  concatenated width"
                     .into(),
             );
         };
-        vector_width(&self.feature_transformations, feature_order)
+        vector_width(transformations, feature_order)
     }
 }
 
 /// Elements a concatenated input carries per row.
 ///
-/// Each transformation's default vector is exactly as wide as its output -- that is
-/// what makes a default usable when a feature is absent -- so the total is the sum of
-/// those widths, taken in `feature_order`. Summing rather than counting is the whole
-/// point: a one-hot feature is wider than one value.
+/// Each transformation's default vector is exactly as wide as its output, so the total
+/// is the sum of those widths taken in `feature_order` -- a sum, not a feature count,
+/// because a one-hot feature is wider than one value.
 ///
-/// A free function because the builder needs the same answer after it has taken
-/// ownership of the transformations, and two implementations of one sum would be two
-/// chances to disagree about a model's input width.
+/// # Errors
+///
+/// Returns an error if a feature in `feature_order` has no transformation, or if the
+/// widths overflow.
 pub(crate) fn vector_width(
     transformations: &HashMap<String, Box<dyn Transformation>>,
     feature_order: &[String],
@@ -411,22 +406,11 @@ pub(crate) fn vector_width(
 
 /// The transformation a feature gets when configuration names none.
 ///
-/// One value per row, zero when the feature is absent. A vectorised batch of a
-/// feature that was never configured is then a column of zeros rather than a
-/// startup failure, which is what makes `feature_transformations` optional.
+/// One value per row, zero when the feature is absent, which is what makes
+/// `feature_transformations` optional.
 fn default_identity() -> Box<dyn Transformation> {
     Box::new(Identity {
         default_val: vec![0.0],
-    })
-}
-
-/// The identity transformation for an input of a known width.
-///
-/// Used where the width comes from the model rather than from configuration, which
-/// is every array input with no transformation of its own.
-pub(crate) fn identity_of_width(width: usize) -> Box<dyn Transformation> {
-    Box::new(Identity {
-        default_val: vec![0.0; width],
     })
 }
 
@@ -434,11 +418,36 @@ pub(crate) fn identity_of_width(width: usize) -> Box<dyn Transformation> {
 mod tests {
     use super::*;
 
+    /// The transformations of a vectorised config, which is the only shape that has any.
+    fn transformations_of(
+        config: &VectorizationConfig,
+    ) -> &HashMap<String, Box<dyn Transformation>> {
+        let InputMode::Vectorised {
+            transformations, ..
+        } = &config.mode
+        else {
+            panic!("only the vectorised shape carries transformations");
+        };
+        transformations
+    }
+
+    /// Asserts a config is the vectorised shape with this order and element type.
+    fn assert_vectorised(config: &VectorizationConfig, order: &[&str], data_type: VectorType) {
+        let InputMode::Vectorised {
+            feature_order,
+            data_type: actual,
+            ..
+        } = &config.mode
+        else {
+            panic!("feature_order must select the vectorised shape");
+        };
+        assert_eq!(feature_order.as_slice(), order);
+        assert_eq!(*actual, data_type);
+    }
+
     fn vectorised(json: &str) -> VectorizationConfig {
         VectorizationConfig::from_json(json).expect("a valid vectorised config")
     }
-
-    // ------------------------------------------------------- choosing a shape
 
     #[test]
     fn feature_order_selects_the_vectorised_shape() {
@@ -451,13 +460,7 @@ mod tests {
                 "feature_order": ["age", "city"]
             }"#,
         );
-        assert_eq!(
-            config.mode,
-            InputMode::Vectorised {
-                feature_order: vec!["age".into(), "city".into()],
-                data_type: VectorType::Float,
-            }
-        );
+        assert_vectorised(&config, &["age", "city"], VectorType::Float);
         assert_eq!(config.vector_width().expect("width"), 4, "1 + 3");
     }
 
@@ -465,9 +468,6 @@ mod tests {
     fn model_inputs_selects_the_named_shape() {
         let config = vectorised(
             r#"{
-                "feature_transformations": {
-                    "age": {"type": "identity", "default_val": [0.0]}
-                },
                 "model_inputs": {
                     "age": {"data_type": "float"},
                     "city": {"data_type": "string"}
@@ -509,8 +509,7 @@ mod tests {
         );
     }
 
-    /// Without `deny_unknown_fields` this would start cleanly and behave as though the
-    /// field had never been written, which is the worst of both.
+    /// Asserts a misspelled field is refused rather than silently ignored.
     #[test]
     fn a_misspelled_field_is_refused_rather_than_ignored() {
         let err = VectorizationConfig::from_json(
@@ -523,8 +522,6 @@ mod tests {
         );
     }
 
-    // ------------------------------------------------------------ the f64 case
-
     #[test]
     fn a_double_vector_is_declared_by_data_type() {
         let config = vectorised(
@@ -534,13 +531,7 @@ mod tests {
                 "data_type": "double"
             }"#,
         );
-        assert_eq!(
-            config.mode,
-            InputMode::Vectorised {
-                feature_order: vec!["age".into()],
-                data_type: VectorType::Double,
-            }
-        );
+        assert_vectorised(&config, &["age"], VectorType::Double);
     }
 
     #[test]
@@ -556,16 +547,13 @@ mod tests {
         assert!(err.to_string().contains("data_type"), "got {err}");
     }
 
-    // ------------------------------------------------------- default identity
-
-    /// The whole `feature_transformations` map may be omitted, and each feature then
-    /// contributes one value per row.
+    /// Asserts an omitted `feature_transformations` gives each feature one value per row.
     #[test]
     fn a_feature_with_no_transformation_is_passed_through() {
         let config = vectorised(r#"{"feature_order": ["a", "b", "c"]}"#);
         assert_eq!(config.vector_width().expect("width"), 3);
         assert!(
-            config.feature_transformations.contains_key("b"),
+            transformations_of(&config).contains_key("b"),
             "the default must have been filled in"
         );
     }
@@ -587,33 +575,26 @@ mod tests {
         );
     }
 
-    // ------------------------------------------------------------- validation
-
-    /// Transformations produce floats, so one attached to a text input could only be
-    /// applied by inventing text from a number.
+    /// Asserts a transformation beside `model_inputs` is refused, whatever the declared
+    /// type.
     #[test]
-    fn a_transformation_on_a_string_input_is_refused() {
-        let err = VectorizationConfig::from_json(
-            r#"{
-                "feature_transformations": {"city": {"type": "identity", "default_val": [0.0]}},
-                "model_inputs": {"city": {"data_type": "string"}}
-            }"#,
-        )
-        .expect_err("a text input is fed verbatim");
-        let m = err.to_string();
-        assert!(m.contains("city") && m.contains("string"), "got {m}");
-    }
-
-    #[test]
-    fn a_transformation_on_a_long_input_is_refused() {
-        let err = VectorizationConfig::from_json(
-            r#"{
-                "feature_transformations": {"code": {"type": "identity", "default_val": [0.0]}},
-                "model_inputs": {"code": {"data_type": "long"}}
-            }"#,
-        )
-        .expect_err("rounding a float into an integer would be corruption");
-        assert!(err.to_string().contains("code"), "got {err}");
+    fn a_transformation_alongside_model_inputs_is_refused() {
+        for data_type in ["string", "float"] {
+            let json = format!(
+                r#"{{
+                    "feature_transformations": {{"city": {{"type": "identity", "default_val": [0.0]}}}},
+                    "model_inputs": {{"city": {{"data_type": "{data_type}"}}}}
+                }}"#
+            );
+            let err = VectorizationConfig::from_json(&json)
+                .expect_err("a named input is fed verbatim, whatever its type");
+            let m = err.to_string();
+            assert!(
+                m.contains("city") && m.contains("verbatim") && m.contains("feature_order"),
+                "a {data_type} input should say which feature, that it is verbatim, and \
+                 what to use instead; got {m}"
+            );
+        }
     }
 
     #[test]
@@ -690,14 +671,12 @@ mod tests {
                 "feature_order": ["f1", "f2", "f3", "f4", "f5", "f6", "f7"]
             }"#,
         );
-        assert_eq!(config.feature_transformations.len(), 7);
+        assert_eq!(transformations_of(&config).len(), 7);
         assert_eq!(
             config.vector_width().expect("width"),
             2 + 1 + 1 + 1 + 3 + 1 + 1
         );
     }
-
-    // ----------------------------------------------------------- data types
 
     #[test]
     fn each_declared_type_maps_to_one_element_type() {

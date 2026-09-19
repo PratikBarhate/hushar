@@ -3,18 +3,18 @@
 
 //! [`InferenceBackend`] over ONNX Runtime, via the workspace's `onnxrt-rs` crate.
 //!
-//! This is the only file in the service that knows ONNX Runtime exists, and the only
-//! one that translates between hushar's [`ElementType`] and the engine's. That
-//! translation is the price of keeping the layer above engine-agnostic.
+//! The only file in the service that knows ONNX Runtime exists, and the only one that
+//! translates between hushar's [`ElementType`] and the engine's.
 
 use std::fmt;
 use std::sync::Arc;
 
 use onnxrt_rs::{
-    Api, DataType as OrtDataType, Environment, ExecutionProvider, GraphOptimizationLevel,
-    InputValue, OwnedTensor, Session, SessionBuilder,
+    Api, DataType as OrtDataType, Environment, ExecutionMode, ExecutionProvider,
+    GraphOptimizationLevel, InputValue, OwnedTensor, Session, SessionBuilder,
 };
 
+use crate::config::Parallelism;
 use crate::inference::InferenceError;
 use crate::inference::backend::InferenceBackend;
 use crate::inference::batch::{
@@ -23,19 +23,16 @@ use crate::inference::batch::{
 
 /// ONNX Runtime, running on whichever execution provider was requested.
 ///
-/// The whole signature is read from the model rather than configured, so a
-/// configuration that disagrees with it is reported rather than silently reshaped.
+/// The whole signature is read from the model rather than configured, so a configuration
+/// that disagrees with it is reported rather than silently reshaped.
 ///
-/// # Field order is drop order
+/// ONNX Runtime requires the environment to outlive every session created in it. Field
+/// order is drop order, so `session` is declared first and released first, and the `Arc`
+/// keeps the environment alive for as long as the session needs it.
 ///
-/// ONNX Runtime requires the environment to outlive every session created in it, so
-/// `session` is declared first and is therefore released first. Holding the `Arc`
-/// makes that guarantee structural rather than a convention this file remembers.
-///
-/// The environment is shared rather than per-backend because ONNX Runtime allows only
-/// one default-logger environment per process: creating one per backend would fail
-/// whenever two models are loaded at once, such as reloading a model while still
-/// serving from the old one.
+/// The environment is shared rather than per-backend: ONNX Runtime allows only one
+/// default-logger environment per process, so creating one per backend would fail
+/// whenever two models are loaded at once.
 pub(crate) struct OnnxRuntimeBackend {
     session: Session,
     _environment: Arc<Environment>,
@@ -48,29 +45,30 @@ pub(crate) struct OnnxRuntimeBackend {
 impl OnnxRuntimeBackend {
     /// Loads an ONNX model and prepares it to run on `provider`.
     ///
-    /// `session_options` are ONNX Runtime's string-keyed session settings, applied after
-    /// the thread count because an affinity list is validated against it. See
-    /// [`onnxrt_rs::SessionBuilder::config_entry`].
+    /// # Arguments
     ///
-    /// `intra_op_threads` bounds the threads ONNX Runtime uses *inside* one
-    /// operator. Pass `Some(1)` when the caller already keeps every core busy
-    /// with concurrent requests, as this service does: extra intra-op threads
-    /// then only add contention. `None` leaves ONNX Runtime's default.
-    ///
-    /// `mini_batch` is how the deployment cuts a request's rows, when the
-    /// configuration says to. Padded batches are what allow a model with a pinned
-    /// leading dimension to load at all; see [`convert_specs`].
+    /// * `model_bytes` - the ONNX model protobuf
+    /// * `provider` - the execution provider the session runs on
+    /// * `parallelism` - which of ONNX Runtime's thread pools carries this session's width,
+    ///   and how wide. Sets the execution mode to match, since inter-op threads are built
+    ///   and never given work under the sequential executor. A width of `0` leaves that
+    ///   pool at the runtime's own default.
+    /// * `mini_batch` - how the deployment cuts a request's rows, when the model
+    ///   configuration says to. A padded batch is what allows a model with a pinned
+    ///   leading dimension to load at all; see [`convert_specs`].
+    /// * `session_options` - ONNX Runtime's string-keyed session settings, applied after
+    ///   the thread count because an affinity list is validated against it. See
+    ///   [`onnxrt_rs::SessionBuilder::config_entry`].
     ///
     /// # Errors
     ///
-    /// Fails if the ONNX Runtime library cannot be loaded, if `provider` is not
-    /// compiled into it (the error names the providers that are), if the model
-    /// will not parse, or if the model uses an element type this service does not
-    /// model.
+    /// Fails if the ONNX Runtime library cannot be loaded, if `provider` is not compiled
+    /// into it (the error names the providers that are), if the model will not parse, or
+    /// if the model uses an element type this service does not serve.
     pub(crate) fn load(
         model_bytes: &[u8],
         provider: &ExecutionProvider,
-        intra_op_threads: Option<i32>,
+        parallelism: Parallelism,
         mini_batch: Option<crate::inference::scoring::MiniBatch>,
         session_options: &[(String, String)],
     ) -> Result<Self, InferenceError> {
@@ -79,12 +77,30 @@ impl OnnxRuntimeBackend {
 
         let mut builder = SessionBuilder::new(environment.as_ref())?
             .optimization_level(GraphOptimizationLevel::All)?
-            .execution_provider(provider)?;
-        if let Some(threads) = intra_op_threads {
-            builder = builder.intra_op_threads(threads)?;
+            .execution_provider(provider)?
+            .execution_mode(if parallelism.is_parallel() {
+                ExecutionMode::Parallel
+            } else {
+                ExecutionMode::Sequential
+            })?;
+        match parallelism {
+            Parallelism::Intra(threads) => {
+                if threads > 0 {
+                    builder = builder.intra_op_threads(threads)?;
+                }
+            }
+            Parallelism::Inter(threads) => {
+                // The intra-op pool does not go away when the width moves to inter-op, and
+                // its default is one thread per physical core. Left unset, this session
+                // would hold the machine once for that pool and again for this one, so it
+                // is pinned to the single calling thread. The configuration has already
+                // refused any intra-op count other than 1 here.
+                builder = builder.intra_op_threads(1)?;
+                if threads > 0 {
+                    builder = builder.inter_op_threads(threads)?;
+                }
+            }
         }
-        // After the thread count, because ONNX Runtime checks an affinity list against
-        // it: the number of entries has to match the threads it is placing.
         for (key, value) in session_options {
             builder = builder.config_entry(key, value)?;
         }
@@ -107,8 +123,8 @@ impl OnnxRuntimeBackend {
 }
 
 impl fmt::Debug for OnnxRuntimeBackend {
-    /// Hand-written because `Session` and `Environment` wrap raw C handles, which
-    /// have no useful representation.
+    /// Hand-written because `Session` and `Environment` wrap raw C handles, which have no
+    /// useful representation.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OnnxRuntimeBackend")
             .field("name", &self.name)
@@ -133,20 +149,19 @@ impl InferenceBackend for OnnxRuntimeBackend {
 
     /// Runs one batch.
     ///
-    /// Takes the features by value so their buffers can be lent to the engine mutably,
-    /// which is what keeps inputs zero-copy: `CreateTensorWithDataAsOrtValue` wraps
-    /// this memory rather than copying it.
-    ///
-    /// Names and shapes are collected before the values, because borrowing a name would
-    /// collide with the mutable borrow each `InputValue` takes on its feature. Each
-    /// shape comes from the model's own spec rather than from `[rows, width]`, because
-    /// the engine checks rank: an input declared `[batch]` will not accept a
+    /// Features are taken by value so their buffers can be lent to the engine mutably:
+    /// `CreateTensorWithDataAsOrtValue` wraps this memory rather than copying it. Each
+    /// input's shape comes from the model's own spec rather than from `[rows, width]`,
+    /// because the engine checks rank: an input declared `[batch]` will not accept a
     /// two-dimensional shape even when the values are the same.
     ///
-    /// Outputs come back in declared order, so they are named by zipping -- and that
-    /// assumption is checked rather than trusted. If the engine ever returned them in
-    /// another order, every output would be mislabelled and a caller selecting by name
-    /// would silently read the wrong output.
+    /// Outputs come back in declared order and are named by zipping, so their count, row
+    /// count and element types are checked against the signature.
+    ///
+    /// # Errors
+    ///
+    /// Fails if an input is not one the model takes, if the engine rejects the batch, or
+    /// if the outputs disagree with the declared signature in count, rows or type.
     fn run(&self, inputs: InputBatch) -> Result<OutputBatch, InferenceError> {
         let rows = inputs.rows();
         let mut owned: Vec<Feature> = inputs.into_features();
@@ -219,10 +234,6 @@ impl InferenceBackend for OnnxRuntimeBackend {
 ///
 /// Numeric types borrow the buffer. Text has to copy: the ONNX Runtime C API has no
 /// borrow-based equivalent of `FillStringTensor`.
-///
-/// These five arms are the whole engine-facing translation, which is why they belong
-/// here rather than above the trait: a second engine writes its own five and shares
-/// everything else.
 fn to_input_value<'d>(
     api: Api,
     data: &'d mut FeatureData,
@@ -239,10 +250,11 @@ fn to_input_value<'d>(
 
 /// Reads an engine output back into hushar's representation, with its row count.
 ///
-/// A non-float output cannot appear here, because [`convert_specs`] refused the
-/// signature when the model loaded. Handled rather than asserted, so that a model
-/// whose declared and actual output types disagree gives a clear error instead of a
-/// panic in a serving path.
+/// # Errors
+///
+/// Fails if the leading dimension is not a row count, or if the tensor is neither `FP32`
+/// nor `FP64` -- which [`convert_specs`] refuses at load, so it means the model's
+/// declared and actual output types disagree.
 fn from_owned_tensor(
     name: &str,
     tensor: &OwnedTensor,
@@ -272,27 +284,28 @@ fn from_owned_tensor(
 /// Translates the engine's declared signature into hushar's, refusing what it cannot
 /// serve.
 ///
-/// This runs when the model loads, so an unservable model is a startup failure naming
-/// the tensor and its type, not a request that fails once traffic arrives. Three things
-/// are checked:
+/// Runs when the model loads, so an unservable model is a startup failure rather than a
+/// request that fails once traffic arrives. A `[batch]` axis carries one value per row; a
+/// dynamic width is left unknown, for the configuration to decide. `mini_batch` is
+/// checked per tensor rather than across the signature, because a graph can pin some axes
+/// and leave others symbolic.
 ///
-/// * **The element type.** An input may be `INT32`, `INT64` or `STRING` as well as a
-///   float, because a feature can be passed through verbatim to feed one. An output may
-///   only be `FP32` or `FP64`, because a response carries scores. That asymmetry is the
-///   shape of the service, so it is enforced here where the message can say which side
-///   is at fault.
-/// * **The rank**, which must be `[batch]` or `[batch, width]`. Checking it once here is
-///   what lets everything above this file work in rows and widths.
-/// * **The leading axis**, which must be dynamic unless `mini_batch` declares a padded
-///   size matching it. A model fixing it can only ever be given batches of that one
-///   size, so serving one is a decision the configuration has to state.
+/// # Arguments
 ///
-/// A `[batch]` axis carries one value per row. A dynamic width is left unknown, for the
-/// configuration to decide.
+/// * `kind` - `"input"` or `"output"`; decides which element types are allowed and how
+///   the refusal reads
+/// * `specs` - the tensors the engine declares
+/// * `mini_batch` - the padded batch size the deployment declares, if any
 ///
-/// `mini_batch` is checked per tensor rather than across the signature, because a graph
-/// can pin some axes and leave others symbolic. Every pinned axis must agree with the
-/// declared size *and* be padded up to it; a dynamic one is served as it arrives.
+/// # Errors
+///
+/// Fails, naming the tensor and its type, when:
+///
+/// * the element type is unservable: an input may be `FP32`, `FP64`, `INT32`, `INT64` or
+///   `STRING`, an output only `FP32` or `FP64`, because a response carries scores
+/// * the rank is not `[batch]` or `[batch, width]`
+/// * the leading axis is pinned and `mini_batch` does not declare a matching size with
+///   `is_fixed` set, so every batch would be padded up to it
 fn convert_specs(
     kind: &str,
     specs: &[onnxrt_rs::TensorSpec],
@@ -340,10 +353,6 @@ fn convert_specs(
             }
             if s.shape[0] >= 0 {
                 let pinned = usize::try_from(s.shape[0]).unwrap_or(usize::MAX);
-                // A pinned axis is servable only if every batch is padded up to it,
-                // which is exactly what `is_fixed` declares. A size without the flag
-                // would send a short last batch straight into a shape mismatch, so it
-                // is refused here rather than on the first odd-sized request.
                 match mini_batch {
                     None => {
                         return Err(InferenceError::from(format!(
@@ -429,8 +438,7 @@ mod tests {
         );
     }
 
-    /// The asymmetry, at the one place it is enforced: a feature can be a category
-    /// code, a score cannot.
+    /// An `INT32` input is served, an `INT32` output refused.
     #[test]
     fn an_integer_input_is_served_but_an_integer_output_is_not() {
         assert!(
@@ -442,12 +450,8 @@ mod tests {
         assert!(err.to_string().contains("code"), "got {err}");
     }
 
-    /// The gate that keeps the rest of the service to five element types. It runs at
-    /// model load, so this is a startup failure rather than a request failure. INT32,
-    /// INT64 and STRING are served, so what is left is the families that forced real
-    /// complexity: the 16-bit floats with no protobuf field, and the integers narrower
-    /// than 32 bits, which share protobuf's int32 field and so would need a range check
-    /// per element.
+    /// An unservable element type is refused, naming the tensor, the type found and the
+    /// types that are served.
     #[test]
     fn a_non_float_signature_is_refused_with_the_tensor_named() {
         for ort in [
@@ -483,9 +487,7 @@ mod tests {
         }
     }
 
-    /// One function serves both call sites, so the wording has to follow. `I16` is
-    /// unservable on either side; `I32` would not do here, because it is a valid
-    /// *input* and only an invalid output.
+    /// The refusal says "model input" or "model output" to match the side it came from.
     #[test]
     fn the_refusal_says_input_or_output_depending_on_which_it_is() {
         let inputs = convert_specs("input", &[spec("x", OrtDataType::I16)], None)
@@ -515,10 +517,7 @@ mod tests {
         assert_eq!(ours[1].width, Some(1));
     }
 
-    // ------------------------------------------------------- shape validation
-
-    /// `[batch]` is how a scalar-per-row text or code input is exported, and the rank
-    /// has to survive because an engine checks it.
+    /// A rank-1 `[batch]` tensor reads as width 1 and keeps its rank.
     #[test]
     fn a_batch_axis_carries_one_value_per_row() {
         let ours = convert_specs(
@@ -546,8 +545,7 @@ mod tests {
         );
     }
 
-    /// This service serves tabular models. Refusing rank 3 here is what lets everything
-    /// above this file work in rows and widths.
+    /// A rank above two is refused, naming the tensor and the shapes that are served.
     #[test]
     fn a_rank_above_two_is_refused_when_the_model_loads() {
         let err = convert_specs(
@@ -571,9 +569,7 @@ mod tests {
         assert!(err.to_string().contains("total"), "got {err}");
     }
 
-    /// A model that can only take eight rows cannot serve arbitrary batches, so an
-    /// undeclared pinning fails at load rather than on the first request of a different
-    /// size. The message offers both ways out, because either can be the right one.
+    /// An undeclared pinned batch dimension is refused, with both fixes named.
     #[test]
     fn a_fixed_batch_dimension_is_refused_with_the_fix_named() {
         let err = convert_specs("input", &[shaped("x", OrtDataType::F32, vec![8, 3])], None)
@@ -587,9 +583,8 @@ mod tests {
         );
     }
 
-    /// The point of a padded mini batch: a pinned graph is servable once the deployment
-    /// declares the size it was built for and says it pads up to it. The width survives the check unchanged, which
-    /// is what the configuration is then resolved against.
+    /// A pinned axis the configuration declares is servable, and the width survives the
+    /// check unchanged.
     #[test]
     fn a_declared_batch_size_makes_a_pinned_model_servable() {
         let ours = convert_specs(
@@ -605,9 +600,8 @@ mod tests {
         assert_eq!(ours[0].rank, 2);
     }
 
-    /// The one combination that would fail inside the engine on every request: the model
-    /// was exported for one row count and the configuration promises another. Both
-    /// numbers go in the message, because either could be the one that is wrong.
+    /// A declared size that disagrees with the model's pinned axis is refused, with both
+    /// numbers in the message.
     #[test]
     fn a_declared_batch_size_that_disagrees_with_the_model_is_refused() {
         let err = convert_specs(
@@ -624,9 +618,8 @@ mod tests {
         assert!(m.contains('1'), "should name the declared size: {m}");
     }
 
-    /// The mistake the flag exists to catch: the right size, but batches left short. Any
-    /// request whose row count is not a multiple of the size would fail inside the
-    /// engine, so it is refused at load with the flag named.
+    /// A pinned axis declared at the right size but without `is_fixed` is refused, naming
+    /// the flag to add.
     #[test]
     fn a_pinned_axis_without_the_fixed_flag_is_refused() {
         let err = convert_specs(
@@ -642,10 +635,7 @@ mod tests {
         assert!(m.contains("is_fixed"), "should name the flag to add: {m}");
     }
 
-    /// A declaration alongside a dynamic axis is legal, and means what it says: the
-    /// deployment splits into that many rows per batch. Checked per tensor rather than
-    /// per model because a graph can pin its inputs and leave an output symbolic. Left
-    /// unpadded here, which a dynamic axis accepts and a pinned one would not.
+    /// A declared mini batch leaves a dynamic leading axis servable, unpadded.
     #[test]
     fn a_declared_batch_size_leaves_a_dynamic_axis_alone() {
         let ours = convert_specs(
@@ -659,11 +649,6 @@ mod tests {
         .expect("a dynamic axis is servable whatever the declaration");
         assert_eq!(ours[0].engine_shape(4, 502), vec![4, 502]);
     }
-
-    // ------------------------------------------------- against a real engine
-    //
-    // These need `libonnxruntime` and skip with a reason when it is absent, the
-    // same rule the rest of the suite follows.
 
     /// Loads one of the typed fixtures, or explains the skip.
     fn fixture(name: &str) -> Option<Vec<u8>> {
@@ -684,7 +669,13 @@ mod tests {
     /// A CPU backend over `name`, or `None` when the runtime is unavailable.
     fn cpu_backend(name: &str) -> Option<OnnxRuntimeBackend> {
         let model = fixture(name)?;
-        match OnnxRuntimeBackend::load(&model, &ExecutionProvider::Cpu, Some(1), None, &[]) {
+        match OnnxRuntimeBackend::load(
+            &model,
+            &ExecutionProvider::Cpu,
+            Parallelism::Intra(1),
+            None,
+            &[],
+        ) {
             Ok(b) => Some(b),
             Err(e) => {
                 eprintln!("skipping: no ONNX Runtime available ({e})");
@@ -702,9 +693,7 @@ mod tests {
         b
     }
 
-    /// Text on the *input* side is served, which is the signature a named-input
-    /// configuration is built against. Outputs are float, because a response carries
-    /// scores.
+    /// A model with float and text inputs loads and reports both element types.
     #[test]
     fn a_float_and_text_model_loads_and_reports_both_types() {
         let Some(backend) = cpu_backend("numbers_and_text.onnx") else {
@@ -731,24 +720,26 @@ mod tests {
         );
     }
 
-    /// `mixed_io.onnx` returns INT64 `codes` and STRING `echoed`. `onnxrt-rs` runs it
-    /// happily -- its own tests do -- but a response carries FP32 or FP64 scores, so the
-    /// refusal belongs here, at load, naming the output and saying it is an *output*
-    /// problem, since an INT64 input is fine.
+    /// A model whose output is `INT64` is refused at load, naming the output and saying
+    /// it is an output problem.
     ///
     /// A runtime that is absent, unloadable, or too old for the checked-in bindings is a
-    /// reason to skip rather than to fail: none of those says anything about whether the
-    /// refusal works.
+    /// reason to skip rather than to fail.
     #[test]
     fn a_model_with_a_non_float_output_is_refused_when_it_loads() {
         let Some(bytes) = fixture("mixed_io.onnx") else {
             return;
         };
-        let err =
-            match OnnxRuntimeBackend::load(&bytes, &ExecutionProvider::Cpu, Some(1), None, &[]) {
-                Ok(_) => panic!("an INT64 output must not be servable"),
-                Err(e) => e.to_string(),
-            };
+        let err = match OnnxRuntimeBackend::load(
+            &bytes,
+            &ExecutionProvider::Cpu,
+            Parallelism::Intra(1),
+            None,
+            &[],
+        ) {
+            Ok(_) => panic!("an INT64 output must not be servable"),
+            Err(e) => e.to_string(),
+        };
         if err.to_lowercase().contains("dylib")
             || err.contains("no ONNX Runtime")
             || err.contains("API version")
@@ -764,10 +755,8 @@ mod tests {
         assert!(err.contains("output"), "got {err}");
     }
 
-    /// The design's central claim against a real engine: one call returns logits and an
-    /// embedding of different widths, and the service does not need to know which kind
-    /// of model it is. Cross-checked against Python onnxruntime when the fixture was
-    /// generated.
+    /// One call to a real model returns logits and an embedding of different widths, each
+    /// keeping its own width and values.
     #[test]
     fn a_models_several_outputs_keep_their_own_widths() {
         let Some(backend) = cpu_backend("float_multi_io.onnx") else {
@@ -817,9 +806,8 @@ mod tests {
         }
     }
 
-    /// FP64 is half of what this service claims to serve, so it is worth proving
-    /// against a real engine rather than only in a unit test. The fixture computes 2x +
-    /// 1, exactly representable for these values.
+    /// An `FP64` model runs end to end against a real engine. The fixture computes
+    /// `2x + 1`, exactly representable for these values.
     #[test]
     fn a_double_precision_model_runs_end_to_end() {
         let Some(backend) = cpu_backend("f64_scale.onnx") else {
@@ -858,8 +846,7 @@ mod tests {
         assert_eq!(outputs, vec!["scores", "embedding"]);
     }
 
-    /// "number" rather than "numbers". With one input, matching positionally would send
-    /// it to the right slot by luck and hide the typo entirely.
+    /// A misnamed input is rejected even when the model declares a single input.
     #[test]
     fn a_misnamed_input_is_rejected_by_name() {
         let Some(backend) = cpu_backend("float_multi_io.onnx") else {
@@ -879,13 +866,12 @@ mod tests {
         );
     }
 
-    /// End to end, and the case the named shape exists for: a request carrying a plain
-    /// number, a categorical to one-hot, and a text feature that must reach the graph
-    /// untouched.
+    /// A named-input configuration scores through a real model, text reaching the graph
+    /// untouched and appearing verbatim in the log.
     ///
     /// `per_feature_io.onnx` declares `tags` as `[batch, 1]`, so a feature built at the
-    /// wrong rank fails here rather than being quietly reinterpreted. The fixture
-    /// computes `score = age + sum(one_hot(city)) * 0.2`, and `age` has no transformation
+    /// wrong rank fails here. The fixture computes
+    /// `score = age + sum(one_hot(city)) * 0.2`, and `age` has no transformation
     /// configured, so it passes through as 2.0.
     #[test]
     fn a_named_input_configuration_scores_through_a_real_model() {
@@ -898,13 +884,6 @@ mod tests {
                 "model_id": "per-feature",
                 "model_path": "test-data/per_feature_io.onnx",
                 "vectorization_config": {
-                    "feature_transformations": {
-                        "city": {
-                            "type": "one_hot_encoding",
-                            "categories": ["berlin", "london", "paris", "rome", "tokyo"],
-                            "default_val": [0, 0, 0, 0, 0]
-                        }
-                    },
                     "model_inputs": {
                         "age":  {"data_type": "float"},
                         "city": {"data_type": "float_array"},
@@ -921,54 +900,52 @@ mod tests {
         )
         .expect("the declared inputs match the model's signature");
 
-        use hushar::hushar_proto::{DataType as WireValue, InputRow, data_type::DataType as Value};
-        let feature = |v: Value| WireValue { data_type: Some(v) };
-        let row = InputRow {
-            row_id: "r1".to_owned(),
-            features: [
-                ("age".to_owned(), feature(Value::FloatValue(2.0))),
-                (
-                    "city".to_owned(),
-                    feature(Value::StringValue("london".into())),
-                ),
-                (
-                    "tags".to_owned(),
-                    feature(Value::StringValue("beta".into())),
-                ),
-            ]
-            .into_iter()
-            .collect(),
-        };
+        use crate::inference::input_builder::test_support::{V, request, row};
+        let columns = request(&[row(
+            "r1",
+            &[
+                ("age", V::f32(2.0)),
+                ("city", V::F32(vec![0.0, 1.0, 0.0, 0.0, 0.0])),
+                ("tags", V::str("beta")),
+            ],
+        )]);
 
         let scored = crate::inference::scoring::score_features(
             &backend,
-            vec![row],
+            &columns,
             &builder,
             None,
             crate::inference::scoring::FeatureLogging::Record,
         )
         .expect("the batch should score");
 
-        let scores = match scored.outputs[0]
-            .scores
-            .as_ref()
-            .and_then(|s| s.score_type.as_ref())
-        {
-            Some(hushar::hushar_proto::score_type::ScoreType::FloatScores(f)) => f.values.clone(),
+        let scores = match &scored.scores {
+            ScoreData::F32(v) => v.clone(),
             other => panic!("expected float scores, got {other:?}"),
         };
         assert_eq!(scores.len(), 1, "the primary output is one value per row");
         assert!((scores[0] - 2.2).abs() < 1e-5, "got {scores:?}");
 
         assert_eq!(
-            scored.logs[0].features["tags"].data_type,
-            Some(Value::StringValue("beta".into()))
+            scored.scores.as_f32(),
+            scores,
+            "the log records what was returned"
+        );
+        let (logged_ids, logged) = columns.into_wire();
+        assert_eq!(logged_ids, ["r1".to_owned()]);
+        let decoded = crate::inference::proto_columns::decode(logged, 1)
+            .expect("the log carries what the request sent");
+        let tags = decoded.get("tags").expect("the text feature is logged");
+        assert_eq!(
+            *tags,
+            FeatureData::Str(vec!["beta".to_owned()]),
+            "text must reach the log exactly as it was sent"
         );
     }
 
-    /// The other shape, against the same engine: one concatenated FP32 input, as a
-    /// tabular scorer takes. The same fixture and inputs as the direct-engine
-    /// test above, so the score must match: sigmoid(sum(x) * 0.5 + 0.1).
+    /// A vectorised configuration scores through a real model: one concatenated `FP32`
+    /// input, as a tabular scorer takes. The fixture computes
+    /// `sigmoid(sum(x) * 0.5 + 0.1)`.
     #[test]
     fn a_vectorised_configuration_scores_through_a_real_model() {
         let Some(backend) = cpu_backend("float_multi_io.onnx") else {
@@ -998,50 +975,35 @@ mod tests {
         )
         .expect("three features fill the model's three-wide input");
 
-        use hushar::hushar_proto::{DataType as WireValue, InputRow, data_type::DataType as Value};
-        let feature = |v: f32| WireValue {
-            data_type: Some(Value::FloatValue(v)),
-        };
-        let row = InputRow {
-            row_id: "r1".to_owned(),
-            features: [
-                ("a".to_owned(), feature(1.0)),
-                ("b".to_owned(), feature(2.0)),
-                ("c".to_owned(), feature(3.0)),
-            ]
-            .into_iter()
-            .collect(),
-        };
+        use crate::inference::input_builder::test_support::{V, request, row};
+        let columns = request(&[row(
+            "r1",
+            &[("a", V::f32(1.0)), ("b", V::f32(2.0)), ("c", V::f32(3.0))],
+        )]);
 
         let scored = crate::inference::scoring::score_features(
             &backend,
-            vec![row],
+            &columns,
             &builder,
             None,
             crate::inference::scoring::FeatureLogging::Record,
         )
         .expect("the batch should score");
 
-        let scores = match scored.outputs[0]
-            .scores
-            .as_ref()
-            .and_then(|s| s.score_type.as_ref())
-        {
-            Some(hushar::hushar_proto::score_type::ScoreType::FloatScores(f)) => f.values.clone(),
+        let scores = match &scored.scores {
+            ScoreData::F32(v) => v.clone(),
             other => panic!("expected float scores, got {other:?}"),
         };
         assert!((scores[0] - 0.9568927).abs() < 1e-5, "got {scores:?}");
     }
 
-    /// End to end through a real pinned graph. `sigmoid_model_3_batch2.onnx` fixes its
-    /// leading dimension at 2, so ONNX Runtime refuses any other row count outright --
-    /// which makes this the test that the padding actually satisfies the engine, and not
-    /// merely the service's own bookkeeping.
+    /// A request of any row count is served through a graph whose leading dimension is
+    /// pinned at 2, which ONNX Runtime otherwise refuses outright.
     ///
-    /// The fixture also makes the trimming *observable* rather than just asserted. Its
-    /// score is `sigmoid(0.5 * sum(row) + 0.1)`, so a row of ones scores ~0.832 while a
-    /// padding row, which is all zeros, scores ~0.525. A padded row leaking into a
-    /// response would show up as a value no real row here can produce.
+    /// Covers 1, 3 and 4 rows: under the pinned size, ragged, and an exact multiple. The
+    /// fixture scores `sigmoid(0.5 * sum(row) + 0.1)`, so a row of ones gives ~0.832 and
+    /// an all-zero padding row ~0.525. Scores come back as one row-major buffer, so a
+    /// padded row leaking into the response shows up in the length and in the values.
     #[test]
     fn a_pinned_graph_serves_a_request_of_any_row_count() {
         let Some(model) = fixture("sigmoid_model_3_batch2.onnx") else {
@@ -1050,7 +1012,7 @@ mod tests {
         let backend = match OnnxRuntimeBackend::load(
             &model,
             &ExecutionProvider::Cpu,
-            Some(1),
+            Parallelism::Intra(1),
             Some(crate::inference::scoring::MiniBatch {
                 size: 2,
                 is_fixed: true,
@@ -1069,43 +1031,33 @@ mod tests {
         )
         .expect("a valid configuration");
         let builder =
-            crate::inference::input_builder::InputBuilder::resolve(Some(config), backend.inputs())
+            crate::inference::input_builder::InputBuilder::resolve(config, backend.inputs())
                 .expect("three features fill the model's one 3-wide input");
 
-        use hushar::hushar_proto::{DataType as WireValue, InputRow, data_type::DataType as Value};
-        let ones = |id: &str| InputRow {
-            row_id: id.to_owned(),
-            features: ["a", "b", "c"]
-                .into_iter()
-                .map(|n| {
-                    (
-                        n.to_owned(),
-                        WireValue {
-                            data_type: Some(Value::FloatValue(1.0)),
-                        },
+        use crate::inference::input_builder::test_support::{V, request, row};
+
+        let width = backend.outputs()[0]
+            .width
+            .expect("the pinned fixture declares a fixed output width");
+
+        const REAL: f32 = 0.832_018_4;
+        const PAD: f32 = 0.524_979_2;
+
+        for count in [1usize, 3, 4] {
+            let ids: Vec<String> = (0..count).map(|i| format!("r{i}")).collect();
+            let rows: Vec<_> = ids
+                .iter()
+                .map(|id| {
+                    row(
+                        id.as_str(),
+                        &[("a", V::f32(1.0)), ("b", V::f32(1.0)), ("c", V::f32(1.0))],
                     )
                 })
-                .collect(),
-        };
-        let float_scores = |row: &hushar::hushar_proto::OutputRow| match row
-            .scores
-            .as_ref()
-            .and_then(|s| s.score_type.as_ref())
-        {
-            Some(hushar::hushar_proto::score_type::ScoreType::FloatScores(f)) => f.values.clone(),
-            other => panic!("expected float scores, got {other:?}"),
-        };
-
-        const REAL: f32 = 0.832_018_4; // sigmoid(0.5 * 3 + 0.1)
-        const PAD: f32 = 0.524_979_2; // sigmoid(0.5 * 0 + 0.1), a padding row
-
-        // One row, three rows, four rows: under, over-and-ragged, and an exact multiple.
-        // Every one of them is a row count the graph itself cannot accept.
-        for count in [1usize, 3, 4] {
-            let rows: Vec<InputRow> = (0..count).map(|i| ones(&format!("r{i}"))).collect();
+                .collect();
+            let columns = request(&rows);
             let scored = crate::inference::scoring::score_features(
                 &backend,
-                rows,
+                &columns,
                 &builder,
                 Some(crate::inference::scoring::MiniBatch {
                     size: 2,
@@ -1115,16 +1067,23 @@ mod tests {
             )
             .unwrap_or_else(|e| panic!("{count} rows against a pinned graph: {e}"));
 
+            let scores = match &scored.scores {
+                ScoreData::F32(v) => v.clone(),
+                other => panic!("expected float scores, got {other:?}"),
+            };
             assert_eq!(
-                scored.outputs.len(),
-                count,
+                scores.len(),
+                count * width,
                 "{count} rows in must be {count} rows out"
             );
-            assert_eq!(scored.logs.len(), count, "the log must not carry padding");
 
-            for (i, out) in scored.outputs.iter().enumerate() {
-                assert_eq!(out.row_id, format!("r{i}"), "row order must survive");
-                let s = float_scores(out);
+            for i in 0..count {
+                let s = &scores[i * width..(i + 1) * width];
+                assert_eq!(
+                    columns.row_ids()[i],
+                    format!("r{i}"),
+                    "row order must survive"
+                );
                 assert!(
                     (s[0] - REAL).abs() < 1e-5,
                     "row {i} of {count} scored {s:?}, expected a real row's {REAL}"

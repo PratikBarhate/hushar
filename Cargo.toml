@@ -14,6 +14,7 @@ authors = ["Pratik Barhate"]
 license = "MIT"
 
 [workspace.dependencies]
+# Apache Arrow, for the one thing on the wire that is bulk data: a request's
 # Amazon's own SDK, used directly rather than through a multi-cloud abstraction.
 # A vendor SDK is maintained by the people who ship the service, tracks its
 # features, and needs no layer in between to have an opinion about what is
@@ -43,6 +44,10 @@ clap = { version = "4.6.6", features = ["derive", "env"] }
 mockall = "0.15.0"
 prost = "0.14.4"
 rand = "0.10.2"
+# A persistent work-stealing pool for the mini-batch fan-out, in place of a
+# scoped OS thread per batch. One pool is built and pinned at startup; see
+# `inference::scoring::init_fan_out`.
+rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["full"] }

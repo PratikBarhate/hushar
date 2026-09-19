@@ -3,17 +3,16 @@
 
 //! Build script for `onnxrt-rs`.
 //!
-//! By default this script does nothing: the crate compiles against the
-//! bindings checked in at `src/bindings/ort.rs`, so neither libclang
-//! nor an ONNX Runtime installation is needed to build.
+//! By default this script does nothing: the crate compiles against the bindings checked
+//! in at `src/bindings/ort.rs`, so neither libclang nor an ONNX Runtime installation is
+//! needed to build.
 //!
-//! With `--features bindgen` the bindings are regenerated from the vendored
-//! header into `OUT_DIR`. Set `ORT_HEADER_DIR` to bind a different ONNX
-//! Runtime release.
+//! With `--features bindgen` the bindings are regenerated from the vendored header into
+//! `OUT_DIR`. Set `ORT_HEADER_DIR` to bind a different ONNX Runtime release.
 //!
-//! Note that no linking happens here in either mode. `libonnxruntime` is
-//! resolved at run time with `libloading`, which keeps this crate buildable on
-//! hosts that have no ONNX Runtime at all.
+//! No linking happens in either mode. `libonnxruntime` is resolved at run time with
+//! `libloading`, which keeps this crate buildable on hosts that have no ONNX Runtime at
+//! all.
 
 fn main() {
     #[cfg(feature = "bindgen")]
@@ -23,6 +22,19 @@ fn main() {
     println!("cargo:rerun-if-env-changed=ORT_HEADER_DIR");
 }
 
+/// Regenerates the ONNX Runtime bindings from the vendored header into `OUT_DIR`.
+///
+/// Only `OrtGetApiBase` plus the `Ort*`/`ONNX*` types are allowlisted, because the C API
+/// is reached entirely through the `OrtApi` function-pointer table that function returns.
+/// Enums stay plain integer constants so the generated module remains a faithful
+/// transcription of the header; the safe layer maps them onto real Rust enums. Layout
+/// tests are emitted as `#[test]` size and alignment assertions, so drift between the
+/// header and the bindings fails `cargo test`.
+///
+/// # Panics
+///
+/// Panics if the header is not found, if bindgen cannot generate the bindings, or if they
+/// cannot be written to `OUT_DIR`.
 #[cfg(feature = "bindgen")]
 fn generate_bindings() {
     use std::path::PathBuf;
@@ -43,24 +55,14 @@ fn generate_bindings() {
     let bindings = bindgen::Builder::default()
         .header(header.to_str().expect("header path is not valid UTF-8"))
         .clang_arg(format!("-I{}", header_dir.display()))
-        // The C API is reached entirely through the `OrtApi` function-pointer
-        // table returned by `OrtGetApiBase`, so that one function plus the
-        // `Ort*`/`ONNX*` types is the whole surface we need.
         .allowlist_function("OrtGetApiBase")
         .allowlist_type("Ort.*")
         .allowlist_type("ONNX.*")
         .allowlist_var("ORT_API_VERSION")
-        // Keep enums as plain integer constants so the generated module stays a
-        // faithful transcription of the header. The safe layer maps them onto
-        // real Rust enums.
         .default_enum_style(bindgen::EnumVariation::Consts)
         .derive_debug(true)
         .derive_default(false)
-        // Emits `#[test]` size/alignment assertions that are checked by
-        // `cargo test`, catching drift between the header and the bindings.
         .layout_tests(true)
-        // Doxygen comments in this header are large and add no value to the
-        // generated file.
         .generate_comments(false)
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .generate()

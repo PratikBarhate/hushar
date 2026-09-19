@@ -32,6 +32,11 @@
 #                Half each puts the same load on both, which is what makes their
 #                latencies comparable; a real roll-out starts far lower
 #   PROVIDER     cpu (default, or whatever env.sh set), trt:0, xnnpack:4
+#   INTER_THREADS  unset  threading.inter_op_threads -- the ALTERNATIVE to THREADS, not a
+#                companion. Threads running operators that do not depend on each other,
+#                which needs a branching graph to be worth anything. Set THREADS=1
+#                alongside it; the service refuses both above 1, and refuses THREADS=0
+#                here because 0 means one thread per core.
 #   THREADS      threading.intra_op_threads, default 1 -- threads ONNX Runtime may use
 #                inside one operator. Say which you used in the report
 #   INFERENCE_CONCURRENCY  unset (one per core)  concurrent inferences. Lower it when
@@ -77,6 +82,12 @@
 #   CW_NAMESPACE unset  publish metrics to this CloudWatch namespace. Unset prints them
 #                to the server log instead, which is enough for one host but leaves
 #                nothing to compare runs with afterwards
+#   MODEL_ID     unset (the model config's own)  overrides model_id, which is the
+#                ModelId DIMENSION every metric carries. Two hosts publishing to one
+#                namespace under one id are one time series, so their measured windows
+#                have to be kept apart; give each host its own id and they can run at
+#                the same time. With an -ab model the candidate arm takes this plus
+#                "-candidate", so the two arms stay separable
 #   METRICS_BATCH  500  batches per metrics publish
 #   CONN_LIMIT   unset (the server's own 500)  in-flight requests admitted per
 #                connection, as threading.connection_concurrency. Admission, not work:
@@ -109,6 +120,7 @@ cd "$ROOT"
 MODEL="${MODEL:-raw}"
 PROVIDER="${PROVIDER:-cpu}"
 THREADS="${THREADS:-1}"
+INTER_THREADS="${INTER_THREADS:-}"
 PORT="${PORT:-8279}"
 BIND="${BIND:-0.0.0.0}"
 SAMPLE_RATE="${SAMPLE_RATE:-0.2}"
@@ -219,14 +231,18 @@ import json, sys
 (base, model_out, service_out, provider, threads, port, bind, logs, rate, limit,
  candidate, candidate_out, percent, workers, inference,
  compute_cores, worker_cores, spinning, namespace, metrics_batch, sessions,
- log_batch, log_sends) = sys.argv[1:24]
+ log_batch, log_sends, inter_threads) = sys.argv[1:25]
 
 
 # Substitutes the per-host provider into one model configuration. The thread counts
 # are a service setting now, since they describe the host rather than the model.
-def rewrite(path, out):
+def rewrite(path, out, model_id=""):
     config = json.load(open(path))
     config["execution_provider"] = provider
+    # model_id is the ModelId dimension on every metric, so overriding it is how two
+    # hosts publishing to one namespace stay separate time series.
+    if model_id:
+        config["model_id"] = model_id
     # Mini batching is a model-config choice, so it is substituted here alongside the
     # provider rather than passed as a flag. Absent means one batch per request.
     import os
@@ -238,7 +254,9 @@ def rewrite(path, out):
     json.dump(config, open(out, "w"), indent=2)
 
 
-rewrite(base, model_out)
+import os as _os
+_mid = _os.environ.get("MODEL_ID", "")
+rewrite(base, model_out, _mid)
 service = {
     "bind_address": bind,
     "port_number": int(port),
@@ -266,10 +284,15 @@ if spinning:
     service["threading"]["allow_spinning"] = spinning not in ("0", "false", "no")
 if limit:
     service["threading"]["connection_concurrency"] = int(limit)
+# The two pools are alternatives and the service refuses both above 1, so this is written
+# only when a width was asked for. THREADS has to be 1 alongside it; the service says so
+# rather than this script guessing, which keeps one rule in one place.
+if inter_threads and int(inter_threads) > 1:
+    service["threading"]["inter_op_threads"] = int(inter_threads)
 if candidate:
     # Both arms get the same provider and thread count, or the comparison would be
     # measuring the host settings rather than the models.
-    rewrite(candidate, candidate_out)
+    rewrite(candidate, candidate_out, f"{_mid}-candidate" if _mid else "")
     service["candidate_model"] = {"config_path": candidate_out,
                                   "traffic_percent": int(percent)}
 json.dump(service, open(service_out, "w"), indent=2)
@@ -278,9 +301,14 @@ json.dump(service, open(service_out, "w"), indent=2)
   "${candidate:-}" "$RUN_DIR/$TAG.candidate.json" "$AB_PERCENT" \
   "$WORKER_THREADS" "$INFERENCE_CONCURRENCY" "$COMPUTE_CORES" "$WORKER_CORES" \
   "$ALLOW_SPINNING" "$CW_NAMESPACE" "$METRICS_BATCH" "$SESSIONS" \
-  "$LOG_BATCH" "$LOG_SENDS"
+  "$LOG_BATCH" "$LOG_SENDS" "$INTER_THREADS"
 
-  echo "starting $MODEL on $PROVIDER, ${THREADS} intra-op thread(s), $BIND:$PORT"
+  if [ -n "$INTER_THREADS" ] && [ "$INTER_THREADS" -gt 1 ] 2>/dev/null; then
+    pool="${INTER_THREADS} inter-op thread(s)"
+  else
+    pool="${THREADS} intra-op thread(s)"
+  fi
+  echo "starting $MODEL on $PROVIDER, $pool, $BIND:$PORT"
   nohup ./target/release/hushar \
     --config-uri "$service_config" > "$LOG" 2>&1 &
   echo $! > "$PID_FILE"

@@ -4,18 +4,15 @@
 //! Where inference timings go.
 //!
 //! Today that means stderr or Amazon CloudWatch. As with [`BlobStore`](super::BlobStore),
-//! the point of the trait is what it makes cheap later: **adding a monitoring
-//! backend is one implementation**, and nothing above this module changes.
+//! adding a backend is one implementation of the trait, and nothing above this module
+//! changes.
 //!
-//! Recording happens on the request path, not on a sidecar. It is a lock and a few
-//! additions for stderr, and a lock and a push for CloudWatch; the publish itself is
-//! spawned once a batch is full. See
-//! [`accumulator`](super::accumulator) for why that is cheaper than a channel and how
-//! memory stays bounded.
+//! Recording happens on the request path and never blocks: a lock and a few additions
+//! for stderr, a lock and a push for CloudWatch, with the publish spawned once a batch
+//! is full. See [`accumulator`](super::accumulator) for how memory stays bounded.
 //!
-//! **Timings are never sampled.** Unlike the inference log, they are already an
-//! aggregate — three numbers per batch, whatever the batch's size — so sampling would
-//! buy nothing and would bias the mean it exists to report.
+//! Timings are never sampled. They are already an aggregate of three microsecond
+//! figures per batch, whatever the batch's size.
 
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -39,13 +36,13 @@ pub(crate) trait MetricsSink: Debug + Send + Sync {
     /// Records one batch's timings, on the request path.
     ///
     /// Synchronous and non-blocking: it accumulates, and on the batch that fills the
-    /// buffer it spawns the publish. Nothing here awaits a network call, because one
-    /// request in every `batch_size` would then carry a CloudWatch round trip.
+    /// buffer it spawns the publish. Nothing here awaits a network call.
     ///
-    /// `model_id` is the model that produced them. It is a parameter rather than a
-    /// property of the sink because one process may serve two models during a
-    /// roll-out, and averaging their timings together would hide the very difference
-    /// the roll-out exists to measure.
+    /// # Arguments
+    ///
+    /// * `model_id` - the model that produced the timings; timings are aggregated per
+    ///   model, so two models never average together
+    /// * `timings` - one batch's per-stage durations, in microseconds
     ///
     /// # Panics
     ///
@@ -54,57 +51,41 @@ pub(crate) trait MetricsSink: Debug + Send + Sync {
 
     /// Pushes anything buffered and waits for the sends already in the air.
     ///
-    /// Called once at shutdown. A sink that batches would otherwise lose what it was
-    /// holding, which is exactly the window where the numbers matter most.
+    /// Called once at shutdown, so a batching sink does not lose what it was holding.
     async fn flush(&self);
 }
 
-/// The three timings a batch produces, named once.
-///
-/// Shared by the implementations so a metric cannot be called one thing in
-/// CloudWatch and another on stderr.
+/// Metric names for the three timings a batch produces, shared by every sink.
 const STAGES: [&str; 3] = ["VectorizationTime", "ToTensorTime", "InferenceTime"];
 
 /// Data points `PutMetricData` accepts in one call.
 ///
-/// The call is rejected whole when it is exceeded, so an unclamped buffer would lose
-/// everything in it rather than some of it.
+/// Exceeding it rejects the call whole, losing every data point in it.
 const CLOUDWATCH_MAX_DATUMS: usize = 1000;
 
 /// The largest capacity that both fits one call and lands on a batch boundary.
 ///
-/// 1000 is not a multiple of the three data points a batch contributes, and the
-/// accumulator sends on "at least capacity" rather than "exactly capacity" — so a
-/// capacity of 1000 is first reached at 1002, which is an over-long call that
-/// CloudWatch rejects whole. At the default batch size that rejected **every**
-/// publish, and the only symptom was a recurring error line.
-///
-/// Rounding down to 999 makes the buffer land exactly on the boundary, which also
-/// makes [`CloudWatchMetrics::batch_size`] the number of batches that really triggers
-/// a send rather than one less.
+/// The accumulator sends on "at least capacity" rather than exactly capacity, and a
+/// batch contributes one data point per stage, so a capacity that is not a whole number
+/// of batches is first reached past the limit — and such a call is rejected whole.
+/// Rounding down keeps the buffer on a batch boundary, which also makes
+/// [`CloudWatchMetrics::batch_size`] the number of batches that really triggers a send.
 const CLOUDWATCH_MAX_BATCHED_DATUMS: usize =
     CLOUDWATCH_MAX_DATUMS - CLOUDWATCH_MAX_DATUMS % STAGES.len();
 
 /// Aggregates timings and writes periodic summaries to stderr.
 ///
-/// The default, because it needs no credentials and no network, which makes a
-/// local run and a test observable with no infrastructure. It aggregates rather
-/// than printing per batch: one line per request would be unreadable at any real
-/// rate and would itself become the bottleneck.
-///
-/// This is the one sink with no accumulator, because it has nothing to accumulate:
-/// running totals are a fixed six words whatever the batch size, so there is no
+/// The default, since it needs no credentials and no network. Running totals are a fixed
+/// size whatever the batch size, so this is the one sink with no accumulator: there is no
 /// buffer to bound and nothing to spawn.
 #[derive(Debug)]
 pub(crate) struct StderrMetrics {
     every: usize,
-    /// One aggregate per model, so a roll-out's two arms are summarised separately.
-    /// A map rather than a pair because the sink does not know how many models the
-    /// service loaded, and it should not have to.
+    /// One aggregate per model, so two models are summarised separately.
     state: std::sync::Mutex<std::collections::BTreeMap<String, Aggregate>>,
 }
 
-/// Running totals between summaries.
+/// Running totals between summaries: a batch count, and microseconds per stage.
 #[derive(Debug, Default)]
 struct Aggregate {
     batches: u64,
@@ -113,7 +94,7 @@ struct Aggregate {
 }
 
 impl StderrMetrics {
-    /// Summarises every `every` batches. Zero is treated as one.
+    /// Summarises every `every` batches, counted per model. Zero is treated as one.
     pub(crate) fn new(every: usize) -> Self {
         Self {
             every: every.max(1),
@@ -122,16 +103,11 @@ impl StderrMetrics {
     }
 
     /// Recovers the guard even if a previous holder panicked.
-    ///
-    /// Metrics are not worth propagating a poisoning panic into the service.
     fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<String, Aggregate>> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Renders and clears one model's running totals.
-    ///
-    /// The model is named on every line, because two arms writing unlabelled lines to
-    /// the same stream would be indistinguishable.
+    /// Writes one model's running totals to stderr, naming the model, and clears them.
     fn emit(model_id: &str, state: &mut Aggregate) {
         if state.batches == 0 {
             return;
@@ -170,8 +146,6 @@ impl MetricsSink for StderrMetrics {
         state.totals[1] += timings.tensor_time;
         state.totals[2] += timings.inference_time;
         state.max_inference = state.max_inference.max(timings.inference_time);
-        // Counted per model, so each arm's line covers the same number of batches. A
-        // shared counter would make the minority arm's line an average over a handful.
         if state.batches as usize >= self.every {
             Self::emit(model_id, state);
         }
@@ -187,8 +161,7 @@ impl MetricsSink for StderrMetrics {
 
 /// The part of the CloudWatch sink that talks to the service.
 ///
-/// Split out so a publish can be spawned: a task needs to own what it uses, and
-/// cloning one [`Arc`] costs an increment rather than an allocation per request.
+/// Held behind an [`Arc`] so a spawned publish can own what it sends.
 #[derive(Debug)]
 struct CloudWatchWriter {
     client: Arc<aws_sdk_cloudwatch::Client>,
@@ -203,10 +176,7 @@ impl CloudWatchWriter {
         }
     }
 
-    /// Sends one call's worth, reporting rather than discarding a failure.
-    ///
-    /// A silently dropped metric looks exactly like a healthy service, which is the
-    /// worst way for monitoring to fail.
+    /// Sends one call's worth, reporting a failure on stderr rather than discarding it.
     async fn put(&self, datums: Vec<aws_sdk_cloudwatch::types::MetricDatum>) {
         if datums.is_empty() {
             return;
@@ -231,14 +201,9 @@ impl CloudWatchWriter {
 
 /// Divides a batch into calls `PutMetricData` will accept.
 ///
-/// Belt and braces: the accumulator's capacity is already rounded so that a batch
-/// lands on the limit, and this keeps an over-long batch from being lost entirely if
-/// that arithmetic is ever changed. The API rejects an over-long call **whole**, so
-/// getting it wrong costs every data point in the batch rather than the excess.
-///
-/// A free function so the division is testable without a network or a live account,
-/// which is the only part of sending that has a decision in it. The common case is one
-/// call carrying the original buffer, so nothing is copied.
+/// Each call carries at most `CLOUDWATCH_MAX_DATUMS` data points, no call is empty, and
+/// no data point is dropped or duplicated. An empty batch produces no calls, and a batch
+/// at or under the limit is returned as one call without copying.
 fn calls(
     datums: Vec<aws_sdk_cloudwatch::types::MetricDatum>,
 ) -> Vec<Vec<aws_sdk_cloudwatch::types::MetricDatum>> {
@@ -256,10 +221,10 @@ fn calls(
 
 /// Amazon CloudWatch.
 ///
-/// Buffers data points and sends them in batches, because `PutMetricData` is charged
-/// per call and rate limited. One buffer serves every request handler, so the send
-/// interval is a property of the service's throughput rather than of how many
-/// handlers happen to be running.
+/// Buffers data points and sends them in batches, since `PutMetricData` is charged per
+/// call and rate limited. One buffer serves every request handler. The model is carried
+/// as a `ModelId` dimension rather than in the metric name, so one alarm and one graph
+/// cover every model.
 #[derive(Debug)]
 pub(crate) struct CloudWatchMetrics {
     writer: Arc<CloudWatchWriter>,
@@ -267,15 +232,19 @@ pub(crate) struct CloudWatchMetrics {
 }
 
 impl CloudWatchMetrics {
-    /// `batches` is scored batches, not data points.
+    /// Buffers `batches` scored batches — not data points — before each send.
     ///
-    /// The unit is batches so that one `metrics.batch_size` means the same thing
-    /// here as it does on stderr; an earlier version counted data points here and
-    /// batches there, so the same number meant 500 summaries in one place and 167 in
-    /// the other. Each batch contributes one data point per stage, and
-    /// `PutMetricData` takes at most 1000 of those, so the effective batch count is
-    /// capped at 333 however large a number is configured — which is what
-    /// [`Self::batch_size`] reports.
+    /// Each batch contributes one data point per stage, and `PutMetricData` takes at
+    /// most 1000 of them, so the effective batch count is capped at 333 however large a
+    /// number is configured; [`Self::batch_size`] reports the cap. Zero sends eagerly,
+    /// on every batch.
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - the CloudWatch client
+    /// * `namespace` - the namespace data points are published under
+    /// * `batches` - scored batches buffered before one send
+    /// * `max_in_flight` - publishes allowed to be in the air at once
     pub(crate) fn new(
         client: Arc<aws_sdk_cloudwatch::Client>,
         namespace: impl Into<String>,
@@ -311,8 +280,6 @@ impl MetricsSink for CloudWatchMetrics {
             timings.tensor_time,
             timings.inference_time,
         ];
-        // A dimension rather than a metric name per model, so one alarm and one graph
-        // cover every arm, and a roll-out does not need new dashboards to be watched.
         let model = aws_sdk_cloudwatch::types::Dimension::builder()
             .name("ModelId")
             .value(model_id)
@@ -351,8 +318,7 @@ mod tests {
         }
     }
 
-    /// The model a single-model test records under. Any name will do; what matters is
-    /// that it is the same one the assertion looks up.
+    /// The model a single-model test records under.
     const MODEL: &str = "test-model";
 
     /// Batches held for `model`, or zero when nothing has been recorded for it.
@@ -375,8 +341,7 @@ mod tests {
         );
     }
 
-    /// The reason the dimension exists: a roll-out's arms must not average together,
-    /// or the difference the roll-out is measuring disappears into one number.
+    /// Two models keep separate totals and maxima.
     #[tokio::test]
     async fn two_models_are_aggregated_separately() {
         let sink = StderrMetrics::new(1000);
@@ -399,8 +364,7 @@ mod tests {
         assert_eq!(state["candidate"].max_inference, 100);
     }
 
-    /// Each arm's line covers the same number of batches, so a 10% candidate emits a
-    /// tenth as often rather than emitting an average over a handful.
+    /// The summary interval is counted per model, not across all of them.
     #[tokio::test]
     async fn the_interval_is_counted_per_model() {
         let sink = StderrMetrics::new(2);
@@ -424,7 +388,7 @@ mod tests {
             "the candidate still holds one"
         );
     }
-    /// A mean hides the tail, and the tail is where a latency investigation starts.
+    /// The maximum inference time is kept alongside the running totals.
     #[tokio::test]
     async fn the_maximum_is_kept_not_averaged_away() {
         let sink = StderrMetrics::new(1000);
@@ -436,8 +400,7 @@ mod tests {
         assert_eq!(state[MODEL].max_inference, 900);
         assert_eq!(state[MODEL].totals[2], 912);
     }
-    /// Whatever is buffered at shutdown is exactly the window where the metrics matter
-    /// most, so it must not be dropped.
+    /// Flushing emits an interval that has not filled yet.
     #[tokio::test]
     async fn flushing_emits_a_partial_interval() {
         let sink = StderrMetrics::new(1000);
@@ -446,7 +409,7 @@ mod tests {
         assert_eq!(batches(&sink, MODEL), 0);
     }
 
-    /// Both arms' partial intervals, not just whichever was seen last.
+    /// Flushing emits every model's partial interval, not just the last one seen.
     #[tokio::test]
     async fn flushing_emits_every_model() {
         let sink = StderrMetrics::new(1000);
@@ -456,7 +419,7 @@ mod tests {
         assert_eq!(batches(&sink, "control"), 0);
         assert_eq!(batches(&sink, "candidate"), 0);
     }
-    /// The service can stop before any batch arrives.
+    /// Flushing before any batch has been recorded is harmless.
     #[tokio::test]
     async fn flushing_nothing_is_harmless() {
         StderrMetrics::new(10).flush().await;
@@ -470,7 +433,7 @@ mod tests {
         assert_eq!(batches(&sink, MODEL), 0);
         assert_eq!(sink.batch_size(), 1);
     }
-    /// The property the request path relies on: one sink, every handler, no `&mut`.
+    /// One sink records from several handlers at once, with no `&mut`.
     #[tokio::test]
     async fn a_sink_is_usable_from_several_handlers_at_once() {
         let sink: Arc<dyn MetricsSink> = Arc::new(StderrMetrics::new(100));
@@ -486,8 +449,7 @@ mod tests {
         }
         assert_eq!(sink.backend(), "stderr");
     }
-    /// The names end up in a dashboard, so a duplicate would silently merge two
-    /// different measurements into one series.
+    /// Every stage has a metric name and no two stages share one.
     #[test]
     fn every_stage_has_a_name_and_no_two_share_one() {
         assert_eq!(STAGES.len(), 3);
@@ -502,11 +464,7 @@ mod tests {
         );
     }
 
-    /// A CloudWatch sink with no usable credentials.
-    ///
-    /// Enough to test buffering, which is the part with logic in it. Sending is not
-    /// exercised: that would need either a live account or an HTTP fake, and
-    /// neither belongs in a unit test.
+    /// A CloudWatch sink with test credentials, for exercising buffering without sending.
     fn offline_cloudwatch(batches: usize) -> CloudWatchMetrics {
         let config = aws_sdk_cloudwatch::Config::builder()
             .behavior_version_latest()
@@ -520,9 +478,7 @@ mod tests {
             2,
         )
     }
-    /// Each batch contributes one data point per stage, so a size of two batches is six
-    /// data points. `PutMetricData` is charged per call, which is why this batches at
-    /// all. Reaching the size takes the buffer for sending, leaving it empty.
+    /// Buffering holds three data points per batch and drains at the configured count.
     #[tokio::test]
     async fn cloudwatch_buffers_until_it_reaches_the_configured_batch_count() {
         let sink = offline_cloudwatch(2);
@@ -540,16 +496,13 @@ mod tests {
             "hitting the batch count should drain the buffer"
         );
     }
-    /// The unit is batches on both sinks, which is the whole reason a single
-    /// `metrics.batch_size` can feed either without meaning two different things.
+    /// Both sinks report their configured size in batches.
     #[tokio::test]
     async fn the_configured_size_is_batches_on_both_sinks() {
         assert_eq!(offline_cloudwatch(100).batch_size(), 100);
         assert_eq!(StderrMetrics::new(100).batch_size(), 100);
     }
-    /// CloudWatch rejects a call carrying more than 1000 data points, and rejects it
-    /// whole -- so the batch count is capped at what fits, and reports the cap rather
-    /// than the number it was given.
+    /// A batch count beyond what one call accepts is capped, and the cap is reported.
     #[tokio::test]
     async fn a_batch_count_beyond_what_cloudwatch_accepts_is_capped() {
         assert_eq!(
@@ -560,14 +513,8 @@ mod tests {
         assert_eq!(offline_cloudwatch(0).batch_size(), 1, "zero sends eagerly");
     }
 
-    /// **The regression this exists for.** The accumulator sends on "at least
-    /// capacity", and a batch adds three data points at a time, so a capacity that is
-    /// not a multiple of three is first reached one batch late — 1000 is reached at
-    /// 1002, which is over the limit and so is rejected *whole*. At the default batch
-    /// size that silently published nothing at all, leaving only a recurring error.
-    ///
-    /// Asserted on the arithmetic and on the boundary, because the failure was
-    /// invisible from outside: buffering, batching and flushing all behaved.
+    /// Capacity is always a whole number of batches, so a publish never exceeds the
+    /// limit and the send triggers at the reported batch count.
     #[tokio::test]
     async fn a_publish_can_never_exceed_what_the_api_accepts() {
         for batches in [1, 2, 100, 333, 334, 500, 50_000] {
@@ -580,7 +527,6 @@ mod tests {
                  buffer would overshoot it"
             );
 
-            // Fill to exactly the reported batch count and confirm it fired there.
             for _ in 0..sink.batch_size() {
                 sink.record(MODEL, &timings(1, 1, 1));
             }
@@ -597,11 +543,7 @@ mod tests {
             );
         }
     }
-    /// And if that arithmetic is ever changed, the writer still cannot build a call the
-    /// service refuses: an over-long batch is sliced rather than lost.
-    ///
-    /// Exercises `calls` itself rather than reimplementing the slicing in the test,
-    /// which would assert on the test's own arithmetic and pass whatever the code did.
+    /// An over-long batch is split into calls the API accepts, dropping none.
     #[test]
     fn an_over_long_batch_is_split_into_calls_the_api_accepts() {
         let datum = |i: usize| {
@@ -646,8 +588,7 @@ mod tests {
     async fn the_namespace_is_what_the_banner_reports() {
         assert_eq!(offline_cloudwatch(10).backend(), "HusharTest");
     }
-    /// Recording must not wait on CloudWatch; with credentials that cannot work, an
-    /// awaited publish would spend its retries inside this loop.
+    /// Recording returns without waiting for the publish it spawns.
     #[tokio::test]
     async fn recording_returns_without_waiting_for_the_publish() {
         let sink = offline_cloudwatch(1);

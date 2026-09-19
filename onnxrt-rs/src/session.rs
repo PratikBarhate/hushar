@@ -37,6 +37,37 @@ impl GraphOptimizationLevel {
     }
 }
 
+/// Whether the operators in a graph run one after another or concurrently.
+///
+/// [`Sequential`](Self::Sequential) is ONNX Runtime's default and runs one node at a
+/// time, so [`SessionBuilder::inter_op_threads`] has nothing to schedule and is ignored.
+/// [`Parallel`](Self::Parallel) is what gives that pool work, and only pays off on a graph
+/// with independent branches -- two towers, a shared trunk with several output heads, a
+/// wide path beside a deep one. A chain of transformer blocks has none, and neither do
+/// attention heads: those are a dimension inside one batched operator, parallelised by the
+/// intra-op pool.
+///
+/// Two costs come with [`Parallel`](Self::Parallel). Memory pattern optimisation is
+/// unavailable, since it traces allocations through a known node order. And the pool
+/// cannot be pinned -- ONNX Runtime has an affinity setting for the intra-op pool and none
+/// for this one -- so its threads go wherever the mask of the thread that built the
+/// session allows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutionMode {
+    #[default]
+    Sequential,
+    Parallel,
+}
+
+impl ExecutionMode {
+    fn to_raw(self) -> sys::ExecutionMode {
+        match self {
+            Self::Sequential => sys::ExecutionMode_ORT_SEQUENTIAL,
+            Self::Parallel => sys::ExecutionMode_ORT_PARALLEL,
+        }
+    }
+}
+
 /// Owned `OrtSessionOptions`, configured through [`SessionBuilder`].
 struct SessionOptions {
     api: Api,
@@ -44,9 +75,9 @@ struct SessionOptions {
 }
 
 impl Drop for SessionOptions {
+    /// Releases the options object.
     fn drop(&mut self) {
         if let Some(release) = self.api.raw().ReleaseSessionOptions {
-            // SAFETY: created by `CreateSessionOptions`, released exactly once.
             unsafe { release(self.ptr) };
         }
     }
@@ -74,12 +105,13 @@ pub struct SessionBuilder<'env> {
 
 impl<'env> SessionBuilder<'env> {
     /// Starts building a session in `env`.
+    ///
+    /// The builder borrows `env`, which must therefore outlive it. The options object it
+    /// creates is released when the builder is dropped.
     pub fn new(env: &'env Environment) -> Result<Self> {
         let api = env.api();
         let create = ort_fn!(api, CreateSessionOptions);
         let mut ptr: *mut sys::OrtSessionOptions = ptr::null_mut();
-        // SAFETY: `ptr` is a valid out-parameter; on success ONNX Runtime writes
-        // an owned options object, released by `SessionOptions::drop`.
         unsafe { api.check(create(&mut ptr))? };
 
         Ok(Self {
@@ -90,29 +122,43 @@ impl<'env> SessionBuilder<'env> {
 
     /// Threads used to parallelise work *within* a single operator.
     ///
-    /// Set this to 1 when the caller already saturates the machine with
-    /// concurrent requests, as hushar's server does: extra intra-op threads then
-    /// only add contention.
+    /// Set this to 1 when the caller already saturates the machine with concurrent
+    /// requests; extra intra-op threads then only add contention.
     pub fn intra_op_threads(self, threads: i32) -> Result<Self> {
         let f = ort_fn!(self.options.api, SetIntraOpNumThreads);
-        // SAFETY: `self.options.ptr` is a live options object.
         unsafe { self.options.api.check(f(self.options.ptr, threads))? };
         Ok(self)
     }
 
     /// Threads used to run independent operators concurrently.
+    ///
+    /// Has no effect unless [`Self::execution_mode`] is
+    /// [`ExecutionMode::Parallel`]: the sequential executor runs one node at a time, so
+    /// this pool is built and never given work. The two are set independently here, which
+    /// means a count without the mode is accepted and silently does nothing -- ONNX
+    /// Runtime's own behaviour, mirrored rather than corrected.
     pub fn inter_op_threads(self, threads: i32) -> Result<Self> {
         let f = ort_fn!(self.options.api, SetInterOpNumThreads);
-        // SAFETY: `self.options.ptr` is a live options object.
         unsafe { self.options.api.check(f(self.options.ptr, threads))? };
+        Ok(self)
+    }
+
+    /// Whether operators run one at a time or concurrently; defaults to
+    /// [`ExecutionMode::Sequential`].
+    ///
+    /// See [`ExecutionMode`] for what each mode costs. This is the switch that makes
+    /// [`Self::inter_op_threads`] mean anything.
+    pub fn execution_mode(self, mode: ExecutionMode) -> Result<Self> {
+        let f = ort_fn!(self.options.api, SetSessionExecutionMode);
+        unsafe { self.options.api.check(f(self.options.ptr, mode.to_raw()))? };
         Ok(self)
     }
 
     /// Sets one of ONNX Runtime's string-keyed session options.
     ///
-    /// The escape hatch for the settings that have no dedicated setter in the C API and
-    /// are reached by name instead. The keys are listed in
-    /// `onnxruntime_session_options_config_keys.h`; the ones that matter for serving are
+    /// For settings that have no dedicated setter in the C API and are reached by name
+    /// instead. The keys are listed in `onnxruntime_session_options_config_keys.h`; the
+    /// ones that matter for serving are
     ///
     /// | Key | Effect |
     /// |---|---|
@@ -137,8 +183,6 @@ impl<'env> SessionBuilder<'env> {
     /// # Errors
     ///
     /// Fails if the key is not one this runtime knows, or the value will not parse.
-    /// Both are reported rather than ignored, since a silently dropped affinity would
-    /// look like affinity that did not help.
     pub fn config_entry(self, key: &str, value: &str) -> Result<Self> {
         let f = ort_fn!(self.options.api, AddSessionConfigEntry);
         let key = CString::new(key).map_err(|_| Error::InteriorNul {
@@ -147,8 +191,6 @@ impl<'env> SessionBuilder<'env> {
         let value = CString::new(value).map_err(|_| Error::InteriorNul {
             context: "session config value",
         })?;
-        // SAFETY: `self.options.ptr` is a live options object, and both strings are
-        // NUL-terminated and outlive the call, which copies them.
         unsafe {
             self.options
                 .api
@@ -161,7 +203,6 @@ impl<'env> SessionBuilder<'env> {
     /// [`GraphOptimizationLevel::All`].
     pub fn optimization_level(self, level: GraphOptimizationLevel) -> Result<Self> {
         let f = ort_fn!(self.options.api, SetSessionGraphOptimizationLevel);
-        // SAFETY: `self.options.ptr` is a live options object.
         unsafe {
             self.options
                 .api
@@ -172,16 +213,15 @@ impl<'env> SessionBuilder<'env> {
 
     /// Registers an execution provider (a hardware backend).
     ///
-    /// Call this more than once to register several: ONNX Runtime assigns each
-    /// node to the first registered provider that can run it, so **call order is
-    /// priority order**. The CPU provider is always the implicit final fallback,
-    /// so a model that a device cannot fully handle still runs rather than
-    /// failing.
+    /// Call this more than once to register several: ONNX Runtime assigns each node to the
+    /// first registered provider that can run it, so **call order is priority order**. The
+    /// CPU provider is always the implicit final fallback, so a model a device cannot fully
+    /// handle still runs rather than failing.
     ///
-    /// Fails with [`Error::ProviderUnavailable`] — naming the providers the
-    /// loaded library *does* have — if the requested one was not compiled in.
-    /// Providers live inside `libonnxruntime`, so this can only be known at run
-    /// time; see [`Api::available_providers`].
+    /// Fails with [`Error::ProviderUnavailable`], naming the providers the loaded library
+    /// *does* have, if the requested one was not compiled in. Providers live inside
+    /// `libonnxruntime`, so this can only be known at run time; see
+    /// [`Api::available_providers`].
     ///
     /// ```no_run
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -203,17 +243,14 @@ impl<'env> SessionBuilder<'env> {
 
     /// Loads a model from an in-memory ONNX protobuf.
     ///
-    /// hushar reads models from S3, so this is the path it uses; there is no
-    /// need to stage the bytes through the filesystem.
+    /// ONNX Runtime copies whatever it needs out of `model` during this call, so the
+    /// borrow does not need to outlive it; the environment, however, must outlive the
+    /// returned session.
     pub fn build_from_memory(self, model: &[u8]) -> Result<Session> {
         let api = self.options.api;
         let create = ort_fn!(api, CreateSessionFromArray);
         let mut ptr: *mut sys::OrtSession = ptr::null_mut();
 
-        // SAFETY: `model` is a valid slice for the length we pass; the env and
-        // options are live; `ptr` is a valid out-parameter. ONNX Runtime copies
-        // whatever it needs out of `model` during this call, so the borrow does
-        // not need to outlive it.
         unsafe {
             api.check(create(
                 self.env.ptr,
@@ -252,12 +289,6 @@ impl IoKind {
 }
 
 /// One input or output a model declares.
-///
-/// This is what replaces "the model takes N floats". A caller that knows the
-/// name, element type and shape of every input can build a request for any model
-/// -- multi-head classification, an embedding beside a set of logits, a
-/// `[batch, horizon, features]` forecast -- without the service knowing what kind
-/// of model it is serving.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TensorSpec {
     /// The name the model declares. Inputs are matched by this in
@@ -273,10 +304,8 @@ pub struct TensorSpec {
 impl TensorSpec {
     /// The shape with dynamic axes resolved against `batch_size`.
     ///
-    /// Only a leading dynamic axis is filled in, because that is the one a
-    /// serving path controls. A dynamic axis anywhere else is a property of the
-    /// model that the caller has to supply, so it is left as `-1` rather than
-    /// guessed at.
+    /// Only a leading dynamic axis is filled in; a dynamic axis anywhere else is a property
+    /// of the model that the caller has to supply, and is left as `-1`.
     pub fn concrete_shape(&self, batch_size: usize) -> Vec<i64> {
         let mut shape = self.shape.clone();
         if let Some(first) = shape.first_mut()
@@ -289,8 +318,7 @@ impl TensorSpec {
 
     /// Elements per row, that is, the product of every axis after the first.
     ///
-    /// `None` if any of those axes is dynamic, since the width is then not a
-    /// property of the model.
+    /// `None` if any of those axes is dynamic.
     pub fn row_width(&self) -> Option<usize> {
         self.shape.iter().skip(1).try_fold(1usize, |acc, &d| {
             if d < 0 { None } else { Some(acc * d as usize) }
@@ -300,8 +328,14 @@ impl TensorSpec {
 
 /// A loaded model, ready to run.
 ///
-/// Cloning is not supported; share it with an `Arc`. Concurrent [`Session::run`]
-/// calls on one session are safe and are the intended way to serve traffic.
+/// Cloning is not supported; share it with an `Arc`. Concurrent [`Session::run`] calls on
+/// one session are safe and are the intended way to serve traffic. The [`Environment`] the
+/// session was built in must outlive it.
+///
+/// [`Send`] and [`Sync`] rest on ONNX Runtime documenting `Run` as safe to invoke on one
+/// session from multiple threads with no external synchronisation (its
+/// `docs/NotesOnThreading.md`, and microsoft/onnxruntime#114). This wrapper exposes only
+/// `&self` methods, and the cached name vectors are immutable after construction.
 #[derive(Debug)]
 pub struct Session {
     api: Api,
@@ -310,12 +344,6 @@ pub struct Session {
     output_names: Vec<CString>,
 }
 
-// SAFETY: ONNX Runtime documents `Run` as safe to invoke on one session from
-// multiple threads with no external synchronisation (microsoft/onnxruntime#114,
-// and the threading notes in docs/NotesOnThreading.md). This wrapper exposes
-// only `&self` methods, and the cached name vectors are immutable after
-// construction, so nothing here introduces a data race that ONNX Runtime does
-// not already handle.
 unsafe impl Send for Session {}
 unsafe impl Sync for Session {}
 
@@ -338,15 +366,12 @@ impl Session {
 
     /// Runs the model on inputs of mixed element type, matched positionally.
     ///
-    /// This is the general entry point. [`Session::run`] is a convenience for the
-    /// case where every input holds the same Rust type; because it is generic over
-    /// a single [`Element`], it cannot express a model that takes, say, a float
-    /// feature vector alongside a string vector. [`InputValue`] erases the element
-    /// type so that such a batch is representable — see its documentation for why
-    /// the erasure happens there.
+    /// The general entry point: [`InputValue`] erases the element type, so one call can mix
+    /// a float tensor with a string tensor. [`Session::run`] is the convenience form for a
+    /// model whose inputs all hold the same [`Element`].
     ///
-    /// Inputs must be in the model's declared order. Use [`Session::run_named`]
-    /// to supply them by name instead, which is harder to get silently wrong.
+    /// Inputs must be in the model's declared order; [`Session::run_named`] matches them by
+    /// name instead.
     ///
     /// ```no_run
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -381,11 +406,10 @@ impl Session {
 
     /// Runs the model on inputs supplied by name, in any order.
     ///
-    /// Every declared input must appear exactly once. Supplying an unknown name,
-    /// or the same name twice, or leaving one out, is an error naming the
-    /// offender — which is the point: matching tensors to inputs positionally is
-    /// the kind of mistake that produces a plausible-looking wrong answer rather
-    /// than a failure.
+    /// # Errors
+    ///
+    /// Every declared input must appear exactly once. An unknown name, a duplicate, or a
+    /// missing input is an error naming the offender.
     pub fn run_named(&self, inputs: &[(&str, InputValue<'_>)]) -> Result<Vec<OwnedTensor>> {
         let declared = || {
             self.input_names()
@@ -395,8 +419,6 @@ impl Session {
                 .join(", ")
         };
 
-        // Resolve each declared input to exactly one supplied tensor. Done in
-        // declared order so the result is already in the order `Run` wants.
         let mut ordered: Vec<*const sys::OrtValue> = Vec::with_capacity(self.input_names.len());
         for declared_name in &self.input_names {
             let expected = declared_name.to_str().unwrap_or_default();
@@ -421,8 +443,6 @@ impl Session {
             );
         }
 
-        // Anything supplied that the model does not declare is a caller bug, and
-        // silently ignoring it would hide a typo in a tensor name.
         for (name, _) in inputs {
             if !self
                 .input_names
@@ -443,7 +463,13 @@ impl Session {
     /// Runs the model on inputs already reduced to raw pointers, requesting every
     /// output.
     ///
-    /// `input_names` and `inputs` must be the same length and in the same order.
+    /// `input_names` and `inputs` must be the same length and in the same order. Outputs are
+    /// taken into [`OwnedTensor`]s before the run status is checked, so a partial failure
+    /// cannot leak the values ONNX Runtime did write.
+    ///
+    /// `Run` takes `*mut OrtSession`, but ONNX Runtime documents concurrent `Run` on a
+    /// shared session as safe, so handing it a pointer derived from `&self` is sound; see
+    /// [`Session`].
     fn run_raw(
         &self,
         input_names: &[*const c_char],
@@ -456,11 +482,6 @@ impl Session {
         let mut output_ptrs: Vec<*mut sys::OrtValue> =
             vec![ptr::null_mut(); self.output_names.len()];
 
-        // SAFETY: all four arrays are live for the duration of the call and their
-        // lengths are passed alongside them. `Run` takes `*mut OrtSession`, but
-        // ONNX Runtime documents concurrent `Run` on a shared session as safe, so
-        // handing it a pointer derived from `&self` is sound (see the `Sync` impl
-        // above). Passing a null `OrtRunOptions` selects the defaults.
         let status = unsafe {
             run(
                 self.ptr,
@@ -474,17 +495,12 @@ impl Session {
             )
         };
 
-        // Take ownership of anything ONNX Runtime produced before checking the
-        // status, so a partial failure cannot leak the outputs it did write.
         let outputs: Vec<OwnedTensor> = output_ptrs
             .into_iter()
             .filter(|p| !p.is_null())
-            // SAFETY: each non-null pointer is an owned `OrtValue` written by
-            // `Run`, and it is moved into exactly one `OwnedTensor`.
             .map(|p| unsafe { OwnedTensor::from_raw(self.api, p) })
             .collect();
 
-        // SAFETY: `status` came from this API table.
         unsafe { self.api.check(status)? };
 
         Ok(outputs)
@@ -526,15 +542,11 @@ impl Session {
         Ok(outputs.swap_remove(0))
     }
 
-    /// Reads the input or output names out of the session and caches them.
-    ///
     /// The shape of input `index`, as reported by the model.
     ///
     /// Symbolic or dynamic dimensions come back as `-1`. A batch axis is
     /// typically dynamic, so a two-dimensional model input usually reports
     /// `[-1, feature_width]`.
-    ///
-    /// This is how a caller discovers the feature width without hardcoding it.
     pub fn input_shape(&self, index: usize) -> Result<Vec<i64>> {
         self.io_shape(IoKind::Input, index)
     }
@@ -609,8 +621,6 @@ impl Session {
                 let f = ort_fn!(api, GetTensorElementType);
                 let mut ty: sys::ONNXTensorElementDataType =
                     sys::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
-                // SAFETY: `info` is live and borrowed from the type info that
-                // `with_tensor_info` keeps alive across this closure.
                 unsafe { api.check(f(info, &mut ty))? };
                 Ok(ty)
             })?
@@ -622,33 +632,31 @@ impl Session {
     }
 
     /// Reads a declared shape from the model's type information.
+    ///
+    /// A non-tensor input or output (a sequence or a map) has no shape and reports an empty
+    /// one rather than an error.
     fn io_shape(&self, kind: IoKind, index: usize) -> Result<Vec<i64>> {
         let dims = self.with_tensor_info(kind, index, |api, info| {
             let dim_count_fn = ort_fn!(api, GetDimensionsCount);
             let dims_fn = ort_fn!(api, GetDimensions);
 
             let mut rank: usize = 0;
-            // SAFETY: `info` is live for the closure's duration.
             unsafe { api.check(dim_count_fn(info, &mut rank))? };
 
             let mut dims = vec![0i64; rank];
             if rank > 0 {
-                // SAFETY: `dims` has room for exactly `rank` values.
                 unsafe { api.check(dims_fn(info, dims.as_mut_ptr(), rank))? };
             }
             Ok(dims)
         })?;
-        // A non-tensor input (a sequence or a map) has no shape. Preserved as an
-        // empty shape rather than an error, which is what callers of this expect.
         Ok(dims.unwrap_or_default())
     }
 
     /// Borrows the `OrtTensorTypeAndShapeInfo` for one input or output.
     ///
-    /// Centralises the ownership dance: `SessionGet*TypeInfo` hands back an owned
-    /// `OrtTypeInfo` that must be released, while `CastTypeInfoToTensorInfo`
-    /// *borrows* from it and must not be. Doing this once means a new accessor
-    /// cannot get the release wrong.
+    /// `SessionGet*TypeInfo` hands back an owned `OrtTypeInfo` that must be released, while
+    /// `CastTypeInfoToTensorInfo` *borrows* from it and must not be. Failures inside `f` are
+    /// captured rather than propagated so the release is always reached.
     ///
     /// `Ok(None)` means the input or output is not a tensor at all.
     fn with_tensor_info<T, F>(&self, kind: IoKind, index: usize, f: F) -> Result<Option<T>>
@@ -674,20 +682,13 @@ impl Session {
         let cast_fn = ort_fn!(self.api, CastTypeInfoToTensorInfo);
 
         let mut type_info: *mut sys::OrtTypeInfo = ptr::null_mut();
-        // SAFETY: live session, `index` checked above, valid out-parameter. The
-        // returned type info is owned by us and released before returning.
         unsafe {
             self.api
                 .check(type_info_fn(self.ptr, index, &mut type_info))?
         };
 
-        // Everything below must reach the release, so failures are captured
-        // rather than propagated with `?`.
         let result = (|| -> Result<Option<T>> {
             let mut tensor_info: *const sys::OrtTensorTypeAndShapeInfo = ptr::null();
-            // SAFETY: `type_info` is live. The cast borrows from it rather than
-            // allocating, so `tensor_info` must not be released separately and
-            // must not outlive `type_info`.
             unsafe { self.api.check(cast_fn(type_info, &mut tensor_info))? };
             if tensor_info.is_null() {
                 return Ok(None);
@@ -696,16 +697,17 @@ impl Session {
         })();
 
         if let Some(release) = self.api.raw().ReleaseTypeInfo {
-            // SAFETY: produced by `SessionGet*TypeInfo`, released exactly once.
-            // `tensor_info` borrowed from it and is no longer used.
             unsafe { release(type_info) };
         }
         result
     }
 
+    /// Reads the input or output names out of the session and caches them.
+    ///
     /// ONNX Runtime allocates each name with the default allocator and expects
     /// the caller to free it, so each one is copied into a `CString` and the
-    /// original released immediately.
+    /// original released immediately. The allocator itself is owned by ONNX Runtime and
+    /// must not be released.
     fn load_io_names(&self, kind: IoKind) -> Result<Vec<CString>> {
         let count_fn = match kind {
             IoKind::Input => ort_fn!(self.api, SessionGetInputCount),
@@ -719,19 +721,14 @@ impl Session {
         let free_fn = ort_fn!(self.api, AllocatorFree);
 
         let mut allocator: *mut sys::OrtAllocator = ptr::null_mut();
-        // SAFETY: valid out-parameter. The default allocator is owned by ONNX
-        // Runtime and must not be released by us.
         unsafe { self.api.check(allocator_fn(&mut allocator))? };
 
         let mut count: usize = 0;
-        // SAFETY: live session, valid out-parameter.
         unsafe { self.api.check(count_fn(self.ptr, &mut count))? };
 
         let mut names = Vec::with_capacity(count);
         for index in 0..count {
             let mut raw: *mut c_char = ptr::null_mut();
-            // SAFETY: `index` is below the count just reported, the allocator is
-            // live, and `raw` is a valid out-parameter.
             unsafe {
                 self.api
                     .check(name_fn(self.ptr, index, allocator, &mut raw))?
@@ -743,11 +740,7 @@ impl Session {
                     count,
                 });
             }
-            // SAFETY: `raw` is a NUL-terminated string allocated by ONNX Runtime.
-            // It is copied here and freed immediately afterwards with the same
-            // allocator that produced it.
             let owned = unsafe { CStr::from_ptr(raw).to_owned() };
-            // SAFETY: `raw` came from `allocator` and is not used again.
             unsafe { self.api.check(free_fn(allocator, raw.cast()))? };
             names.push(owned);
         }
@@ -756,9 +749,9 @@ impl Session {
 }
 
 impl Drop for Session {
+    /// Releases the session.
     fn drop(&mut self) {
         if let Some(release) = self.api.raw().ReleaseSession {
-            // SAFETY: created by `CreateSessionFromArray`, released exactly once.
             unsafe { release(self.ptr) };
         }
     }

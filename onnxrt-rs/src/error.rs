@@ -13,9 +13,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// An `OrtErrorCode` returned by the C API.
 ///
-/// ONNX Runtime may add codes in future releases, so unrecognised values are
-/// preserved in [`ErrorCode::Other`] rather than being collapsed into a
-/// catch-all.
+/// ONNX Runtime may add codes in future releases, so an unrecognised value is preserved
+/// in [`ErrorCode::Other`] rather than collapsed into a catch-all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
     Fail,
@@ -83,15 +82,12 @@ impl fmt::Display for ErrorCode {
     }
 }
 
-/// Anything that can go wrong when driving ONNX Runtime.
-/// Render a [`libloading::Error`] together with its whole source chain.
+/// Renders a [`libloading::Error`] together with its whole source chain.
 ///
-/// `libloading`'s own `Display` for a failed `dlopen` is the bare string
-/// "dlopen failed". The text from `dlerror` — the part that actually says *why*,
-/// whether that is a missing transitive dependency, a `glibc` older than the one
-/// the runtime was built against, or an architecture mismatch — sits one level
-/// down in [`std::error::Error::source`]. Formatting only the top-level error
-/// hands an operator a message with no diagnostic content, so walk the chain.
+/// `libloading`'s own `Display` for a failed `dlopen` is the bare string "dlopen
+/// failed". The text from `dlerror` — a missing transitive dependency, a `glibc` older
+/// than the one the runtime was built against, an architecture mismatch — sits one level
+/// down in [`std::error::Error::source`], so the chain is walked.
 fn describe_load_error(error: &libloading::Error) -> String {
     use std::error::Error as _;
 
@@ -105,6 +101,7 @@ fn describe_load_error(error: &libloading::Error) -> String {
     text
 }
 
+/// Anything that can go wrong when driving ONNX Runtime.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The shared library could not be opened.
@@ -163,24 +160,22 @@ pub enum Error {
 
     /// The model input or output is not a tensor, so it has no element type.
     ///
-    /// ONNX also allows sequences and maps. hushar serves tensors, so this is
-    /// reported rather than worked around.
+    /// ONNX also allows sequences and maps, which this crate does not serve.
     #[error("model {kind} {index} is not a tensor, so it has no element type")]
     NotATensor { kind: &'static str, index: usize },
 
     /// The model uses an element type this crate does not model.
     ///
-    /// ONNX defines 8-bit and 4-bit float formats, sub-byte integers and complex
-    /// numbers that have no Rust equivalent here. Reported rather than guessed at,
-    /// because reinterpreting the bytes as a type of the same width would be
-    /// silently wrong.
+    /// ONNX defines 8-bit and 4-bit float formats, sub-byte integers and complex numbers
+    /// that have no Rust equivalent here. The bytes are never reinterpreted as a type of
+    /// the same width.
     #[error("ONNX element type {raw} is not supported by this crate")]
     UnsupportedDataType { raw: u32 },
 
     /// A string tensor's offsets did not describe a valid layout.
     ///
-    /// The runtime should never produce this; it is checked because slicing on a
-    /// bad offset would panic inside a request handler.
+    /// The runtime should never produce this; it is checked because slicing on a bad
+    /// offset would panic.
     #[error(
         "string tensor element {index} spans {start}..{end}, which is not within \
          its {total}-byte payload"
@@ -215,9 +210,9 @@ pub enum Error {
 
     /// The requested execution provider is not compiled into the loaded library.
     ///
-    /// Providers are built *into* `libonnxruntime`, so this is a property of the
-    /// binary that was loaded, not of this crate. Either install a build that
-    /// includes the provider, or choose one from `available`.
+    /// Providers are built *into* `libonnxruntime`, so this is a property of the binary
+    /// that was loaded, not of this crate. Either install a build that includes the
+    /// provider, or choose one from `available`.
     #[error(
         "execution provider \"{provider}\" is not available in the loaded ONNX \
          Runtime; it was built with: {available}"
@@ -231,9 +226,8 @@ pub enum Error {
     /// This build was not compiled with the requested provider's feature.
     ///
     /// Distinct from [`Self::ProviderUnavailable`]: that one means the loaded
-    /// `libonnxruntime` lacks the provider, this one means the binary was not
-    /// built to use it. Rebuild with the named Cargo feature, or with
-    /// `all-providers`.
+    /// `libonnxruntime` lacks the provider, this one means the binary was not built to
+    /// use it. Rebuild with the named Cargo feature, or with `all-providers`.
     #[error(
         "execution provider \"{provider}\" needs the `{feature}` feature, which \
          this build does not enable; it was built with: {enabled}"
@@ -246,18 +240,16 @@ pub enum Error {
 }
 
 impl Error {
-    /// Builds an [`Error::Ort`] from a non-null `OrtStatus`, releasing the
-    /// status before returning.
+    /// Builds an [`Error::Ort`] from a non-null `OrtStatus`, releasing the status before
+    /// returning.
     ///
     /// # Safety
     ///
-    /// `status` must be a non-null `OrtStatus` obtained from `api`, and must not
-    /// be used again after this call: ownership is transferred here.
+    /// `status` must be a non-null `OrtStatus` obtained from `api`, and must not be used
+    /// again after this call: ownership is transferred here. `GetErrorCode` and
+    /// `GetErrorMessage` are infallible accessors, and the message buffer belongs to the
+    /// status, so the message is copied before `ReleaseStatus` runs.
     pub(crate) unsafe fn from_status(api: &sys::OrtApi, status: sys::OrtStatusPtr) -> Self {
-        // SAFETY: the caller guarantees `status` came from this API table and is
-        // non-null. `GetErrorCode`/`GetErrorMessage` are infallible accessors,
-        // and the message buffer is owned by the status, so it must be copied
-        // before `ReleaseStatus` runs.
         let (code, message) = unsafe {
             let code = api
                 .GetErrorCode

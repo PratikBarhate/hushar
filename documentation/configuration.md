@@ -48,6 +48,38 @@ to serve, and where to record what it did.
 | `sample_rate` | f64 | `1.0` | fraction of requests logged, `0.0..=1.0` |
 | `max_sends_in_flight` | usize | `4` | writes allowed at once before shedding |
 
+#### Reading a log back
+
+The log is `InferenceLogs` protobuf, and **deliberately the request's own shape with the
+scores added** — `row_ids`, one entry per feature holding every row's values, and one score
+buffer. Two things follow from that:
+
+- **Writing it is free.** The service only borrows a request's columns to build tensors, so
+  they are still intact afterwards and logging them is a move rather than a copy.
+- **It holds what the caller was told.** The scores are the same `ScoreType` the response
+  carried, in the model's own precision — so a double-precision model's log and its
+  response cannot disagree about a number, which matters when the log is what you train on
+  or audit against.
+
+Columnar is the wrong shape to read by eye, so the transpose lives in a tool instead of in
+the request path:
+
+```bash
+cargo run -p benchmark-client --example inspect_log -- ./logs/<file>
+cargo run -p benchmark-client --example inspect_log -- ./logs/<file> --row row-37
+cargo run -p benchmark-client --example inspect_log -- ./logs/<file> --feature age
+```
+
+```
+request "bench-1"  model "bench-vectorized"  3 row(s), 210 feature(s)
+  row "row-1"
+    sd32_age                     67.31714
+    scores                       [0.16593632, 0.23430304, 0.19267273]
+```
+
+Widths are derived the same way the service derives them — `values / rows` — so what prints
+cannot disagree with what was served.
+
 ### `candidate_model`
 
 A roll-out: `model_config_path` is the **control**, this is the **candidate**, and
@@ -134,6 +166,7 @@ runs at once; the two core lists decide where those threads run.
 | `worker_threads` | usize | *one per core* | tokio async workers; these never run inference |
 | `inference_concurrency` | usize | *one per core* | concurrent inferences, and the queue in front of the engine |
 | `intra_op_threads` | i32 | `1` | ONNX Runtime threads inside one operator, **caller included**. `0` leaves the runtime's default |
+| `inter_op_threads` | i32 | *unset* | the alternative to the above: threads running operators that do not depend on each other. **Only one of the two may exceed 1.** Needs a branching graph to be worth anything |
 | `worker_cores` | string | *unpinned* | logical CPUs the async pool may use, as `"0-1"` or `"0,2,4"` |
 | `compute_cores` | string | *unpinned* | logical CPUs the inference threads may use, as `"2-9,12"` |
 | `allow_spinning` | bool | *runtime default* | whether idle ONNX Runtime threads spin waiting for work |
@@ -170,11 +203,29 @@ Six things to know before setting any of them:
   Nothing here caps total in-flight requests, so overload shows as latency rather than
   rejection.
 - **The counts add per session, they do not multiply per request.** The CPU load is
-  `inference_concurrency + sessions × (intra_op_threads − 1)`, where `sessions` is
-  `models × sessions_per_model` — the intra-op pool belongs to the session, not to the
+  `inference_concurrency + sessions × (width − 1)`, where `sessions` is
+  `models × sessions_per_model` and `width` is whichever of `intra_op_threads` or
+  `inter_op_threads` was chosen — the pool belongs to the session, not to the
   caller and not to the process. So `inference_concurrency: 2` with `intra_op_threads: 4`
   and one model is **5** compute threads, not 8. The banner prints the sum against the core
   count and says so when it is above *or* far below it.
+- **The two pools are alternatives, and the service refuses both.** Intra-op spends threads
+  inside one operator; inter-op spends them on operators that do not depend on each other.
+  Setting `inter_op_threads` switches ONNX Runtime to its parallel executor, which is worth
+  doing only on a graph with independent branches — two towers, a trunk with several output
+  heads, a wide path beside a deep one. **A chain of transformer blocks has none**, and
+  attention heads are not branches either: they are a dimension inside one batched operator,
+  which the intra-op pool already splits.
+
+  Two things come with it, both reported in the banner. Memory-pattern optimisation is
+  unavailable, since ONNX Runtime traces allocations through a known node order. And the
+  pool **cannot be pinned** — there is an affinity setting for the intra-op pool and none
+  for this one — so it is confined only by the mask of the thread that built the session,
+  which is the slice from `compute_cores`. Bounded to a slice, not pinned within it.
+
+  Choosing inter-op requires `intra_op_threads: 1`, and `0` is refused there. `0` is not
+  "no pool": it is ONNX Runtime's default of one thread per physical core, so the pair would
+  claim the machine twice per session.
 - **One session shares one pool.** Every concurrent request to a model queues for that
   model's single intra-op pool, so latency rises with load even on an idle host. More slots
   give each in-flight request a pool of its own — see
@@ -198,12 +249,12 @@ Six things to know before setting any of them:
 
 → [**threads-and-cores.md**](threads-and-cores.md) for the reasoning, the accelerator case,
 and how the affinity string is derived.
-→ [**benchmark-data/results**](../benchmark-data/results/index.md) for what any of it
-measures on real hardware.
+→ [**benchmark-data/results**](../benchmark-data/results/) for what
+any of it measures on real hardware.
 
-Bad values are refused at startup: a zero thread count, a negative `intra_op_threads`, or a
-core list that will not parse — each naming the field and, for a list, the offending
-fragment.
+Bad values are refused at startup: a zero thread count, a negative `intra_op_threads` or
+`inter_op_threads`, widening both pools at once, or a core list that will not parse — each
+naming the field and, for a list, the offending fragment.
 
 ### `metrics`
 
@@ -296,7 +347,8 @@ comparison measures thread counts instead of models. A `model.json` still naming
 refused rather than ignored.
 
 **`mini_batch_size` does not constrain callers.** A request of any size is served: its rows
-are cut into batches of this many and **scored at the same time**, one scoped thread each.
+are cut into batches of this many and **scored at the same time**, one thread each from a
+persistent pool pinned to the compute cores.
 Splitting raises the parallelism one request can use, which is the only way to get below the
 latency floor a single batch imposes — measured at 50 rows, p95 fell 18.45 → 14.38 ms at the
 same CPU. See [threads-and-cores.md](threads-and-cores.md#the-five-layers).
@@ -316,27 +368,29 @@ Setting it without a size is refused; so is a pinned graph without it.
 ## vectorization_config
 
 The request carries `{"age": 30, "city": "london"}`. The model wants tensors. This is the
-bridge, and the field you set decides which of three shapes it takes.
+bridge. It is **required**, and the field you set decides which of two shapes it takes.
 
 ```mermaid
 flowchart TB
   q{"which field?"}
   q -->|"feature_order"| v["<b>vectorised</b>"]
   q -->|"model_inputs"| n["<b>named</b>"]
-  q -->|"config absent"| p["<b>by name</b>"]
 
   v --> vd["every feature transformed,<br/>concatenated in that order,<br/>into ONE float input"]
-  n --> nd["ONE input per entry,<br/>each with its own data_type"]
-  p --> pd["each model input fed by the<br/>feature of the same name"]
+  n --> nd["ONE input per entry,<br/>each fed verbatim"]
 
   vd --> ve["<i>tree ensembles,<br/>flat float vectors</i>"]
-  nd --> ne["<i>graphs with their own inputs,<br/>including text</i>"]
-  pd --> pe["<i>model inputs already named<br/>after your features</i>"]
+  nd --> ne["<i>graphs that featurize themselves,<br/>including text</i>"]
 
   style v fill:#d4edda
   style n fill:#d4edda
-  style p fill:#cfe2ff
 ```
+
+Declaring it is the point. Every field of the resulting plan is read from the model's own
+signature, so a declaration cannot change what is fed — what it buys is **startup**: a
+misspelled input, or a model that no longer takes what this deployment thinks it does, is
+caught before the first request rather than silently serving a different contract. The
+error names the input and suggests the nearest declared one.
 
 Setting both `feature_order` and `model_inputs`, or neither while the object is present,
 is a startup failure.
@@ -377,9 +431,6 @@ narrowing cast does not shift a prediction slightly, it selects a different leaf
 
 ```json
 "vectorization_config": {
-  "feature_transformations": {
-    "age": { "type": "standardization32", "mean": 35.5, "std_dev": 12.8, "default_val": [0.0] }
-  },
   "model_inputs": {
     "age":      { "data_type": "float" },
     "token_id": { "data_type": "long" },
@@ -390,72 +441,64 @@ narrowing cast does not shift a prediction slightly, it selects a different leaf
 
 ```mermaid
 flowchart LR
-  a["age = 30"] -->|"float → transformed"| a2["input 'age'<br/>FP32[rows, 1]"]
+  a["age = 30"] -->|"float → verbatim"| a2["input 'age'<br/>FP32[rows, 1]"]
   t["token_id = 4711"] -->|"long → verbatim"| t2["input 'token_id'<br/>INT64[rows, 1]"]
   s["tags = 'beta'"] -->|"string → verbatim"| s2["input 'tags'<br/>STRING[rows, 1]"]
-  style a2 fill:#d4edda
+  style a2 fill:#fff3cd
   style t2 fill:#fff3cd
   style s2 fill:#fff3cd
 ```
 
-Each key is both a model input name **and** the feature name that feeds it.
+Each key is a model input name **and** the feature name that feeds it, and the type is
+what you expect the model to declare — checked against the signature at startup, never
+used to convert anything.
 
-### Shape 3 · by name
+Nothing is transformed here, so `feature_transformations` is a startup failure alongside
+`model_inputs` — a transformation would silently never run. Nothing is defaulted either:
+every declared input has to be present in every row, and a row that omits one is refused
+by name. If you want a default, that is what `feature_order` is for.
 
-Omit `vectorization_config` entirely. Every model input is fed by the feature of the same
-name, typed from the model's own signature. Nothing to write, nothing to keep in sync.
-
-```json
-{
-  "model_id": "fraud-v3",
-  "model_path": "s3://my-bucket/models/fraud-v3/model.onnx"
-}
-```
-
-```mermaid
-flowchart LR
-  a["age = 30"] -->|"FP32 → copied"| a2["input 'age'<br/>FP32[rows, 1]"]
-  c["city = 'london'"] -->|"STRING → verbatim"| c2["input 'city'<br/>STRING[rows, 1]"]
-  a2 --> g["the graph scales, encodes<br/>and embeds it itself"]
-  c2 --> g
-  style a2 fill:#fff3cd
-  style c2 fill:#fff3cd
-  style g fill:#cfe2ff
-```
-
-This is the shape for a model that was **trained with its featurization inside it**, which
-most are: the scaling constants, category lists and embedding tables live with the weights
-they were fitted against, so there is no second artefact to version and no configuration
-that can disagree with the graph. A float input is still built by a transformation — an
-identity one, sized from the model — so an absent feature fills its row with zeros rather
-than making the batch ragged.
-
-`benchmark-data/generated/bench_raw_model_config.json` is a worked example: 212 features,
-four lines of configuration. See [benchmarking.md](benchmarking.md) for what it costs
+This is the shape for a model **trained with its featurization inside it**, which most
+are: the scaling constants, category lists and embedding tables live with the weights they
+were fitted against, so there is no second artefact to version and nothing that can
+disagree with the graph about how a feature is encoded.
+`benchmark-data/generated/bench_raw_model_config.json` is a worked example — 212 inputs,
+each declared, none transformed. See [benchmarking.md](benchmarking.md) for what it costs
 against the same model fed the vectorised way.
 
----
+## The one rule
 
-## The float rule
-
-One rule decides whether an input is transformed or copied, and it is read off the
-input's element type rather than configured separately:
+One rule decides whether an input is transformed or copied, and it is the shape you chose
+— not the input's type:
 
 ```mermaid
 flowchart TB
-  i["model input"] --> e{"element type"}
-  e -->|"FP32 / FP64"| t["<b>transformed</b><br/>a transformation builds it<br/>missing → transformation's default_val"]
-  e -->|"INT32 / INT64 / STRING"| v["<b>verbatim</b><br/>copied from the request<br/>missing → 0 or empty string"]
+  i["model input"] --> e{"which shape?"}
+  e -->|"feature_order"| t["<b>transformed</b><br/>a transformation builds it<br/>missing → transformation's default_val"]
+  e -->|"model_inputs"| v["<b>verbatim</b><br/>copied from the request<br/>missing → refused, by name"]
   style t fill:#d4edda
   style v fill:#fff3cd
 ```
+
+So a model input's declared type never changes what the configuration may say about it,
+and `feature_transformations` is valid in exactly one place. It used to be the element
+type that decided, which meant a `float` input quietly transformed while an `int` input
+next to it refused the same configuration.
 
 Both routes refuse a variant they cannot take, rather than converting it. A float sent to
 an `INT64` input is refused, not rounded; a number sent to a text input is refused, not
 stringified; a `double_value` sent to a `standardization32` feature is refused, not
 narrowed. Converting quietly would turn a configuration mistake into a wrong prediction.
-The one widening allowed is lossless: an `INT64` input accepts an integer as well as a
-long. An `INT32` input does not accept a long.
+
+Verbatim inputs accept the widenings that cannot lose anything and refuse the rest:
+
+| Input | Accepts | Refuses |
+|---|---|---|
+| `float` | `float`, `int`, `bool`, `float_array` | `double`, `long`, text — each would lose precision or invent a number |
+| `double` | `double`, `float`, `int`, `bool`, and float/double arrays | `long` past 2⁵³, text |
+| `int` | `int`, `int_array` | `long` — narrowing could wrap a category code |
+| `long` | `long`, `int`, and their arrays | everything else |
+| `string` | `string`, `string_array` | numbers — stringifying is a guess |
 
 Transformations are defined in `f32`, which is why they only build float inputs —
 rounding one into an integer, or inventing text from one, would be silent corruption.
@@ -464,7 +507,8 @@ rounding one into an integer, or inventing text from one, would be silent corrup
 
 ## Transformations
 
-Every transformation carries `default_val`, used when the feature is absent — and
+Transformations belong to the **vectorised** shape only — they are what `feature_order`
+concatenates. Every one carries `default_val`, used when the feature is absent, and
 **`default_val.len()` is what declares the input's width**, for all of them, checked
 against the model at startup.
 
@@ -495,27 +539,31 @@ transformation accepts. They are exact complements, so a client sending a protob
 The `64` variants are not the `32` ones widened — `identity` and both 64-bit scalers do
 their arithmetic in `f64` directly.
 
-Already have a vector? Send it as one feature holding a `FloatArray` and give it
+Already have a vector? Send it as one entry of `width` float values per row and give it
 `identity`. Nothing is recomputed, and there is still only one request shape.
 
 ---
 
 ## Data types
 
-Feature values on the wire are a protobuf `oneof`, so a value cannot claim two types.
-`model_inputs` entries name what an input expects:
+A feature on the wire is one array, so it cannot claim two types. There are five element
+types and no scalar spelling: a scalar feature is an entry of width 1, a wider one states a
+larger width. `model_inputs` entries name what an input expects:
 
-| `data_type` | Element type | Values per row | Built by |
-|---|---|---|---|
-| `float` / `float_array` | FP32 | 1 / many | transformation |
-| `double` / `double_array` | FP64 | 1 / many | transformation |
-| `int` / `int_array` | INT32 | 1 / many | verbatim |
-| `long` / `long_array` | INT64 | 1 / many | verbatim |
-| `string` / `string_array` | STRING | 1 / many | verbatim |
+| `data_type` | Element type | Wire array | Values per row | Built by |
+|---|---|---|---|---|
+| `float` / `float_array` | FP32 | `FloatArray` | 1 / many | transformation |
+| `double` / `double_array` | FP64 | `DoubleArray` | 1 / many | transformation |
+| `int` / `int_array` | INT32 | `IntegerArray` | 1 / many | verbatim |
+| `long` / `long_array` | INT64 | `LongArray` | 1 / many | verbatim |
+| `string` / `string_array` | STRING | `StringArray` | 1 / many | verbatim |
 
 The scalar and array spellings differ only in expected width, and that is the point:
 `float` declares one value per row, so a transformation producing five is caught at
-startup rather than working until a one-hot encoding gains a category.
+startup rather than working until a one-hot encoding gains a category. Both map to the
+same wire array — the width is what separates them. A caller states its own width and the
+service checks it against the values sent; what the model requires is this configuration's
+business, so the two disagreements are reported separately.
 
 ---
 
@@ -627,7 +675,7 @@ flowchart TB
     b2["model input the config does not mention"]
     b3["config naming an input the model lacks"]
     b4["declared width ≠ what the transformation produces"]
-    b5["transformation on a non-float input, or one nothing reaches"]
+    b5["transformation alongside model_inputs, or one nothing reaches"]
     b6["non-float model output, or a rank other than 1 or 2"]
     b7["provider absent from this build or this libonnxruntime"]
   end
@@ -641,9 +689,10 @@ flowchart TB
   style req fill:#fff3cd
 ```
 
-An **absent** feature is not a failure on either side: a float input falls back to the
-transformation's `default_val`, and a verbatim input to `0` or the empty string, repeated
-to the input's width. A partial request still scores.
+An **absent** feature depends on the shape. A transformed input falls back to its
+transformation's `default_val`, so a partial request still scores. A verbatim input has no
+default to fall back on and no way to leave a hole in a dense tensor, so the request is
+refused with the row and the input named.
 
 The split is the design: anything decidable from the model plus the configuration is a
 **boot failure**, because a service that starts cleanly and then rejects every request is
@@ -652,9 +701,9 @@ worse than one that refuses to start.
 | Check | Where it lives |
 |---|---|
 | unknown JSON field | `serde`, via `deny_unknown_fields` |
-| both or neither config shape, transformation on a non-float input | [`VectorizationConfig::from_json`](../hushar/src/config/vectorization_config.rs) |
+| both or neither config shape, transformation alongside `model_inputs` | [`VectorizationConfig::from_json`](../hushar/src/config/vectorization_config.rs) |
 | non-float output, a rank other than 1 or 2, batch axis disagreement | [`convert_specs`](../hushar/src/inference/onnx_backend.rs) |
 | undeclared input, missing input, type or width mismatch | [`InputBuilder::resolve`](../hushar/src/inference/input_builder.rs) |
-| feature value of a variant the input cannot take, ragged row | [`InputBuilder::build`](../hushar/src/inference/input_builder.rs) |
+| feature value of a variant the input cannot take, absent feature, ragged row | [`InputBuilder::build_padded`](../hushar/src/inference/input_builder.rs) |
 | value count that is not whole rows | [`InputBatch::push`](../hushar/src/inference/batch.rs) |
 | output rows ≠ request rows | [`run_batch`](../hushar/src/inference/scoring.rs) |

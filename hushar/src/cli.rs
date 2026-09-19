@@ -4,8 +4,7 @@
 //! Command-line configuration: where the service configuration is, and two overrides.
 //!
 //! Everything else lives in the service configuration — see
-//! [`crate::config::service_config`] for the file and why it is one file. What is left
-//! here is what cannot go in it:
+//! [`crate::config::service_config`]. What is left here is what cannot go in it:
 //!
 //! ```text
 //! ./hushar --config-uri s3://bucket/service.json
@@ -13,21 +12,10 @@
 //!
 //! - `--config-uri` says where that file is, so it cannot be a field inside it.
 //! - `--port` and `--bind-address` override the configured listener, for running two
-//!   instances on one host. That is a developer concern rather than a deployment one,
-//!   which is why they are flags and not the source of truth.
+//!   instances on one host.
 //!
-//! Both options also read from an environment variable, so a container is configured
-//! from the environment and a developer from flags without the service needing to know
-//! which.
-//!
-//! # What used to be here
-//!
-//! Six flags: the inference log URI, the CloudWatch namespace, both sinks' batch sizes,
-//! the sampling rate and the in-flight bound. They were properties of a deployment
-//! sitting outside the file that describes the deployment, which meant the destination a
-//! service writes to could not be versioned alongside the service. They are now
-//! `inference_log` and `metrics` in the service configuration, and their validation
-//! moved with them into `HusharServiceConfig::validate`.
+//! Every option also reads from an environment variable, so a container is configured
+//! from the environment and a developer from flags.
 
 use std::net::IpAddr;
 
@@ -46,15 +34,14 @@ pub(crate) struct Cli {
 
     /// Override `port_number` from the service configuration.
     ///
-    /// For running two instances on one machine. A deployment sets the port in the
-    /// configuration alongside the rest of its settings.
+    /// For running two instances on one machine.
     #[arg(long, env = "HUSHAR_PORT")]
     pub(crate) port: Option<u16>,
 
     /// Override `bind_address` from the service configuration.
     ///
-    /// Accepts IPv4 or IPv6. `0.0.0.0` accepts from anywhere, which is what a container
-    /// wants and what the configuration defaults to; `127.0.0.1` restricts to the host.
+    /// Accepts IPv4 or IPv6. The configuration defaults to `0.0.0.0`, which accepts from
+    /// anywhere; `127.0.0.1` restricts to the host.
     #[arg(long, env = "HUSHAR_BIND_ADDRESS")]
     pub(crate) bind_address: Option<IpAddr>,
 }
@@ -73,8 +60,7 @@ mod tests {
 
     const REQUIRED: [&str; 2] = ["--config-uri", "s3://bucket/service.json"];
 
-    /// One required option, and the two overrides absent unless asked for. Absent
-    /// matters: `None` is what lets the configured value through in `main`.
+    /// The config URI is the only required option, and both overrides parse as `None`.
     #[test]
     fn the_config_uri_is_the_only_requirement() {
         let cli = parse(&REQUIRED).expect("the config URI should be the only requirement");
@@ -108,7 +94,7 @@ mod tests {
         assert_eq!(cli.bind_address, Some(IpAddr::from([127, 0, 0, 1])));
     }
 
-    /// Typed, so this cannot reach the runtime and fail there.
+    /// A malformed bind address fails at parse time, and IPv6 is accepted.
     #[test]
     fn a_bad_address_is_rejected_at_parse_time() {
         let mut args = REQUIRED.to_vec();
@@ -120,9 +106,7 @@ mod tests {
         assert!(parse(&args).is_ok(), "IPv6 should be accepted");
     }
 
-    /// A flag that moved into the configuration must be refused, not ignored. clap
-    /// rejects an unknown argument by default, so this is a guard against one being
-    /// reintroduced here rather than in the file.
+    /// A flag that belongs in the service configuration is refused, not ignored.
     #[test]
     fn a_flag_that_moved_into_the_configuration_is_refused() {
         for stale in [
@@ -142,8 +126,7 @@ mod tests {
         }
     }
 
-    /// A container is configured from the environment, so every flag has to be
-    /// reachable that way.
+    /// Every non-global option has an environment variable, and there are three of them.
     #[test]
     fn every_option_is_also_an_environment_variable() {
         let command = Cli::command();

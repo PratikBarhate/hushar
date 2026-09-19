@@ -30,7 +30,7 @@ A request is a **coffee order**.
 
 ```mermaid
 flowchart LR
-  a["☕ order<br/>features"] --> b["📋 recipe card<br/>InputBuilder"] --> c["🥛 tray<br/>InputBatch"] --> d["⚙️ machine<br/>ONNX Runtime"] --> e["🏷️ cup<br/>OutputRow"]
+  a["☕ order<br/>features"] --> b["📋 recipe card<br/>InputBuilder"] --> c["🥛 tray<br/>InputBatch"] --> d["⚙️ machine<br/>ONNX Runtime"] --> e["🏷️ tray back<br/>row_ids + scores"]
   d -.->|"jotted down"| f["📒 ledger page<br/>Accumulator"]
   f -.->|"when full"| g["🗄️ archive<br/>S3 / CloudWatch / Kinesis"]
   style a fill:#fff3cd
@@ -58,8 +58,9 @@ sequenceDiagram
   participant D as destination
 
   Note over P: derived once at startup
-  C->>W: InferenceRequest { inputs: [InputRow] }
-  W->>W: take rows, clone Arcs
+  C->>W: InferenceRequest { features: map<string, Feature> }
+  W->>W: RequestColumns::from_request (moves each column out)
+  W->>W: clone Arcs
   W->>W: sampler.sample() → log this one or not
   W->>B: spawn_blocking
   Note over W: worker free again immediately
@@ -69,11 +70,11 @@ sequenceDiagram
   B->>E: run_named(&[(name, InputValue)])
   E-->>B: OwnedTensor per output
   B->>B: first output → ScoreType per row
-  B->>B: move features into log rows (no copy)
+  B->>B: the request's own bytes go to the log
   B-->>W: ScoredBatch
   W->>A: record timings
   W->>A: record log rows (if sampled)
-  W-->>C: InferenceResponse { outputs: [OutputRow] }
+  W-->>C: InferenceResponse { row_ids, scores }
   A--)D: spawned send, once a buffer fills
 ```
 
@@ -92,8 +93,11 @@ let request_id = inference_req.request_id;
 let rows = inference_req.inputs;
 ```
 
-One request shape, so there is nothing to disambiguate. A caller that has already
-vectorized sends its vector as one feature whose value is a `FloatArray`.
+One request shape, so there is nothing to disambiguate. The features are a
+`map<string, Feature>`, one entry per feature holding the whole batch, turned into the
+service's own columns here — and because prost has already decoded each array into a `Vec`,
+that step *moves* the buffers rather than copying them. A caller that has already vectorized
+sends its vector as one entry of that width.
 
 **ELI5:** the counter reads the order. There is only one kind of order form, so there is no
 "which form is this?" step.
@@ -127,20 +131,19 @@ own signature, and refuses any disagreement between them.
 
 ```mermaid
 flowchart TB
-  cfg["vectorization_config"] --> q{"which field?"}
+  cfg["vectorization_config<br/><i>required</i>"] --> q{"which field?"}
   q -->|"feature_order"| v["one input<br/>all features concatenated<br/>float or double"]
-  q -->|"model_inputs"| f["one input per feature<br/>each with its own type"]
-  q -->|"absent"| p["every input fed by the<br/>feature of the same name"]
+  q -->|"model_inputs"| f["one input per feature<br/>each declared, each verbatim"]
   style v fill:#d4edda
   style f fill:#d4edda
-  style p fill:#cfe2ff
 ```
 
-One rule spans all three, read off the input's element type rather than configured
-separately:
+One rule spans both, and it is the shape rather than the input's type:
 
-> A **float** input is built by a transformation. Any other input is passed through from
-> the request **verbatim**.
+> With **`feature_order`**, features are transformed and concatenated. With
+> **`model_inputs`**, every input is passed through from the request **verbatim** — and a
+> feature the row leaves out is refused by name, because a dense tensor has nowhere to put
+> an absence.
 
 `resolve` settles each input's element type and its **width**, taking it from the model
 where the model fixes it and from the configuration where the model leaves the axis
@@ -149,11 +152,11 @@ is printed so a deployment mistake is visible at boot:
 
 ```
 hushar: model fraud-v3 loaded on onnxruntime/CPU (runtime 1.29.0)
-  inputs   : age FP32[1], city FP32[3], tags STRING[1]
+  inputs   : age FP32[1], city STRING[1], tags STRING[1]
   outputs  : score FP32[1]
   features : 3 binding(s)
-             age FP32[1] <- feature "age", transformed
-             city FP32[3] <- feature "city", transformed
+             age FP32[1] <- feature "age", verbatim
+             city STRING[1] <- feature "city", verbatim
              tags STRING[1] <- feature "tags", verbatim
 ```
 
@@ -169,13 +172,13 @@ not match, the shop does not open.
 ## Step 4 · Building the inputs
 
 [`score_features`](../hushar/src/inference/scoring.rs) →
-[`InputBuilder::build`](../hushar/src/inference/input_builder.rs), once per model input.
+[`InputBuilder::build_padded`](../hushar/src/inference/input_builder.rs), once per model input.
 
 ```mermaid
 flowchart TB
-  b["planned input"] --> s{"element type"}
-  s -->|"FP32 / FP64"| f["transform each feature<br/>concatenated, or one per input"]
-  s -->|"INT32 / INT64 / STRING"| p["read the feature verbatim<br/>strict about the variant"]
+  b["planned input"] --> s{"which source?"}
+  s -->|"Vectorised"| f["transform each feature<br/>and concatenate"]
+  s -->|"Feature"| p["read the column verbatim<br/>strict about the element type"]
   f --> t["check row width"]
   p --> t
   t --> ts["InputBatch::push<br/>width derived"]
@@ -183,20 +186,23 @@ flowchart TB
   style ts fill:#d4edda
 ```
 
-The features are recorded for the log **as received, before any transformation** — and it
-costs nothing. `score_features` takes `rows: Vec<InputRow>` by value, so once the inputs are
-built each row's feature map is *moved* into its log row; only `row_id` is duplicated. An
-earlier version deep-cloned every map up front, which is what owning the rows removed.
+The features reach the log **as received, before any transformation** — and no feature data
+is copied to get them there. The builder only ever *borrows* the decoded columns, copying a
+contiguous run out of each into the engine's buffer, so the columns are still intact
+afterwards; `into_wire` then moves each one straight back into the message it arrived in.
+The engine gets one memcpy per input, and the log gets the caller's own values: `city` as
+`"london"`, not as the one-hot vector the model saw.
 
-| Route | Element types | Missing feature |
+| Route | Configured by | Missing feature |
 |---|---|---|
-| transformed | `FP32`, `FP64` | falls back to the transformation's `default_val`, so a partial request still scores |
-| verbatim | `INT32`, `INT64`, `STRING` | falls back to `0` or the empty string, repeated to the input's width |
+| transformed | `feature_order` | falls back to the transformation's `default_val`, so a partial request still scores |
+| verbatim | `model_inputs` | refused, naming the input and the feature — a dense tensor has nowhere to put an absence. A column is present for the whole request or absent from it, so there is no per-row hole to report |
 
-Either route refuses a variant it cannot take rather than converting it: a float fed to an
-`INT64` input is refused, not rounded, and a `double_value` fed to a `standardization32`
-feature is refused, not narrowed. The one widening allowed is lossless — `INT64` also
-accepts an integer. The error names the row, so a bad request is traceable.
+Either route refuses a column type it cannot take rather than converting it: a float fed to
+an `INT64` input is refused, not rounded, and a `Float64` column fed to a
+`standardization32` feature is refused, not narrowed. The one widening allowed is
+lossless — `INT64` also accepts an integer. The error names the row, so a bad request is
+traceable.
 
 The `FP64` route is not the `FP32` route widened — `Identity` and the 64-bit scalers
 implement [`transform_f64`](../hushar/src/inference/transformations.rs) directly.
@@ -257,7 +263,7 @@ flowchart TB
   p --> c{"element type"}
   c -->|F32| f["ScoreType::FloatScores"]
   c -->|F64| d["ScoreType::DoubleScores"]
-  f --> r["OutputRow { row_id, scores }"]
+  f --> r["row_ids + one score buffer"]
   d --> r
   p --> l["InferenceLogRow<br/>scores as f32"]
   style x fill:#e2e3e5
@@ -273,7 +279,7 @@ the wrong rows.
 
 ```
 model output "output" FP32 [1, 2] = [0.9568927, 0.9568927]
-  → OutputRow { row_id: "row-0", scores: FloatScores([0.9568927, 0.9568927]) }
+  → row_ids: ["row-0"], scores: FloatScores([0.9568927, 0.9568927])
 ```
 
 **ELI5:** poured into a cup with your name on it.
@@ -288,10 +294,14 @@ Back in [`inference_service`](../hushar/src/main.rs):
 self.metrics_sink.record(&batch.timings);
 
 if logging == FeatureLogging::Record {
+    // The request's own columns, moved back into the wire's shape.
+    let (row_ids, features) = columns.into_wire();
     self.data_sink.record(InferenceLogBatch {
         request_id,
         model_id: self.model_id.clone(),
-        inference_log_rows: batch.logs,
+        row_ids,
+        features,
+        scores: Some(FloatArray { values: batch.log_scores }),
     });
 }
 ```
@@ -336,7 +346,7 @@ names in [`metrics.rs`](../hushar/src/io/metrics.rs):
 
 **`ToTensorTime` no longer measures anything meaningful.** The two stages were separate
 when tensor construction followed vectorization as its own step; they now happen together
-inside `InputBuilder::build`, so `vec_time` covers both. Worth knowing before reading a
+inside `InputBuilder::build_padded`, so `vec_time` covers both. Worth knowing before reading a
 dashboard.
 
 ---
@@ -345,13 +355,13 @@ dashboard.
 
 | # | Where | Function | Turns |
 |---|---|---|---|
-| 1 | `main.rs` | `inference_service` | gRPC → `Vec<InputRow>` |
+| 1 | `main.rs` | `inference_service` | gRPC → `RequestColumns` (one entry per feature) |
 | 2 | `main.rs` | `spawn_blocking` | async worker → blocking pool |
 | 3 | *startup* | `InputBuilder::resolve` | declared config + model signature → planned inputs |
-| 4 | `input_builder.rs` | `build` | features → one `Feature` per model input |
+| 4 | `input_builder.rs` | `build_padded` | columns + a row range → one `Feature` per model input |
 | 5 | `onnx_backend.rs` | `run` → `run_named` | `InputBatch` → `OrtValue` → `OutputBatch` |
-| 6 | `scoring.rs` | `to_score_type` | first output → `OutputRow` per row |
-| 7 | `main.rs` | `record` ×2 | timings and log rows → accumulators |
+| 6 | `scoring.rs` | `to_score_type` | first output → one `ScoreType` for the batch |
+| 7 | `main.rs` | `record` ×2 | timings, and the payload + scores → accumulators |
 
 Where each failure is caught, and whether it stops the server or one request, is tabulated
 in [configuration.md](configuration.md#what-is-checked-and-when).

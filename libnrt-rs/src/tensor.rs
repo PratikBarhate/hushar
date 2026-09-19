@@ -14,8 +14,8 @@ use crate::sys;
 /// Where a tensor's storage lives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Placement {
-    /// In Neuron device memory. This is what execution wants, and what
-    /// [`Model::allocate_io`](crate::Model::allocate_io) uses.
+    /// In Neuron device memory. Required for execution, and what
+    /// [`Model::allocate_io`](crate::Model::allocate_io) allocates.
     #[default]
     Device,
     /// In host memory.
@@ -33,8 +33,7 @@ impl Placement {
 
 /// A NEFF tensor's element type.
 ///
-/// Values are not contiguous in the C header, so this maps them explicitly
-/// rather than casting.
+/// Values are not contiguous in the C header, so they are mapped explicitly, not cast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataType {
     Uint8,
@@ -93,16 +92,18 @@ impl DataType {
 
 /// A tensor owned by the Neuron runtime.
 ///
-/// Holds an `Arc<Runtime>` so the runtime cannot be closed underneath it.
+/// Holds an `Arc<Runtime>` so the runtime cannot be closed underneath it, and frees the
+/// libnrt allocation on drop.
+///
+/// `Send` is sound because a tensor is an opaque libnrt allocation reached only through
+/// libnrt calls. It is deliberately not `Sync`: the `&mut self` on the write methods is
+/// what prevents two threads mutating the same tensor at once.
 pub struct Tensor {
     runtime: Arc<Runtime>,
     ptr: *mut sys::nrt_tensor_t,
     name: String,
 }
 
-// SAFETY: a tensor is an opaque libnrt allocation reached only through libnrt
-// calls. Moving one between threads is fine; the `&mut self` on `write` is what
-// prevents two threads mutating the same tensor at once.
 unsafe impl Send for Tensor {}
 
 impl Tensor {
@@ -119,9 +120,6 @@ impl Tensor {
         })?;
         let mut ptr: *mut sys::nrt_tensor_t = ptr::null_mut();
 
-        // SAFETY: `c_name` is a valid NUL-terminated string alive for the call,
-        // and `ptr` is a valid out-parameter. On success libnrt writes an owned
-        // tensor there, freed in `Drop`.
         unsafe {
             let status = (runtime.symbols.nrt_tensor_allocate)(
                 placement.to_raw(),
@@ -147,14 +145,14 @@ impl Tensor {
 
     /// The tensor's size in bytes, as libnrt reports it.
     pub fn size(&self) -> usize {
-        // SAFETY: `ptr` is a live tensor allocation.
         unsafe { (self.runtime.symbols.nrt_tensor_get_size)(self.ptr) }
     }
 
     /// Copies `data` into the tensor at `offset` bytes.
     ///
-    /// Rejects a write that would run past the end of the tensor rather than
-    /// letting libnrt do it.
+    /// # Errors
+    ///
+    /// [`Error::SizeMismatch`] if the write would run past the end of the tensor.
     pub fn write_bytes(&mut self, offset: usize, data: &[u8]) -> Result<()> {
         let size = self.size();
         if offset.saturating_add(data.len()) > size {
@@ -165,8 +163,6 @@ impl Tensor {
             });
         }
 
-        // SAFETY: `data` is valid for `data.len()` bytes, and the bounds check
-        // above guarantees `offset + len` stays inside the tensor.
         unsafe {
             let status = (self.runtime.symbols.nrt_tensor_write)(
                 self.ptr,
@@ -197,8 +193,6 @@ impl Tensor {
             });
         }
 
-        // SAFETY: `buf` is valid for `buf.len()` bytes and uniquely borrowed;
-        // the bounds check keeps the read inside the tensor.
         unsafe {
             let status = (self.runtime.symbols.nrt_tensor_read)(
                 self.ptr,
@@ -212,10 +206,9 @@ impl Tensor {
 
     /// Copies a slice of `f32` into the tensor, starting at byte 0.
     ///
-    /// This is the shape hushar's feature vectors arrive in.
+    /// `f32` has no padding or invalid bit patterns, so viewing the slice as bytes is
+    /// sound.
     pub fn write_f32(&mut self, data: &[f32]) -> Result<()> {
-        // SAFETY: `f32` has no padding or invalid bit patterns, so viewing the
-        // slice as bytes is sound, and the byte slice borrows `data` for the call.
         let bytes = unsafe {
             std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), std::mem::size_of_val(data))
         };
@@ -224,7 +217,9 @@ impl Tensor {
 
     /// Reads the tensor as `f32` values.
     ///
-    /// Fails if the tensor's size is not a whole number of `f32`s.
+    /// # Errors
+    ///
+    /// [`Error::SizeMismatch`] if the tensor's size is not a whole number of `f32`s.
     pub fn read_f32(&self) -> Result<Vec<f32>> {
         let size = self.size();
         if !size.is_multiple_of(std::mem::size_of::<f32>()) {
@@ -236,8 +231,6 @@ impl Tensor {
         }
 
         let mut values = vec![0f32; size / std::mem::size_of::<f32>()];
-        // SAFETY: `values` is uniquely borrowed and exactly `size` bytes long, so
-        // the byte view aliases only memory this call owns.
         let bytes =
             unsafe { std::slice::from_raw_parts_mut(values.as_mut_ptr().cast::<u8>(), size) };
         self.read_bytes_into(0, bytes)?;
@@ -259,34 +252,34 @@ impl std::fmt::Debug for Tensor {
 }
 
 impl Drop for Tensor {
+    /// Frees the libnrt tensor allocation.
+    ///
+    /// `nrt_tensor_free` takes a pointer to the handle and nulls it, so the allocation is
+    /// released exactly once.
     fn drop(&mut self) {
-        // SAFETY: `nrt_tensor_free` takes a pointer to the handle and nulls it.
-        // `self.ptr` was produced by `nrt_tensor_allocate` and is freed once.
         unsafe { (self.runtime.symbols.nrt_tensor_free)(&mut self.ptr) };
     }
 }
 
-/// The named bundle of tensors `nrt_execute` reads inputs from and writes
-/// outputs to.
+/// The named bundle of tensors `nrt_execute` reads inputs from and writes outputs to.
 ///
-/// The set only refers to its tensors; it does not own them. `TensorSet` keeps
-/// them alive by holding them, so a tensor cannot be dropped while the set still
-/// points at it.
+/// The libnrt set only refers to its tensors; this type holds them, so a tensor cannot be
+/// dropped while the set still points at it.
+///
+/// `Send` is sound because the set and the tensors it refers to are opaque libnrt
+/// allocations reached only through libnrt calls, and mutated only behind `&mut self`.
 pub struct TensorSet {
     runtime: Arc<Runtime>,
     ptr: *mut sys::nrt_tensor_set_t,
     tensors: Vec<Tensor>,
 }
 
-// SAFETY: an opaque libnrt allocation plus the tensors it refers to, all reached
-// only through libnrt calls, and mutated only behind `&mut self`.
 unsafe impl Send for TensorSet {}
 
 impl TensorSet {
     /// Creates an empty tensor set.
     pub fn new(runtime: Arc<Runtime>) -> Result<Self> {
         let mut ptr: *mut sys::nrt_tensor_set_t = ptr::null_mut();
-        // SAFETY: valid out-parameter; on success libnrt writes an owned set.
         unsafe {
             let status = (runtime.symbols.nrt_allocate_tensor_set)(&mut ptr);
             runtime.symbols.check("nrt_allocate_tensor_set", status)?;
@@ -300,16 +293,14 @@ impl TensorSet {
 
     /// Adds `tensor` under `name`, transferring ownership to the set.
     ///
-    /// `name` must match the NEFF's tensor name; that is how libnrt binds the
-    /// buffer to a graph input or output.
+    /// `name` must match the NEFF's tensor name; that is how libnrt binds the buffer to a
+    /// graph input or output. libnrt stores the tensor pointer, so the tensor is not
+    /// dropped until after the set is destroyed.
     pub fn insert(&mut self, name: &str, tensor: Tensor) -> Result<()> {
         let c_name = CString::new(name).map_err(|_| Error::InteriorNul {
             context: "tensor set entry name",
         })?;
 
-        // SAFETY: the set and tensor are both live, and `c_name` is valid for the
-        // call. libnrt stores the tensor pointer, which stays valid because the
-        // tensor is moved into `self.tensors` immediately below.
         unsafe {
             let status = (self.runtime.symbols.nrt_add_tensor_to_tensor_set)(
                 self.ptr,
@@ -354,12 +345,12 @@ impl std::fmt::Debug for TensorSet {
 }
 
 impl Drop for TensorSet {
+    /// Destroys the libnrt set.
+    ///
+    /// Runs before `self.tensors` is dropped, so the set never refers to freed tensors.
+    /// `nrt_destroy_tensor_set` takes a pointer to the handle and nulls it, so the set is
+    /// destroyed exactly once.
     fn drop(&mut self) {
-        // Destroy the set before the tensors it points at, which happens
-        // naturally: this runs before `self.tensors` is dropped.
-        //
-        // SAFETY: `nrt_destroy_tensor_set` takes a pointer to the handle and
-        // nulls it. `self.ptr` came from `nrt_allocate_tensor_set`.
         unsafe { (self.runtime.symbols.nrt_destroy_tensor_set)(&mut self.ptr) };
     }
 }

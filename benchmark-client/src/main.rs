@@ -3,20 +3,15 @@
 
 //! Offers a fixed request rate at a running server and reports what came back.
 //!
-//! Local by default -- percentiles on stdout, no credentials needed. CloudWatch is
-//! opt-in with `--cloudwatch-namespace`, so a laptop run needs nothing set up. The
-//! server makes the same choice the same way, though from `metrics.cloudwatch_namespace`
-//! in its configuration rather than a flag: it is a load generator, not a deployment.
+//! Percentiles go to stdout and need no credentials. CloudWatch is opt-in with
+//! `--cloudwatch-namespace`.
 //!
-//! Features are generated from the model configuration the server was started with,
-//! rather than hard-coded here. A client that invents its own feature names sends
-//! values that match nothing, every feature falls back to its default, and the
-//! benchmark measures a request path it will never see in production.
+//! Features are generated from the model configuration the server was started with, so
+//! the values sent match the feature names and transformations the server expects.
 //!
-//! A model that does its own featurization has no feature configuration to read -- its
-//! inputs *are* the features -- so for those `--feature-spec` names the file written
-//! beside the model, which says the same thing in the only terms a generator needs: a
-//! range, a width, or a word list.
+//! A configuration that declares named `model_inputs` feeds them verbatim and so names
+//! no transformation to generate from. `--feature-spec` supplies the values for those:
+//! a range, a width, or a word list per feature.
 //!
 //! ```bash
 //! cargo run --release -p benchmark-client -- \
@@ -25,7 +20,6 @@
 //! ```
 
 use std::{
-    collections::HashMap,
     path::PathBuf,
     sync::{
         Arc,
@@ -34,10 +28,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use benchmark_client::hushar_proto::{
-    DataType, FloatArray, InferenceRequest, InputRow, data_type::DataType as Value,
-    hushar_client::HusharClient,
-};
+use benchmark_client::hushar_proto::Feature;
+use benchmark_client::hushar_proto::{InferenceRequest, hushar_client::HusharClient};
+use benchmark_client::proto_columns;
 use clap::Parser;
 use rand::RngExt;
 use tokio::sync::Semaphore;
@@ -52,9 +45,8 @@ struct Args {
 
     /// Requests offered per second.
     ///
-    /// This is the rate the client *attempts*, not the rate it achieves. When the
-    /// server cannot keep up the shortfall is reported rather than hidden, because a
-    /// benchmark that quietly slows its own generator measures the generator.
+    /// The rate the client *attempts*, not the rate it achieves. A shortfall is
+    /// reported as shed rather than hidden.
     #[arg(long, env = "BENCH_TPS", default_value_t = 500)]
     tps: u32,
 
@@ -66,7 +58,7 @@ struct Args {
     ///
     /// The first requests to a freshly loaded model are not representative: an
     /// execution provider may compile the graph on first use, and nothing is in cache
-    /// yet. TensorRT in particular pays seconds for its first inference.
+    /// yet.
     #[arg(long, env = "BENCH_WARMUP_SECS", default_value_t = 10)]
     warmup_secs: u64,
 
@@ -76,20 +68,16 @@ struct Args {
 
     /// Requests allowed in flight at once. Defaults to four seconds' worth.
     ///
-    /// In flight has to cover `tps × latency`, so a fixed number throttles the high
-    /// rates and a number equal to `tps` permits only a one-second response. Left
-    /// unset it is `tps × 4`, which keeps this generator from being the bottleneck --
-    /// the server is what is being measured. Set it to make the cap deliberate.
+    /// In flight has to cover `tps × latency`, so a number equal to `tps` permits only
+    /// a one-second response. Left unset it is `tps × 4`, with a floor of 8. Set it to
+    /// make the cap deliberate.
     #[arg(long, env = "BENCH_CONCURRENCY")]
     concurrency: Option<usize>,
 
     /// Ask the server for one model by name, instead of letting it choose.
     ///
-    /// A server mid-roll-out splits unnamed requests between its two arms by the
-    /// percentage in its configuration. Naming a model overrides that, which is how a
-    /// caller that already decided -- from an experiment bucket, say -- keeps the two
-    /// decisions from disagreeing. Unset leaves the choice to the server, which is what
-    /// a benchmark of the split wants.
+    /// Unset leaves the choice to the server, which splits unnamed requests between a
+    /// roll-out's two arms by the percentage in its configuration.
     #[arg(long, env = "BENCH_MODEL_ID")]
     model_id: Option<String>,
 
@@ -97,19 +85,11 @@ struct Args {
     #[arg(long, env = "BENCH_MODEL_CONFIG")]
     model_config: PathBuf,
 
-    /// Vocabulary for text inputs the model embeds itself.
-    ///
-    /// Only needed for a configuration with string inputs. Without it those features
-    /// are sent as words the model has never seen, which costs the same to look up but
-    /// exercises only the out-of-vocabulary row.
-    #[arg(long, env = "BENCH_VOCABULARY")]
-    vocabulary: Option<PathBuf>,
-
     /// What to send for each feature, for a model that does its own featurization.
     ///
-    /// Required exactly when the model configuration has no `vectorization_config`:
-    /// there is then nothing in it that names a feature, because the graph's inputs are
-    /// the features. Ignored otherwise, where the configuration is the better authority.
+    /// Required exactly when the model configuration declares named `model_inputs`,
+    /// which are fed verbatim and so name no transformation. Ignored otherwise, where
+    /// the configuration is the better authority.
     #[arg(long, env = "BENCH_FEATURE_SPEC")]
     feature_spec: Option<PathBuf>,
 
@@ -138,19 +118,33 @@ enum Generator {
 }
 
 impl Generator {
-    fn sample(&self, rng: &mut impl RngExt) -> DataType {
-        let value = match self {
-            Self::Choice(words) => {
-                Value::StringValue(words[rng.random_range(0..words.len())].clone())
-            }
-            Self::Float(low, high) => Value::FloatValue(rng.random_range(*low..*high)),
-            Self::Double(low, high) => Value::DoubleValue(rng.random_range(*low..*high)),
-            Self::FloatVector(width) => Value::FloatArray(FloatArray {
-                values: (0..*width).map(|_| rng.random_range(-3.0..3.0)).collect(),
-            }),
-        };
-        DataType {
-            data_type: Some(value),
+    /// One whole feature: this feature's values for every row, back to back, with the
+    /// width that says where each row ends.
+    ///
+    /// A feature `width` wide over `rows` rows carries `rows × width` values. The name is
+    /// not here: it is the key this feature is filed under.
+    fn feature(&self, rows: usize, rng: &mut impl RngExt) -> Feature {
+        match self {
+            Self::Choice(words) => proto_columns::strings(
+                1,
+                (0..rows)
+                    .map(|_| words[rng.random_range(0..words.len())].clone())
+                    .collect(),
+            ),
+            Self::Float(low, high) => proto_columns::floats(
+                1,
+                (0..rows).map(|_| rng.random_range(*low..*high)).collect(),
+            ),
+            Self::Double(low, high) => proto_columns::doubles(
+                1,
+                (0..rows).map(|_| rng.random_range(*low..*high)).collect(),
+            ),
+            Self::FloatVector(width) => proto_columns::floats(
+                *width,
+                (0..rows * width)
+                    .map(|_| rng.random_range(-3.0..3.0))
+                    .collect(),
+            ),
         }
     }
 }
@@ -159,27 +153,31 @@ impl Generator {
 ///
 /// The transformation's own type decides the value: a one-hot wants a category, a
 /// 64-bit scaler wants a double, an identity wants as many numbers as its default is
-/// wide. A named string input has no transformation at all -- it reaches the model
-/// verbatim -- so its words come from the vocabulary file instead.
+/// wide, and a standardization spans three deviations either side of its mean so the
+/// scaled value lands in the range the model was trained to see.
 ///
-/// A configuration with no `vectorization_config` is a model that featurizes itself, and
-/// then there is nothing here to read: `feature_spec` says what to send instead.
+/// # Arguments
+///
+/// * `config` - the model configuration the server was started with
+/// * `feature_spec` - what to send per feature, read only when the configuration
+///   declares named `model_inputs` and so transforms nothing
+///
+/// # Errors
+///
+/// Returns an error when the configuration has no `vectorization_config`, when a named
+/// feature has no transformation or an unknown one, or when the configuration declares
+/// `model_inputs` and no `feature_spec` was given.
 fn generators(
     config: &serde_json::Value,
-    vocabulary: &HashMap<String, Vec<String>>,
     feature_spec: Option<&serde_json::Value>,
 ) -> Result<Vec<(String, Generator)>, String> {
     let Some(vectorization) = config.get("vectorization_config") else {
-        return match feature_spec {
-            Some(spec) => from_feature_spec(spec),
-            None => Err(
-                "the model configuration has no vectorization_config, so it names no \
-                 features -- this model does its own featurization. Pass --feature-spec \
-                 with the file written beside it, such as \
-                 benchmark-data/generated/bench_raw_feature_spec.json"
-                    .to_owned(),
-            ),
-        };
+        return Err(
+            "the model configuration has no \"vectorization_config\", which hushar \
+             requires -- it would refuse to start on this file. Declare \"model_inputs\" \
+             to feed one input per feature, or \"feature_order\" to concatenate them."
+                .to_owned(),
+        );
     };
     let transformations = vectorization
         .get("feature_transformations")
@@ -234,8 +232,6 @@ fn generators(
             "min_max_scaling64" => {
                 Generator::Double(number(spec, "min", 0.0), number(spec, "max", 1.0))
             }
-            // Three standard deviations either side, so the scaled value lands in the
-            // range the model was trained to see rather than always near zero.
             "standardization32" => {
                 let (mean, deviation) = (number(spec, "mean", 0.0), number(spec, "std_dev", 1.0));
                 Generator::Float(
@@ -251,9 +247,6 @@ fn generators(
         })
     };
 
-    // Which features to send follows the shape of the configuration, exactly as it
-    // does for the server: an order for the vectorised shape, a set of names for the
-    // named one.
     if let Some(order) = vectorization
         .get("feature_order")
         .and_then(|o| o.as_array())
@@ -269,23 +262,16 @@ fn generators(
         .get("model_inputs")
         .and_then(|i| i.as_object())
         .ok_or("the configuration declares neither feature_order nor model_inputs")?;
-    inputs
-        .iter()
-        .map(|(name, spec)| {
-            let data_type = spec
-                .get("data_type")
-                .and_then(|t| t.as_str())
-                .unwrap_or("float");
-            let generator = if data_type.starts_with("string") {
-                Generator::Choice(vocabulary.get(name).cloned().unwrap_or_else(|| {
-                    vec![format!("{name}-unseen-0"), format!("{name}-unseen-1")]
-                }))
-            } else {
-                from_transformation(name)?
-            };
-            Ok((name.clone(), generator))
-        })
-        .collect()
+    match feature_spec {
+        Some(spec) => from_feature_spec(spec),
+        None => Err(format!(
+            "the model configuration declares {} named inputs, which are fed verbatim, \
+             so it says nothing about what values to send. Pass --feature-spec with the \
+             file written beside it, such as \
+             benchmark-data/generated/bench_named_feature_spec.json",
+            inputs.len()
+        )),
+    }
 }
 
 /// Reads a feature specification into one generator per feature.
@@ -304,10 +290,11 @@ fn generators(
 /// `float` against `double` is not a precision preference: it is which protobuf field
 /// the value travels in, and an FP64 model input takes a double and refuses a float.
 ///
-/// Written by the model generator from the same schema the model was built from, so the
-/// values land in the range the graph's own scaling was defined for. A missing bound is
-/// an error rather than a guess -- a silently substituted range would make the run
-/// measure something other than what the file describes.
+/// # Errors
+///
+/// Returns an error when the specification is not a JSON object, or when an entry has
+/// no `kind`, an unknown `kind`, or is missing a bound, a `width`, or a non-empty
+/// `words` list.
 fn from_feature_spec(spec: &serde_json::Value) -> Result<Vec<(String, Generator)>, String> {
     let features = spec
         .as_object()
@@ -358,6 +345,11 @@ fn from_feature_spec(spec: &serde_json::Value) -> Result<Vec<(String, Generator)
 /// One request, with fresh values for every feature of every row.
 ///
 /// `model_id` empty leaves the choice to the server's configured split.
+///
+/// # Panics
+///
+/// Panics if the generated features do not cover the same rows, which would mean two
+/// generators disagreed about the row count.
 fn request(
     id: u64,
     rows: usize,
@@ -365,18 +357,15 @@ fn request(
     model_id: &str,
 ) -> InferenceRequest {
     let mut rng = rand::rng();
+    let features: Vec<(String, Feature)> = generators
+        .iter()
+        .map(|(name, generator)| (name.clone(), generator.feature(rows, &mut rng)))
+        .collect();
     InferenceRequest {
         request_id: format!("bench-{id}"),
         model_id: model_id.to_owned(),
-        inputs: (0..rows)
-            .map(|row| InputRow {
-                row_id: format!("row-{row}"),
-                features: generators
-                    .iter()
-                    .map(|(name, generator)| (name.clone(), generator.sample(&mut rng)))
-                    .collect(),
-            })
-            .collect(),
+        row_ids: (0..rows).map(|row| format!("row-{row}")).collect(),
+        features: proto_columns::encode(features).expect("every generator covers the same rows"),
     }
 }
 
@@ -391,8 +380,11 @@ struct Percentiles {
 }
 
 impl Percentiles {
-    /// Sorts in place and reads the positions off. `None` when nothing was measured,
-    /// which is a result worth distinguishing from zero latency.
+    /// Sorts `latencies` in place and reads the percentile positions off.
+    ///
+    /// # Returns
+    ///
+    /// `None` when nothing was measured, which is distinct from zero latency.
     fn of(latencies: &mut [f64]) -> Option<Self> {
         if latencies.is_empty() {
             return None;
@@ -410,6 +402,16 @@ impl Percentiles {
     }
 }
 
+/// Offers the configured rate for the warmup and then the measured window, and reports.
+///
+/// The generator is open loop: a request that finds no permit free is counted as shed
+/// rather than queued. A response whose row count does not match the request counts as
+/// a failure. Only requests begun after the warmup are measured.
+///
+/// # Errors
+///
+/// Returns an error when the configuration files cannot be read or parsed, when the
+/// server cannot be reached, or when the run produced no measurements.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -417,10 +419,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&args.model_config)?)
             .map_err(|e| format!("{}: {e}", args.model_config.display()))?;
-    let vocabulary: HashMap<String, Vec<String>> = match &args.vocabulary {
-        Some(path) => serde_json::from_str(&std::fs::read_to_string(path)?)?,
-        None => HashMap::new(),
-    };
     let feature_spec: Option<serde_json::Value> = match &args.feature_spec {
         Some(path) => Some(
             serde_json::from_str(&std::fs::read_to_string(path)?)
@@ -428,9 +426,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         None => None,
     };
-    let generators = Arc::new(
-        generators(&config, &vocabulary, feature_spec.as_ref()).map_err(|e| e.to_string())?,
-    );
+    let generators =
+        Arc::new(generators(&config, feature_spec.as_ref()).map_err(|e| e.to_string())?);
 
     let model_id = config
         .get("model_id")
@@ -455,9 +452,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_deref()
             .map_or("whichever the server's split chooses", |m| m)
     );
-    // Sized from the rate unless pinned, and reported either way: the cap decides
-    // whether `shed` is the client running out or the server refusing, and a reader
-    // cannot tell those apart without knowing which of the two produced this number.
     let concurrency = args
         .concurrency
         .unwrap_or_else(|| ((args.tps as usize).saturating_mul(4)).max(8));
@@ -472,23 +466,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let client = HusharClient::connect(args.server.clone()).await?;
-    // Shared rather than cloned per request: every request in a run asks for the same
-    // model, and an empty string is the "server decides" case.
     let requested_model: Arc<str> = Arc::from(args.model_id.clone().unwrap_or_default());
     let permits = Arc::new(Semaphore::new(concurrency));
-    // Paired with the model that answered, so a roll-out's arms can be reported
-    // separately. The server chooses when the request does not name one, so this is the
-    // only place the split can be observed from the caller's side.
     let latencies = Arc::new(std::sync::Mutex::new(Vec::<(String, f64)>::new()));
-    let (sent, failed, shed) = (
+    let (sent, failed, shed, wrong_rows) = (
+        Arc::new(AtomicU64::new(0)),
         Arc::new(AtomicU64::new(0)),
         Arc::new(AtomicU64::new(0)),
         Arc::new(AtomicU64::new(0)),
     );
 
-    // A 1 ms tick with a fractional budget rather than one timer per request: at any
-    // useful rate the per-request interval is below the timer's resolution, so ticking
-    // per request would silently offer less load than asked for.
     let mut ticker = tokio::time::interval(Duration::from_millis(1));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
     let per_tick = f64::from(args.tps) / 1000.0;
@@ -510,20 +497,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while credit >= 1.0 {
             credit -= 1.0;
             id += 1;
-            // An open-loop generator: when nothing is free the request is counted as
-            // shed rather than queued, so the offered rate stays honest and the
-            // shortfall shows up in the report.
             let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
                 shed.fetch_add(1, Ordering::Relaxed);
                 continue;
             };
             let (mut client, generators) = (client.clone(), Arc::clone(&generators));
             let model_for_task = Arc::clone(&requested_model);
-            let (latencies, sent, failed) = (
+            let (latencies, sent, failed, wrong_rows) = (
                 Arc::clone(&latencies),
                 Arc::clone(&sent),
                 Arc::clone(&failed),
+                Arc::clone(&wrong_rows),
             );
+            let rows_per_request = args.rows;
             let measuring_from = start + warmup;
             tokio::spawn(async move {
                 let payload = request(id, args.rows, &generators, &model_for_task);
@@ -535,9 +521,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         failed.fetch_add(1, Ordering::Relaxed);
                     }
                     Ok(response) => {
+                        let response = response.into_inner();
+                        if response.row_ids.len() != rows_per_request {
+                            failed.fetch_add(1, Ordering::Relaxed);
+                            wrong_rows.fetch_add(1, Ordering::Relaxed);
+                            drop(permit);
+                            return;
+                        }
                         sent.fetch_add(1, Ordering::Relaxed);
                         if began >= measuring_from {
-                            let served_by = response.into_inner().model_id;
+                            let served_by = response.model_id;
                             latencies
                                 .lock()
                                 .expect("latencies")
@@ -550,12 +543,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Let what is in flight finish, so the last requests are not counted as failures.
     let _ = permits.acquire_many(concurrency as u32).await;
 
     let served = std::mem::take(&mut *latencies.lock().expect("latencies"));
-    // Grouped before the overall numbers are taken, because a split run's headline is
-    // the pair rather than the average of the two.
     let mut per_arm: std::collections::BTreeMap<String, Vec<f64>> = Default::default();
     for (arm, elapsed) in &served {
         per_arm.entry(arm.clone()).or_default().push(*elapsed);
@@ -579,6 +569,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Prints the result, and sends it to CloudWatch when a namespace was given.
+///
+/// The per-model table appears only when more than one model answered; its share is the
+/// split as the caller observed it, which should agree with the configured percentage.
+///
+/// # Errors
+///
+/// Returns an error when nothing was measured, or when the CloudWatch call fails.
 async fn report(
     args: &Args,
     measured: &mut [f64],
@@ -612,10 +609,6 @@ async fn report(
     println!("           p99  : {:>9.2} ms", p.p99);
     println!("           max  : {:>9.2} ms", p.max);
     println!("           mean : {:>9.2} ms", p.mean);
-    // Only when the server actually split, so an ordinary run's report is unchanged.
-    // The share is the split as the caller observed it, which is the number worth
-    // checking against the configured percentage -- they should agree, and if they do
-    // not, the arms are not comparable.
     if per_arm.len() > 1 {
         println!();
         println!(
@@ -659,7 +652,13 @@ async fn report(
     Ok(())
 }
 
-/// Sends the same numbers to CloudWatch, for a run that is not on a laptop.
+/// Sends the percentiles and the achieved rate to CloudWatch under `namespace`.
+///
+/// Credentials and region come from the environment.
+///
+/// # Errors
+///
+/// Returns an error when the `PutMetricData` call fails.
 async fn emit_cloudwatch(
     namespace: &str,
     percentiles: &Percentiles,

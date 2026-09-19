@@ -1,15 +1,17 @@
 // Copyright (c) 2025 Pratik Barhate
 // Licensed under the MIT License. See the LICENSE file in the project root for more information.
 
-//! Sends one request to a running server and prints the scores.
+//! Sends one single-row request to a running server and prints the scores.
 //!
-//! The benchmark client measures throughput and needs CloudWatch to report it. This
-//! needs nothing but a server, which makes it the thing to reach for when checking a
-//! deployment by hand.
+//! The features to send are given by environment variable. Valid names are the ones in
+//! the server's vectorization configuration, which it prints at startup.
 //!
-//! The features to send are given on the command line, because a client already knows
-//! them: they are in the vectorization configuration it was deployed alongside, and the
-//! server prints the same mapping at startup.
+//! * `SERVER_ADDR` - the server to call. Defaults to `http://127.0.0.1:50051`.
+//! * `SMOKE_FEATURES` - the features, as `name=number,name:text` pairs separated by
+//!   commas. Defaults to `f1=1.0,f2=2.0,f3=3.0`.
+//! * `SMOKE_MODEL` - ask for one model by name. Empty, which is the default, leaves the
+//!   choice to the server: with a roll-out configured it applies its split, and the
+//!   response says which arm answered.
 //!
 //! ```bash
 //! # name=value for a number, name:value for a string.
@@ -18,12 +20,12 @@
 //!   SERVER_ADDR=http://127.0.0.1:50251 cargo run -p benchmark-client --example smoke
 //! ```
 
-use std::collections::HashMap;
-
+use benchmark_client::hushar_proto::Feature;
 use benchmark_client::hushar_proto::{
-    DataType, InferenceRequest, InputRow, OutputRow, data_type::DataType as Value,
-    hushar_client::HusharClient, score_type::ScoreType as Scores,
+    InferenceRequest, InferenceResponse, hushar_client::HusharClient,
+    score_type::ScoreType as Scores,
 };
+use benchmark_client::proto_columns;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,61 +40,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let response = client
         .inference_service(InferenceRequest {
             request_id: "smoke".into(),
-            // Empty leaves the choice to the server: with a roll-out configured it
-            // applies its split, and the response says which arm answered. SMOKE_MODEL
-            // asks for one by name instead.
             model_id: std::env::var("SMOKE_MODEL").unwrap_or_default(),
-            inputs: vec![InputRow {
-                row_id: "row-0".into(),
-                features,
-            }],
+            row_ids: vec!["row-0".into()],
+            features: proto_columns::encode(features)?,
         })
         .await?
         .into_inner();
 
-    // Named, because a server mid-roll-out chose this itself and the caller cannot
-    // otherwise tell which of its two models answered.
     println!("\nserved by: {}", response.model_id);
     println!("scored:");
-    for row in &response.outputs {
-        println!("  {}", describe(row));
+    for line in describe(&response) {
+        println!("  {line}");
     }
     println!("\nok");
     Ok(())
 }
 
-/// Reads `name=number,name:text` into feature values.
+/// Reads `name=number,name:text` into one single-value column per feature.
 ///
-/// Two separators rather than guessing, because `city=1` and `city:1` mean different
-/// things to a one-hot transformation, and a client that meant text should not have it
-/// silently parsed into a float.
-fn parse_features(spec: &str) -> Result<HashMap<String, DataType>, String> {
-    let mut features = HashMap::new();
+/// The separator picks the type: `=` is a float, `:` is a string. `city=1` and `city:1`
+/// mean different things to a one-hot transformation, so neither is guessed.
+///
+/// # Errors
+///
+/// Returns an error when an entry is neither form, when a `=` value does not parse as a
+/// number, or when no features were supplied at all.
+fn parse_features(spec: &str) -> Result<Vec<(String, Feature)>, String> {
+    let mut features = Vec::new();
     for entry in spec.split(',').map(str::trim).filter(|e| !e.is_empty()) {
-        let value = if let Some((name, text)) = entry.split_once(':') {
-            features.insert(
+        if let Some((name, text)) = entry.split_once(':') {
+            features.push((
                 name.trim().to_owned(),
-                DataType {
-                    data_type: Some(Value::StringValue(text.trim().to_owned())),
-                },
-            );
-            continue;
+                proto_columns::strings(1, vec![text.trim().to_owned()]),
+            ));
         } else if let Some((name, number)) = entry.split_once('=') {
             let parsed: f32 = number.trim().parse().map_err(|e| {
                 format!("feature {name:?} has value {number:?}, which is not a number: {e}")
             })?;
-            (name.trim().to_owned(), parsed)
+            features.push((
+                name.trim().to_owned(),
+                proto_columns::floats(1, vec![parsed]),
+            ));
         } else {
             return Err(format!(
                 "{entry:?} is neither name=number nor name:text; those are the two forms"
             ));
-        };
-        features.insert(
-            value.0,
-            DataType {
-                data_type: Some(Value::FloatValue(value.1)),
-            },
-        );
+        }
     }
     if features.is_empty() {
         return Err("no features supplied; set SMOKE_FEATURES".into());
@@ -100,15 +93,43 @@ fn parse_features(spec: &str) -> Result<HashMap<String, DataType>, String> {
     Ok(features)
 }
 
-/// Renders one scored row.
+/// Renders each scored row as one line.
 ///
-/// The populated `oneof` variant *is* the precision, so there is no separate label that
-/// could disagree with the values.
-fn describe(row: &OutputRow) -> String {
-    let (kind, body) = match row.scores.as_ref().and_then(|s| s.score_type.as_ref()) {
-        Some(Scores::FloatScores(a)) => ("FP32", format!("{:?}", a.values)),
-        Some(Scores::DoubleScores(a)) => ("FP64", format!("{:?}", a.values)),
-        None => ("none", "[]".to_owned()),
-    };
-    format!("{} {kind} = {body}", row.row_id)
+/// Scores arrive as one buffer for the whole batch, so each row's slice is
+/// `values / rows` wide. The populated `oneof` variant is the precision, FP32 or FP64.
+///
+/// # Returns
+///
+/// One line per row, or a single line describing the mismatch when the value count is
+/// not a whole number of rows.
+fn describe(response: &InferenceResponse) -> Vec<String> {
+    let rows = response.row_ids.len();
+    let (kind, values): (&str, Vec<String>) =
+        match response.scores.as_ref().and_then(|s| s.score_type.as_ref()) {
+            Some(Scores::FloatScores(a)) => {
+                ("FP32", a.values.iter().map(|v| format!("{v:?}")).collect())
+            }
+            Some(Scores::DoubleScores(a)) => {
+                ("FP64", a.values.iter().map(|v| format!("{v:?}")).collect())
+            }
+            None => ("none", Vec::new()),
+        };
+    if rows == 0 || values.len() % rows != 0 {
+        return vec![format!(
+            "{kind} = {} value(s) for {rows} row(s), which is not a whole number of rows",
+            values.len()
+        )];
+    }
+    let width = values.len() / rows;
+    response
+        .row_ids
+        .iter()
+        .enumerate()
+        .map(|(r, id)| {
+            format!(
+                "{id} {kind} = [{}]",
+                values[r * width..(r + 1) * width].join(", ")
+            )
+        })
+        .collect()
 }

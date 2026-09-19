@@ -35,59 +35,105 @@ use crate::inference::{InferenceBackend, OnnxRuntimeBackend};
 pub fn load_onnx_model(
     model_bytes: &[u8],
     execution_provider: &str,
-    intra_op_threads: i32,
+    parallelism: crate::config::Parallelism,
     session_options: &[(String, String)],
     mini_batch: Option<crate::inference::scoring::MiniBatch>,
 ) -> Result<Arc<dyn InferenceBackend>, crate::inference::InferenceError> {
     let provider: ExecutionProvider = execution_provider.parse()?;
-    let threads = (intra_op_threads > 0).then_some(intra_op_threads);
-    let backend =
-        OnnxRuntimeBackend::load(model_bytes, &provider, threads, mini_batch, session_options)?;
+    let backend = OnnxRuntimeBackend::load(
+        model_bytes,
+        &provider,
+        parallelism,
+        mini_batch,
+        session_options,
+    )?;
     Ok(Arc::new(backend))
 }
 
 /// Loads the same model into one session per entry in `session_options`.
 ///
-/// One session per pool, rather than one session shared by every caller. The intra-op pool
-/// belongs to the session, so this is the only way to give concurrent requests pools that
-/// do not contend — and each entry carries its own
-/// `session.intra_op_thread_affinities`, which is what keeps a pool on its own cores.
+/// The thread pools belong to the session, so a separate session per pool is what gives
+/// concurrent requests pools that do not contend; each entry carries its own
+/// `session.intra_op_thread_affinities`, which keeps an intra-op pool on its own cores.
+///
+/// **Each session is built on a thread pinned to its own slice**, and that is load-bearing
+/// rather than tidy. ONNX Runtime creates a session's thread pools while the session is
+/// being constructed, and a thread created on Linux inherits its creator's CPU mask. The
+/// intra-op pool is pinned per thread by the affinity option and does not need this; the
+/// inter-op pool has no such option, so inheritance is the only thing that confines it. A
+/// session built on an unpinned thread gets an inter-op pool free to run anywhere,
+/// including the worker cores the configuration set aside.
+///
+/// It also decides where the weights land. The arena is first touched while the session
+/// loads, so on a host with more than one NUMA node this puts each replica's copy on the
+/// node its cores belong to.
 ///
 /// Every session reads the same bytes, so the weights are duplicated: memory is
-/// `sessions x model size`. The graph and its signature are identical by construction,
-/// which is what lets the caller describe the set from any one of them.
+/// `sessions x model size`. The graph and its signature are identical across the set.
+///
+/// # Arguments
+///
+/// * `core_slices` - the cores each replica may use, one entry per session. A short list or
+///   an empty slice leaves that session's placement to the kernel, which is what an absent
+///   `compute_cores` means.
 ///
 /// # Errors
 ///
-/// As [`load_onnx_model`]. The first failure is returned, naming the session that hit it,
-/// since a partially loaded set is of no use.
+/// As [`load_onnx_model`]. The first failure is returned, naming the session that hit it.
+///
+/// # Panics
+///
+/// Panics if a session-building thread panics, which re-raises that panic rather than
+/// reporting a load failure that did not happen.
 pub fn load_onnx_sessions(
     model_bytes: &[u8],
     execution_provider: &str,
-    intra_op_threads: i32,
+    parallelism: crate::config::Parallelism,
     session_options: &[Vec<(String, String)>],
     mini_batch: Option<crate::inference::scoring::MiniBatch>,
+    core_slices: &[Arc<Vec<usize>>],
 ) -> Result<Vec<Arc<dyn InferenceBackend>>, crate::inference::InferenceError> {
-    session_options
-        .iter()
-        .enumerate()
-        .map(|(index, options)| {
-            load_onnx_model(
-                model_bytes,
-                execution_provider,
-                intra_op_threads,
-                options,
-                mini_batch,
-            )
-            .map_err(|e| {
+    let total = session_options.len();
+    let mut sessions = Vec::with_capacity(total);
+    for (index, options) in session_options.iter().enumerate() {
+        let cores: &[usize] = core_slices.get(index).map_or(&[], |slice| slice.as_slice());
+        // Sequentially, one pinned thread at a time: the sessions are independent but
+        // loading them together would have each one's arena competing for the same memory
+        // bandwidth, and the order of the returned vector has to match the slices.
+        let loaded = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    if !cores.is_empty()
+                        && let Err(e) = crate::affinity::pin_current_thread(cores)
+                    {
+                        eprintln!(
+                            "hushar: could not pin the thread building session {} of {total}, \
+                             its pools may run anywhere: {e}",
+                            index + 1
+                        );
+                    }
+                    load_onnx_model(
+                        model_bytes,
+                        execution_provider,
+                        parallelism,
+                        options,
+                        mini_batch,
+                    )
+                })
+                .join()
+        });
+        let backend = match loaded {
+            Ok(result) => result.map_err(|e| {
                 crate::inference::InferenceError::from(format!(
-                    "session {} of {}: {e}",
-                    index + 1,
-                    session_options.len()
+                    "session {} of {total}: {e}",
+                    index + 1
                 ))
-            })
-        })
-        .collect()
+            })?,
+            Err(panic) => std::panic::resume_unwind(panic),
+        };
+        sessions.push(backend);
+    }
+    Ok(sessions)
 }
 
 #[cfg(test)]
@@ -95,7 +141,7 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    /// The fixture the service's own tests use: 3 features in, 2 sigmoid outputs.
+    /// Reads the test fixture: 3 features in, 2 sigmoid outputs; `None` when absent.
     fn test_model() -> Option<Vec<u8>> {
         let path = Path::new("test-data/sigmoid_model_3.onnx");
         match std::fs::read(path) {
@@ -107,8 +153,7 @@ mod tests {
         }
     }
 
-    /// Whether an ONNX Runtime library is present. These tests need one, and skip
-    /// when it is absent so the suite stays green on machines without it.
+    /// Whether an ONNX Runtime library is present; these tests skip when it is absent.
     fn runtime_available() -> bool {
         match onnxrt_rs::Api::load() {
             Ok(_) => true,
@@ -121,8 +166,8 @@ mod tests {
 
     /// One row of the fixture's features.
     ///
-    /// Only the accelerator modules use this, so a build with no accelerator
-    /// feature leaves it unused.
+    /// Only the accelerator modules use this, so a build with no accelerator feature
+    /// leaves it unused.
     #[allow(dead_code)]
     fn single_row() -> Vec<f32> {
         vec![1.0, 2.0, 3.0]
@@ -131,8 +176,8 @@ mod tests {
     /// Runs `values` as `rows` rows through the backend's single input and returns
     /// the primary output, one `Vec` per row.
     ///
-    /// The input's name, element type and shape all come from the model, so this
-    /// helper works for any single-input model rather than the fixture only.
+    /// The input's name, element type and shape come from the model, so this works for
+    /// any single-input model.
     fn run_rows(
         backend: &std::sync::Arc<dyn InferenceBackend>,
         values: Vec<f32>,
@@ -161,18 +206,24 @@ mod tests {
         Ok(out)
     }
 
-    /// Scores for one row on `provider`, or `None` when the accelerator is absent
-    /// from the loaded library.
+    /// Scores for one row on `provider`, or `None` when the accelerator is absent from
+    /// the loaded library or from this build.
     ///
-    /// Distinguishes "this build was not compiled for it" and "the library does
-    /// not have it" -- both legitimate reasons to skip -- from a genuine failure,
-    /// which panics.
+    /// Only the accelerator modules use this, so a build with no accelerator feature
+    /// leaves it unused.
     ///
-    /// Only the accelerator modules use this, so a build with no accelerator
-    /// feature leaves it unused.
+    /// # Panics
+    ///
+    /// Panics when loading or inference fails for any other reason.
     #[allow(dead_code)]
     fn scores_on(model: &[u8], provider: &str) -> Option<Vec<f32>> {
-        match load_onnx_model(model, provider, 1, &[], None) {
+        match load_onnx_model(
+            model,
+            provider,
+            crate::config::Parallelism::Intra(1),
+            &[],
+            None,
+        ) {
             Ok(backend) => {
                 let rows = run_rows(&backend, single_row(), 1)
                     .unwrap_or_else(|e| panic!("{provider} inference failed: {e}"));
@@ -190,8 +241,7 @@ mod tests {
         }
     }
 
-    /// Asserts an accelerator agrees with CPU, within a tolerance that allows for
-    /// different kernels and accumulation orders but not a genuinely wrong answer.
+    /// Asserts an accelerator agrees with CPU, within a per-score tolerance of 1e-4.
     ///
     /// Only the accelerator modules use this, so a CPU-only build leaves it unused.
     #[allow(dead_code)]
@@ -212,8 +262,6 @@ mod tests {
         }
     }
 
-    // ---------------------------------------------------------------- generic
-
     #[test]
     fn reports_the_accelerators_this_build_enables() {
         eprintln!(
@@ -226,6 +274,58 @@ mod tests {
         );
     }
 
+    /// Asserts one session is built per options entry, each on its own thread pinned to its
+    /// own slice, and that a slice list shorter than the session list is tolerated.
+    ///
+    /// The pinning is only observable on Linux, so what this covers everywhere is that
+    /// routing every session through a separate thread still returns them in order and still
+    /// handles a short or empty slice list -- which is what an absent `compute_cores`
+    /// produces.
+    #[test]
+    fn builds_one_session_per_options_entry_on_its_own_thread()
+    -> Result<(), crate::inference::InferenceError> {
+        let Some(model) = test_model() else {
+            return Ok(());
+        };
+        if !runtime_available() {
+            return Ok(());
+        }
+
+        let options = vec![Vec::new(), Vec::new(), Vec::new()];
+        for slices in [
+            Vec::new(),
+            vec![Arc::new(vec![0usize])],
+            vec![
+                Arc::new(vec![0usize]),
+                Arc::new(vec![1usize]),
+                Arc::new(vec![2usize]),
+            ],
+        ] {
+            let named = slices.len();
+            let sessions = load_onnx_sessions(
+                &model,
+                "cpu",
+                crate::config::Parallelism::Intra(1),
+                &options,
+                None,
+                &slices,
+            )?;
+            assert_eq!(
+                sessions.len(),
+                options.len(),
+                "{named} slice(s) named should still give one session per options entry"
+            );
+            for session in &sessions {
+                assert_eq!(
+                    session.inputs().len(),
+                    1,
+                    "every replica loads the same graph"
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn loads_a_model_and_reports_its_width() -> Result<(), crate::inference::InferenceError> {
         let Some(model) = test_model() else {
@@ -235,7 +335,13 @@ mod tests {
             return Ok(());
         }
 
-        let backend = load_onnx_model(&model, "cpu", 1, &[], None)?;
+        let backend = load_onnx_model(
+            &model,
+            "cpu",
+            crate::config::Parallelism::Intra(1),
+            &[],
+            None,
+        )?;
         assert_eq!(
             backend.inputs().len(),
             1,
@@ -267,7 +373,13 @@ mod tests {
             return Ok(());
         }
 
-        let backend = load_onnx_model(&model, "cpu", 1, &[], None)?;
+        let backend = load_onnx_model(
+            &model,
+            "cpu",
+            crate::config::Parallelism::Intra(1),
+            &[],
+            None,
+        )?;
         let batch = vec![1.0f32, 2.0, 3.0, 0.5, 1.0, 1.5];
         let predictions = run_rows(&backend, batch, 2)?;
 
@@ -287,8 +399,14 @@ mod tests {
         if !runtime_available() {
             return Ok(());
         }
-        let err = load_onnx_model(&model, "tensorrt:not-a-device", 1, &[], None)
-            .expect_err("bad device id");
+        let err = load_onnx_model(
+            &model,
+            "tensorrt:not-a-device",
+            crate::config::Parallelism::Intra(1),
+            &[],
+            None,
+        )
+        .expect_err("bad device id");
         assert!(
             err.to_string().contains("device id"),
             "unhelpful message: {err}"
@@ -307,7 +425,14 @@ mod tests {
             return Ok(());
         }
         for (input, expected) in [("cuda", "tensorrt"), ("rocm", "migraphx")] {
-            let err = load_onnx_model(&model, input, 1, &[], None).expect_err("should be rejected");
+            let err = load_onnx_model(
+                &model,
+                input,
+                crate::config::Parallelism::Intra(1),
+                &[],
+                None,
+            )
+            .expect_err("should be rejected");
             assert!(
                 err.to_string().contains(expected),
                 "{input:?} should point at {expected:?}, got: {err}"
@@ -327,8 +452,14 @@ mod tests {
         if !runtime_available() {
             return Ok(());
         }
-        let err = load_onnx_model(&model, "NoSuchAccelerator", 1, &[], None)
-            .expect_err("provider does not exist");
+        let err = load_onnx_model(
+            &model,
+            "NoSuchAccelerator",
+            crate::config::Parallelism::Intra(1),
+            &[],
+            None,
+        )
+        .expect_err("provider does not exist");
         let message = err.to_string();
         assert!(
             message.contains("not available") && message.contains("CPU"),
@@ -342,24 +473,20 @@ mod tests {
         if !runtime_available() {
             return Ok(());
         }
-        assert!(load_onnx_model(&[0, 1, 2, 3], "cpu", 1, &[], None).is_err());
+        assert!(
+            load_onnx_model(
+                &[0, 1, 2, 3],
+                "cpu",
+                crate::config::Parallelism::Intra(1),
+                &[],
+                None
+            )
+            .is_err()
+        );
         Ok(())
     }
 
     /// Many threads loading, running and dropping backends at once must work.
-    ///
-    /// The service shares one backend across request threads, and intends to
-    /// support reloading a model while still serving from the old one, so
-    /// concurrent load and teardown is a real scenario rather than a synthetic one.
-    ///
-    /// Note on scope: this does *not* reliably reproduce the ONNX Runtime
-    /// "only one LoggingManager" failure that motivated `Environment::shared`.
-    /// That needed a create to interleave with the teardown of the last
-    /// outstanding environment, and it only surfaced when the whole suite ran in
-    /// parallel -- running this test alone was verified not to trigger it even with
-    /// the fix reverted. The invariant that actually prevents it is tested in
-    /// `onnxrt-rs` (`shared_environment_is_created_once`); this test covers
-    /// concurrent use.
     ///
     /// Each round drops its backend while another thread is loading, so a teardown
     /// races a load.
@@ -379,8 +506,14 @@ mod tests {
                 let model = Arc::clone(&model);
                 std::thread::spawn(move || -> Result<(), String> {
                     for round in 0..12 {
-                        let backend = load_onnx_model(&model, "cpu", 1, &[], None)
-                            .map_err(|e| format!("thread {i} round {round} load: {e}"))?;
+                        let backend = load_onnx_model(
+                            &model,
+                            "cpu",
+                            crate::config::Parallelism::Intra(1),
+                            &[],
+                            None,
+                        )
+                        .map_err(|e| format!("thread {i} round {round} load: {e}"))?;
                         let predictions = run_rows(&backend, vec![1.0f32, 2.0, 3.0], 1)
                             .map_err(|e| format!("thread {i} round {round} run: {e}"))?;
                         if predictions[0].len() != 2 {
@@ -400,13 +533,6 @@ mod tests {
         }
         Ok(())
     }
-
-    // ------------------------------------------------------- per accelerator
-    //
-    // One module per accelerator, gated on the feature that enables it. Each asks
-    // the same two questions of the backend: does it run, and does it agree with
-    // CPU? Agreement is the one that earns its keep -- an accelerator that fails
-    // to load is obvious, one that loads and quietly computes something else is not.
 
     #[cfg(feature = "cpu")]
     mod cpu {
@@ -485,8 +611,8 @@ mod tests {
     mod tensorrt {
         use super::*;
 
-        /// TensorRT compiles the graph on first use, so this is slower than the
-        /// others by design.
+        /// TensorRT compiles the graph on first use, so this test is slower than the
+        /// others.
         #[test]
         fn tensorrt_agrees_with_cpu() {
             let Some(model) = test_model() else { return };
@@ -506,9 +632,8 @@ mod tests {
     mod migraphx {
         use super::*;
 
-        /// MIGraphX is the one provider whose options struct this workspace fills
-        /// by hand, ONNX Runtime exposing no factory for it, so a real run is the
-        /// only way to know the defaults are right.
+        /// MIGraphX's options struct is filled in by hand, ONNX Runtime exposing no
+        /// factory for it, so a real run is the only check that the defaults are right.
         #[test]
         fn migraphx_agrees_with_cpu() {
             let Some(model) = test_model() else { return };

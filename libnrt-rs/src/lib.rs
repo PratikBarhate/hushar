@@ -3,40 +3,36 @@
 
 //! A safe Rust front end over the AWS Neuron runtime (`libnrt`) C API.
 //!
-//! Neuron is the runtime behind Inferentia and Trainium instances. Models are
-//! compiled ahead of time by the Neuron compiler into a **NEFF**, which this
-//! crate loads and executes; it does not compile ONNX itself. A typical pipeline
-//! is `ONNX -> neuronx-cc -> .neff -> this crate`.
+//! Neuron is the runtime behind Inferentia and Trainium instances. Models are compiled
+//! ahead of time by the Neuron compiler into a **NEFF**, which this crate loads and
+//! executes; it does not compile ONNX itself. A typical pipeline is
+//! `ONNX -> neuronx-cc -> .neff -> this crate`.
 //!
-//! # How this crate is put together
+//! # Layout
 //!
 //! * [`sys`] holds raw `bindgen` output generated from the Neuron SDK headers
-//!   (`aws-neuronx-runtime-lib` 2.34.10.0). The bindings are checked in, so the
-//!   crate builds on any host; regenerate with `--features bindgen` on a machine
-//!   that has the SDK.
-//! * The SDK headers themselves are **not** vendored. Unlike ONNX Runtime's MIT
-//!   licence, they ship as "All Rights Reserved", so `headers/wrapper.h` includes
-//!   them from `NEURON_INCLUDE_DIR` (default `/opt/aws/neuron/include`) instead.
-//! * `libnrt.so.1` is opened at **run time** with `libloading`, never linked.
-//!   That is what lets one binary run on both Neuron and non-Neuron hosts, and
-//!   what lets this crate be a member of a workspace that builds on macOS.
-//! * Everything above [`sys`] is safe, with `Drop` on every handle and a written
-//!   justification on every `unsafe` block.
+//!   (`aws-neuronx-runtime-lib` 2.34.10.0). The bindings are checked in, so the crate
+//!   builds on any host; regenerate with `--features bindgen` on a host with the SDK.
+//! * The SDK headers are **not** vendored: unlike ONNX Runtime's MIT licence, the Neuron
+//!   SDK headers ship as "All Rights Reserved", so they must not be checked in, and
+//!   `headers/wrapper.h` includes them from `NEURON_INCLUDE_DIR` (default
+//!   `/opt/aws/neuron/include`).
+//! * `libnrt.so.1` is opened at **run time** with `libloading`, never linked, so one
+//!   binary runs on both Neuron and non-Neuron hosts.
+//! * Everything above [`sys`] is safe, and every handle frees itself on `Drop`.
 //!
 //! # Platform support
 //!
-//! The Neuron runtime is Linux-only and needs a Neuron device. On any other
-//! platform [`Runtime::init`] returns [`Error::UnsupportedPlatform`] rather than
-//! failing to compile, so a service can carry a Neuron backend and a CPU backend
-//! in one binary and choose at startup.
+//! The Neuron runtime is Linux-only and needs a Neuron device. On any other platform
+//! [`Runtime::init`] returns [`Error::UnsupportedPlatform`] rather than failing to
+//! compile.
 //!
 //! # Shutdown ordering
 //!
-//! `nrt_init` and `nrt_close` are process-global, and closing the runtime while
-//! a model is loaded is undefined behaviour. [`Runtime`] is therefore handed out
-//! as an `Arc`, and [`Model`], [`Tensor`], and [`TensorSet`] each hold a clone.
-//! Reference counting makes the correct teardown order the only one possible, so
-//! there is no ordering rule to remember.
+//! `nrt_init` and `nrt_close` are process-global, and closing the runtime while a model
+//! is loaded is undefined behaviour. [`Runtime`] is therefore handed out as an `Arc` and
+//! [`Model`], [`Tensor`], and [`TensorSet`] each hold a clone, so reference counting
+//! enforces the teardown order.
 //!
 //! # Example
 //!
@@ -95,8 +91,8 @@ pub use tensor::{DataType, Placement, Tensor, TensorSet};
 
 /// Whether this build can talk to a Neuron device at all.
 ///
-/// False on every non-Linux target. A true result means only that the platform
-/// is supported, not that `libnrt` is installed or a device is present; call
+/// False on every non-Linux target. A true result means only that the platform is
+/// supported, not that `libnrt` is installed or a device is present; call
 /// [`Runtime::init`] to find that out.
 pub const fn is_supported_platform() -> bool {
     cfg!(target_os = "linux")
@@ -104,21 +100,21 @@ pub const fn is_supported_platform() -> bool {
 
 /// The Neuron SDK release the checked-in bindings were generated from.
 ///
-/// This is the *compile-time* pairing, and it is also recorded as this crate's
-/// SemVer build metadata (`0.1.0+libnrt.2.34.10.0`). The version actually loaded
-/// is reported by [`Runtime::version`] and may legitimately differ: `libnrt` is
-/// resolved at run time via its SONAME `libnrt.so.1`, which stays stable across
-/// SDK releases, so any ABI-1 build will load. Compare the two when a bug report
-/// needs to say exactly what was running.
+/// This is the *compile-time* pairing, also recorded as this crate's SemVer build
+/// metadata (`0.1.0+libnrt.2.34.10.0`). The version actually loaded is reported by
+/// [`Runtime::version`] and may legitimately differ: `libnrt` is resolved at run time
+/// via its SONAME `libnrt.so.1`, which stays stable across SDK releases, so any ABI-1
+/// build will load.
 pub const BINDINGS_SDK_VERSION: &str = "2.34.10.0";
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Cargo.toml's build metadata must name the same SDK release as
+    /// `BINDINGS_SDK_VERSION`.
     #[test]
     fn crate_version_metadata_names_the_bindings_release() {
-        // Keeps Cargo.toml and BINDINGS_SDK_VERSION from drifting apart.
         let version = env!("CARGO_PKG_VERSION");
         let expected = format!("+libnrt.{BINDINGS_SDK_VERSION}");
         assert!(
@@ -128,10 +124,10 @@ mod tests {
         );
     }
 
+    /// Each named status maps to the raw value fixed by the SDK's `nrt_status.h`, and
+    /// back again.
     #[test]
     fn status_mapping_round_trips_through_raw_values() {
-        // Values are fixed by the SDK's nrt_status.h, so pinning them here
-        // catches a mis-generated or hand-edited `sys` module.
         for (status, raw) in [
             (Status::Failure, 1u32),
             (Status::Invalid, 2),
@@ -159,24 +155,23 @@ mod tests {
         }
     }
 
+    /// `NRT_SUCCESS` maps to `None` rather than to a status.
     #[test]
     fn success_is_not_an_error() {
         assert_eq!(Status::from_raw(sys::NRT_STATUS_NRT_SUCCESS), None);
     }
 
+    /// A status code this crate does not name round-trips through [`Status::Other`].
     #[test]
     fn unknown_status_codes_are_preserved() {
-        // Forward compatibility: a status this crate has never heard of must not
-        // be silently flattened.
         let unknown = 99_999;
         assert_eq!(Status::from_raw(unknown), Some(Status::Other(unknown)));
         assert_eq!(Status::Other(unknown).as_raw(), unknown);
     }
 
+    /// The non-contiguous `NRT_DTYPE_*` hex values map to the right [`DataType`].
     #[test]
     fn dtype_values_match_the_sdk_header() {
-        // NRT_DTYPE_* values are non-contiguous hex in the header, which makes a
-        // careless `as` cast wrong; these assertions pin the real mapping.
         assert_eq!(DataType::from_raw(0xA), DataType::Float32);
         assert_eq!(DataType::from_raw(0x7), DataType::Float16);
         assert_eq!(DataType::from_raw(0x6), DataType::BFloat16);
@@ -187,6 +182,7 @@ mod tests {
         assert_eq!(DataType::from_raw(0x3), DataType::Uint8);
     }
 
+    /// Element sizes are reported in bytes, and `None` for an unknown type.
     #[test]
     fn dtype_element_sizes_are_consistent() {
         assert_eq!(DataType::Float32.size_of(), Some(4));
@@ -196,21 +192,24 @@ mod tests {
         assert_eq!(DataType::Unknown(0x42).size_of(), None);
     }
 
+    /// `nrt.h` declares `typedef void nrt_tensor_set_t`, so the binding must be `c_void`
+    /// rather than a generated struct.
     #[test]
     fn tensor_set_is_an_opaque_void_pointer() {
-        // nrt.h declares `typedef void nrt_tensor_set_t`, so the binding must be
-        // c_void rather than a generated struct.
         assert_eq!(
             std::mem::size_of::<*mut sys::nrt_tensor_set_t>(),
             std::mem::size_of::<*mut std::os::raw::c_void>()
         );
     }
 
+    /// Off Linux, `Runtime::init` fails with [`Error::UnsupportedPlatform`] naming the
+    /// platform it was built for.
+    ///
+    /// On Linux the outcome depends on whether `libnrt` and a device are present, so
+    /// there is nothing deterministic to assert and the test returns early.
     #[test]
     fn init_fails_cleanly_on_unsupported_platforms() {
         if is_supported_platform() {
-            // On Linux the outcome depends on whether libnrt and a device are
-            // present, so there is nothing deterministic to assert here.
             return;
         }
         let err = Runtime::init().expect_err("Neuron must not initialise off Linux");
@@ -218,7 +217,6 @@ mod tests {
             matches!(err, Error::UnsupportedPlatform { .. }),
             "expected UnsupportedPlatform, got {err:?}"
         );
-        // The message should say which platform was built, to save a support round trip.
         assert!(err.to_string().contains(std::env::consts::OS));
     }
 }

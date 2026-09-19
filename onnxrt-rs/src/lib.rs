@@ -3,26 +3,26 @@
 
 //! A safe Rust front end over the ONNX Runtime C API.
 //!
-//! This is the inference engine hushar runs on. ONNX Runtime was chosen over a
-//! pure-Rust engine for two reasons: far broader operator coverage, and execution
-//! providers, which are the only way to reach CoreML on Apple Silicon, CUDA or
-//! TensorRT on NVIDIA, and ROCm or MIGraphX on AMD. See [`ExecutionProvider`].
+//! Execution providers select the hardware a model runs on: CoreML on Apple Silicon,
+//! CUDA or TensorRT on NVIDIA, ROCm or MIGraphX on AMD. See [`ExecutionProvider`].
 //!
-//! # How this crate is put together
+//! # Layout
 //!
-//! * [`sys`] holds raw `bindgen` output generated from
-//!   `headers/onnxruntime_c_api.h` (ONNX Runtime v1.29.0, `ORT_API_VERSION` 29),
-//!   vendored under its MIT licence. Bindings are checked in, so the crate
-//!   builds with no libclang and no ONNX Runtime present. Regenerate with
-//!   `--features bindgen`.
-//! * `libonnxruntime` is resolved at **run time** via `libloading`, not linked
-//!   at build time. The whole C API hangs off one exported symbol,
-//!   `OrtGetApiBase`, so this costs a single `dlsym` and buys three things: the
-//!   workspace builds on machines with no ONNX Runtime, CI needs no native
-//!   dependency, and a deployment can swap runtime builds without recompiling.
-//! * Everything above [`sys`] is safe. Each `Ort*` handle has an owner with a
-//!   `Drop` that calls the matching `Release*`, and every `unsafe` block carries
-//!   the reasoning for why it is sound.
+//! * [`sys`] holds raw `bindgen` output generated from `headers/onnxruntime_c_api.h`
+//!   (ONNX Runtime v1.29.0, `ORT_API_VERSION` 29), vendored under its MIT licence. The
+//!   bindings are checked in, so the crate builds with no libclang and no ONNX Runtime
+//!   present. Regenerate with `--features bindgen`.
+//! * `libonnxruntime` is resolved at **run time** via `libloading`, never linked at
+//!   build time. The whole C API hangs off one exported symbol, `OrtGetApiBase`.
+//! * Everything above [`sys`] is safe. Each `Ort*` handle has an owner whose `Drop`
+//!   calls the matching `Release*`.
+//!
+//! # Features and runtime support
+//!
+//! An execution provider needs both the Cargo feature that compiles its support into
+//! this crate ([`enabled_features`] lists the ones enabled) and a `libonnxruntime` that
+//! was itself built with that provider. The two failures are reported separately, as
+//! [`Error::ProviderNotEnabled`] and [`Error::ProviderUnavailable`].
 //!
 //! # Finding the runtime at run time
 //!
@@ -57,10 +57,10 @@
 //!
 //! # Thread safety
 //!
-//! [`Session`] is `Send + Sync`, so an `Arc<Session>` can serve concurrent
-//! requests: ONNX Runtime documents `Run` on a shared session as needing no
-//! external synchronisation. [`Environment`] is likewise shareable and should be
-//! created once per process.
+//! [`Session`] is `Send + Sync`, so an `Arc<Session>` can serve concurrent requests:
+//! ONNX Runtime documents `Run` on a shared session as needing no external
+//! synchronisation. [`Environment`] is likewise shareable and should be created once
+//! per process.
 
 pub mod sys;
 
@@ -75,7 +75,7 @@ pub use api::{Api, DYLIB_PATH_ENV};
 pub use env::{Environment, LogLevel};
 pub use error::{Error, ErrorCode, Result};
 pub use provider::{CoreMlComputeUnits, CoreMlModelFormat, ExecutionProvider, enabled_features};
-pub use session::{GraphOptimizationLevel, Session, SessionBuilder, TensorSpec};
+pub use session::{ExecutionMode, GraphOptimizationLevel, Session, SessionBuilder, TensorSpec};
 pub use tensor::{DataType, Element, InputValue, OwnedTensor, TensorView};
 
 /// The `ORT_API_VERSION` these bindings were generated against.
@@ -86,23 +86,19 @@ pub const REQUIRED_API_VERSION: u32 = sys::ORT_API_VERSION;
 
 /// The ONNX Runtime release the checked-in bindings were generated from.
 ///
-/// This is the *compile-time* pairing, and it is also recorded as this crate's
-/// SemVer build metadata (`0.1.0+onnxruntime.1.29.0`). The version actually
-/// loaded is reported by [`Api::version`] and may legitimately differ: the
-/// runtime is resolved at run time, and any build offering
-/// [`REQUIRED_API_VERSION`] or newer will work. Compare the two when a bug
-/// report needs to say exactly what was running.
+/// This is the *compile-time* pairing, and it is also recorded as this crate's SemVer
+/// build metadata (`0.1.0+onnxruntime.1.29.0`). The version actually loaded is reported
+/// by [`Api::version`] and may legitimately differ: the runtime is resolved at run time,
+/// and any build offering [`REQUIRED_API_VERSION`] or newer will work.
 pub const BINDINGS_RUNTIME_VERSION: &str = "1.29.0";
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Asserts the crate version's build metadata names [`BINDINGS_RUNTIME_VERSION`].
     #[test]
     fn crate_version_metadata_names_the_bindings_release() {
-        // Keeps Cargo.toml and BINDINGS_RUNTIME_VERSION from drifting apart:
-        // bumping one without the other fails here rather than silently
-        // misreporting which runtime the bindings came from.
         let version = env!("CARGO_PKG_VERSION");
         let expected = format!("+onnxruntime.{BINDINGS_RUNTIME_VERSION}");
         assert!(
@@ -112,6 +108,7 @@ mod tests {
         );
     }
 
+    /// Asserts the bindings target the `ORT_API_VERSION` of the vendored header.
     #[test]
     fn bindings_target_the_vendored_header_version() {
         assert_eq!(
@@ -120,10 +117,9 @@ mod tests {
         );
     }
 
+    /// Asserts each [`Element`] carries the type tag the ONNX standard fixes for it.
     #[test]
     fn element_type_tags_match_the_onnx_spec() {
-        // Values are fixed by the ONNX standard, so pinning them here catches a
-        // mis-generated or mis-edited `sys` module.
         assert_eq!(<f32 as Element>::ELEMENT_TYPE, 1);
         assert_eq!(<u8 as Element>::ELEMENT_TYPE, 2);
         assert_eq!(<i8 as Element>::ELEMENT_TYPE, 3);
@@ -138,12 +134,11 @@ mod tests {
         assert_eq!(<half::bf16 as Element>::ELEMENT_TYPE, 16);
     }
 
+    /// Asserts each [`Element`] is, in Rust and in [`DataType`], the width ONNX
+    /// declares for it — the mechanically checkable half of the contract that a
+    /// Rust type's layout *is* its ONNX element's layout.
     #[test]
     fn element_types_are_the_width_onnx_says_they_are() {
-        // The `Element` contract is that the Rust type's layout *is* the ONNX
-        // element's layout. Width is the part of that which can be checked
-        // mechanically, and it is the part that would corrupt a whole tensor if
-        // wrong -- `half::f16` being 4 bytes would silently halve every batch.
         fn check<T: Element>(expected: usize) {
             let dt = DataType::from_raw(T::ELEMENT_TYPE)
                 .unwrap_or_else(|| panic!("{} should be a modelled DataType", T::NAME));
@@ -175,6 +170,8 @@ mod tests {
         check::<f64>(8);
     }
 
+    /// Asserts every [`DataType`] survives a round trip through its ONNX tag, and that
+    /// no two share a tag.
     #[test]
     fn data_type_round_trips_through_its_onnx_tag() {
         let all = [
@@ -200,8 +197,6 @@ mod tests {
                 "{dt} should survive a round trip through its ONNX tag"
             );
         }
-        // Distinct types must not collide on a tag, which a copy-paste slip in
-        // either direction of the mapping would cause.
         let mut tags: Vec<u32> = all.iter().map(|d| d.to_raw()).collect();
         tags.sort_unstable();
         let before = tags.len();
@@ -209,11 +204,10 @@ mod tests {
         assert_eq!(before, tags.len(), "two DataTypes share an ONNX tag");
     }
 
+    /// Asserts an ONNX element type this crate does not model maps to `None`, rather
+    /// than to something of the same width, and that strings report no fixed size.
     #[test]
     fn unmodelled_element_types_are_reported_not_guessed() {
-        // COMPLEX64 is a real ONNX type this crate does not model. Returning
-        // `None` is what turns it into a clear error rather than bytes
-        // reinterpreted as something of the same width.
         let complex64 = sys::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_COMPLEX64;
         assert_eq!(DataType::from_raw(complex64), None);
         assert_eq!(
@@ -223,6 +217,9 @@ mod tests {
         );
     }
 
+    /// Asserts a leading dynamic axis resolves to the row count and `row_width` is the
+    /// product of the trailing axes, while a dynamic axis that is *not* the batch is
+    /// left as `-1` and yields no row width.
     #[test]
     fn tensor_spec_resolves_a_dynamic_batch_axis() {
         let spec = TensorSpec {
@@ -233,7 +230,6 @@ mod tests {
         assert_eq!(spec.concrete_shape(8), vec![8, 3]);
         assert_eq!(spec.row_width(), Some(3));
 
-        // A three-dimensional output, which is what a forecast looks like.
         let forecast = TensorSpec {
             name: "horizon".to_owned(),
             data_type: DataType::F32,
@@ -242,8 +238,6 @@ mod tests {
         assert_eq!(forecast.concrete_shape(4), vec![4, 24, 2]);
         assert_eq!(forecast.row_width(), Some(48));
 
-        // A dynamic axis that is *not* the batch is left alone: the caller has to
-        // supply it, and guessing would be worse than reporting nothing.
         let ragged = TensorSpec {
             name: "tokens".to_owned(),
             data_type: DataType::I64,
@@ -253,6 +247,8 @@ mod tests {
         assert_eq!(ragged.row_width(), None);
     }
 
+    /// Asserts a nonexistent library is an [`Error::LibraryLoad`] naming the path
+    /// tried, not a panic.
     #[test]
     fn missing_library_is_a_clean_error_not_a_panic() {
         let err = Api::load_from("/nonexistent/libonnxruntime.dylib")
@@ -261,24 +257,18 @@ mod tests {
             matches!(err, Error::LibraryLoad { .. }),
             "expected a LibraryLoad error, got {err:?}"
         );
-        // The message should name the path so operators can see what was tried.
         assert!(
             err.to_string()
                 .contains("/nonexistent/libonnxruntime.dylib")
         );
     }
 
+    /// Asserts a failed load reports the dynamic loader's own reason, not just
+    /// `libloading`'s bare "dlopen failed" — the reason sits one level down in
+    /// `source()`. The appended text is platform-specific, so only its presence is
+    /// asserted.
     #[test]
     fn library_load_error_reports_the_underlying_reason() {
-        // Regression test. `libloading` renders a failed `dlopen` as the bare
-        // string "dlopen failed" and keeps the `dlerror` text one level down in
-        // `source()`. An earlier version of this error formatted only the
-        // top-level error, so a real failure on a host where the library exists
-        // but cannot load — a `glibc` older than the runtime was built for, a
-        // missing transitive dependency, an architecture mismatch — produced a
-        // message with nothing actionable in it. Verified against ONNX Runtime
-        // 1.29.0 on Amazon Linux 2, where the true cause is
-        // "version `GLIBC_2.28' not found".
         let err = Api::load_from("/nonexistent/libonnxruntime.dylib")
             .expect_err("loading a nonexistent library must fail");
         let message = err.to_string();
@@ -286,9 +276,6 @@ mod tests {
             message.len() > "dlopen failed".len() + 40,
             "error message looks truncated to libloading's bare Display: {message}"
         );
-        // The OS reason is whatever the platform's dynamic loader reports; assert
-        // that *something* was appended past libloading's own text rather than
-        // pinning a platform-specific string.
         let bare = "dlopen failed";
         let tail = message
             .split_once(bare)

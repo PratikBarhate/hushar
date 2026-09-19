@@ -3,13 +3,13 @@
 
 //! Helpers shared by the integration tests.
 //!
-//! Every test here needs a real `libonnxruntime`, so all of them skip with a
-//! stated reason when one cannot be loaded rather than failing. That keeps the
-//! suite green on machines and CI images without ONNX Runtime installed, and
-//! `runtime_is_available_when_configured` in `onnxruntime_smoke.rs` guards
-//! against a skip hiding a genuine breakage.
+//! Every test here needs a real `libonnxruntime`, so all of them skip with a stated
+//! reason when one cannot be loaded rather than failing.
+//! `runtime_is_available_when_configured` in `onnxruntime_smoke.rs` guards against a
+//! skip hiding a genuine breakage.
 
-#![allow(dead_code)] // Each test binary uses a different subset.
+// Each test binary uses a different subset of these helpers.
+#![allow(dead_code)]
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,12 +29,12 @@ pub fn api() -> Option<Api> {
 
 /// Reads a fixture from this crate's own `test-data`.
 ///
-/// This crate's, not the sibling service's: these tests must need nothing but
-/// `onnxrt-rs` and a `libonnxruntime`, so the suite still runs when the crate is
-/// taken out of this workspace. `sigmoid_model_3.onnx` and `mixed_io.onnx` are
-/// therefore copies of fixtures hushar also tests, but neither is copied by hand
-/// -- `scripts/generate_test_model.py` and `scripts/generate_typed_test_models.py`
-/// write every copy from one definition, which is what keeps them from drifting.
+/// This crate's, not the sibling service's, so these tests need nothing but
+/// `onnxrt-rs` and a `libonnxruntime`.
+///
+/// # Panics
+///
+/// Panics when the fixture cannot be read; the scripts in `scripts/` regenerate them.
 pub fn fixture(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("test-data")
@@ -58,10 +58,10 @@ pub fn single_row() -> (Vec<f32>, [i64; 2]) {
     (vec![1.0, 2.0, 3.0], [1, 3])
 }
 
-/// The process-wide environment.
+/// The process-wide shared environment.
 ///
-/// Shared, not per-call: ONNX Runtime allows only one environment using the
-/// default logger at a time, and these tests run in parallel.
+/// ONNX Runtime allows only one environment using the default logger at a time, and
+/// these tests run in parallel.
 pub fn environment() -> Arc<Environment> {
     Environment::shared("onnxrt-rs-test").expect("shared environment")
 }
@@ -89,13 +89,11 @@ pub fn cpu_scores() -> Vec<f32> {
     scores_on(&ExecutionProvider::Cpu).expect("CPU inference must work")
 }
 
-/// Asserts an accelerator agrees with the CPU baseline.
+/// Asserts an accelerator agrees with the CPU baseline to within 1e-4 per score.
 ///
-/// Accelerators legitimately differ in the last bits — different kernels,
-/// different orders of accumulation, sometimes reduced precision — so this is a
-/// tolerance rather than equality. It is still tight enough to catch a genuinely
-/// wrong result, which is the failure worth catching: a provider that silently
-/// computes something else is far worse than one that refuses to load.
+/// Accelerators legitimately differ in the last bits — different kernels, different
+/// orders of accumulation, sometimes reduced precision — so this is a tolerance
+/// rather than equality.
 pub fn assert_matches_cpu(label: &str, actual: &[f32], expected: &[f32]) {
     assert_eq!(
         actual.len(),
@@ -126,12 +124,13 @@ pub fn assert_sigmoid_range(label: &str, scores: &[f32]) {
 /// Runs a provider's test body, skipping with a reason when the hardware or the
 /// library cannot support it.
 ///
-/// The three outcomes are deliberately distinguished, because they mean very
-/// different things:
-///
 /// * no runtime at all — skip
 /// * runtime present but built without this provider — skip, and say so
 /// * runtime present and provider present — run, and a failure is a real failure
+///
+/// # Panics
+///
+/// Panics when the available-provider query itself fails.
 pub fn with_provider(provider: ExecutionProvider, body: impl FnOnce(&ExecutionProvider)) {
     let Some(api) = api() else { return };
 

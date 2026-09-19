@@ -5,21 +5,11 @@
 //!
 //! Today that is the inference log: the features as received and the scores they
 //! produced, as batched protobuf objects in a blob store or as records on a Kinesis
-//! data stream. The trait is [`DataSink`] rather than `LogSink` because the inference
-//! log is not the only data a serving host has worth shipping — application logs to
-//! CloudWatch Logs are the obvious next one — and a name that says "log" would either
-//! have to be reused for something it does not describe or be renamed later.
+//! data stream.
 //!
-//! A second kind of payload needs its own trait or a generic one; the name is what is
-//! being reserved here, not the shape.
-//!
-//! # No sidecar
-//!
-//! A sink used to be drained by workers on their own runtime, fed through a bounded
-//! channel. Now the request path calls [`DataSink::record`] directly, which appends to
-//! an [`Accumulator`](super::accumulator::Accumulator) and returns. Nothing awaits a
-//! network call on a request, and no thread is reserved away from serving. See that
-//! module for what each request pays and how memory stays bounded.
+//! The request path calls [`DataSink::record`] directly, which appends to an
+//! [`Accumulator`](super::accumulator::Accumulator) and returns. Nothing awaits a
+//! network call on a request, and no thread is reserved away from serving.
 //!
 //! # Adding a destination
 //!
@@ -41,9 +31,10 @@ use crate::io::{BlobStore, FileReaderResult, Location, describe_aws_error};
 
 /// Where inference logs are sent.
 ///
-/// Variants:
-/// - `Blob` — batched protobuf objects beneath a prefix.
-/// - `Kinesis` — records on a Kinesis data stream.
+/// # Fields
+///
+/// * `Blob` - batched protobuf objects beneath a prefix
+/// * `Kinesis` - records on a Kinesis data stream
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DataDestination {
     Blob(Location),
@@ -55,7 +46,12 @@ impl DataDestination {
     ///
     /// `kinesis://stream-name` selects the stream; anything else is a blob-store
     /// location and follows [`Location::parse`], so `s3://bucket/prefix` and bare
-    /// filesystem paths both keep working.
+    /// filesystem paths are both accepted.
+    ///
+    /// # Errors
+    ///
+    /// If a `kinesis://` URI carries no stream name or carries a path, or if
+    /// [`Location::parse`] rejects the URI.
     pub(crate) fn parse(uri: &str) -> FileReaderResult<Self> {
         if let Some(stream) = uri.strip_prefix("kinesis://") {
             let stream = stream.trim_matches('/');
@@ -87,19 +83,14 @@ impl DataDestination {
 
 /// How many requests reach the data sink.
 ///
-/// The cheapest lever there is over the memory the inference log costs, and the only
-/// one that also removes work: an unsampled request never clones its feature maps,
-/// because the decision is made before scoring rather than after. See
-/// [`FeatureLogging`](crate::inference::scoring::FeatureLogging).
+/// The decision is made before scoring, so an unsampled request never clones its
+/// feature maps. See [`FeatureLogging`](crate::inference::scoring::FeatureLogging).
 ///
 /// **Sampling is per request, not per row.** A request that is kept is kept whole, so
-/// a consumer joining rows back to one `request_id` never sees a partial batch — which
-/// is what makes the sample usable for debugging one prediction rather than only for
-/// aggregates.
+/// a consumer joining rows back to one `request_id` never sees a partial batch.
 ///
-/// Counting rather than randomising, for three reasons: it needs no random-number
-/// generator on the request path, it keeps exactly the configured fraction instead of
-/// approaching it, and it cannot degenerate on request ids that are not uniform.
+/// Counted rather than randomised, so exactly the configured fraction is kept over any
+/// window and no random-number generator sits on the request path.
 #[derive(Debug)]
 pub(crate) struct Sampler {
     /// Keep one request in this many. Zero keeps none.
@@ -108,16 +99,17 @@ pub(crate) struct Sampler {
 }
 
 impl Sampler {
-    /// `rate` is the fraction of requests to record, in `0.0..=1.0`.
+    /// Builds a sampler that keeps `rate` of requests.
     ///
     /// Realised as one request in `n`, so a rate that is not a unit fraction becomes
-    /// the nearest one: 0.15 is kept as one in 7, which is 14.3%. [`Self::describe`]
-    /// reports what was chosen rather than what was asked for, because a sampling rate
-    /// that quietly differs from the configured one is discovered while wondering
-    /// where the logs went.
+    /// the nearest one: a rate of 0.15 is kept as one in 7, which is 14.3%.
+    /// [`Self::describe`] reports what was chosen rather than what was asked for.
+    ///
+    /// # Arguments
+    ///
+    /// * `rate` - the fraction of requests to record, in `0.0..=1.0`. NaN and anything
+    ///   at or below zero keep nothing; anything at or above one keeps everything.
     pub(crate) fn new(rate: f64) -> Self {
-        // NaN is checked first: it compares false against everything, so it would
-        // otherwise fall through to the division and produce a nonsense interval.
         let every = if rate.is_nan() || rate <= 0.0 {
             0
         } else if rate >= 1.0 {
@@ -133,8 +125,7 @@ impl Sampler {
 
     /// Whether this request's features are recorded.
     ///
-    /// One relaxed increment in the common sampled case, and not even that when
-    /// everything or nothing is kept.
+    /// Safe to call concurrently; the count is shared across all callers.
     pub(crate) fn sample(&self) -> bool {
         match self.every {
             0 => false,
@@ -156,8 +147,8 @@ impl Sampler {
 /// Somewhere to send the data a request produced.
 ///
 /// Implementations are shared across request handlers behind an [`Arc`], so every
-/// method takes `&self`. Batching belongs here rather than above, so that each
-/// destination batches the way its own API wants.
+/// method takes `&self`. Batching belongs here, so that each destination batches the
+/// way its own API wants.
 #[tonic::async_trait]
 pub(crate) trait DataSink: Debug + Send + Sync {
     /// Which destination this is, for the startup banner.
@@ -165,15 +156,13 @@ pub(crate) trait DataSink: Debug + Send + Sync {
 
     /// Batches accumulated before one send, after any clamping the API forces.
     ///
-    /// Reported at startup so a value the destination's own limit reduced is visible
-    /// rather than surprising.
+    /// Reported at startup, so a value the destination's own limit reduced is visible.
     fn batch_size(&self) -> usize;
 
     /// Accepts one batch, on the request path.
     ///
-    /// Synchronous and non-blocking on purpose: it appends to a buffer, and on the
-    /// request that fills it spawns the send. A sink whose `record` awaited a network
-    /// call would put that latency on one request in every `batch_size`.
+    /// Synchronous and non-blocking: it appends to a buffer, and on the request that
+    /// fills it spawns the send. No request ever awaits a network call.
     ///
     /// # Panics
     ///
@@ -182,17 +171,12 @@ pub(crate) trait DataSink: Debug + Send + Sync {
 
     /// Sends anything buffered and waits for the sends already in the air.
     ///
-    /// Called once at shutdown. Without it a partial buffer and every detached send
-    /// would go with the runtime, which is when a log is most likely to be the only
-    /// record of what the service was doing.
+    /// Called once at shutdown, before the runtime is dropped: a partial buffer and
+    /// every detached send would otherwise go with it.
     async fn flush(&self);
 }
 
 /// The part of a blob sink that talks to the store.
-///
-/// Split out so a send can be spawned: a task needs to own what it uses, and cloning
-/// one [`Arc`] costs an increment rather than the two allocations that cloning a store
-/// handle and a prefix would.
 #[derive(Debug)]
 struct BlobWriter {
     store: Arc<dyn BlobStore>,
@@ -200,16 +184,15 @@ struct BlobWriter {
 }
 
 impl BlobWriter {
-    /// Encodes and writes one object, reporting a failure rather than dropping it
-    /// silently.
+    /// Encodes and writes one object, reporting a failure on stderr rather than
+    /// dropping it silently.
     ///
-    /// A write that fails quietly leaves a service that looks healthy and logs
-    /// nothing, which is discovered weeks later by whoever needed the data.
+    /// An empty `batches` writes nothing.
     async fn write(&self, batches: Vec<InferenceLogBatch>) {
         if batches.is_empty() {
             return;
         }
-        let rows: usize = batches.iter().map(|b| b.inference_log_rows.len()).sum();
+        let rows: usize = batches.iter().map(|b| b.row_ids.len()).sum();
         let logs = InferenceLogs {
             inference_log_batches: batches,
         };
@@ -226,8 +209,7 @@ impl BlobWriter {
 /// Batched protobuf objects in a blob store.
 ///
 /// The default. Objects are named by time so they can be queried by partition without
-/// listing everything, and batched because one object per request would be both slow
-/// and expensive on any object store.
+/// listing everything.
 #[derive(Debug)]
 pub(crate) struct BlobDataSink {
     writer: Arc<BlobWriter>,
@@ -235,10 +217,15 @@ pub(crate) struct BlobDataSink {
 }
 
 impl BlobDataSink {
-    /// `capacity` is batches per object, and `max_in_flight` writes at once.
+    /// Builds a blob sink writing beneath `prefix`.
     ///
-    /// Nothing clamps the capacity here: an object store takes an object of whatever
-    /// size, so this is the one sink where the batch size is purely a memory decision.
+    /// # Arguments
+    ///
+    /// * `store` - the blob store the objects are written to
+    /// * `prefix` - the location every object is written beneath
+    /// * `capacity` - batches per object. Not clamped, since an object store takes an
+    ///   object of any size, so this is purely a memory decision.
+    /// * `max_in_flight` - writes allowed at once
     pub(crate) fn new(
         store: Arc<dyn BlobStore>,
         prefix: Location,
@@ -254,8 +241,7 @@ impl BlobDataSink {
 
 #[tonic::async_trait]
 impl DataSink for BlobDataSink {
-    /// Deferred to the store, so "Amazon S3" and "local filesystem" read the same here
-    /// as they do for anything else reading objects.
+    /// The store's own name, such as `Amazon S3` or `local filesystem`.
     fn backend(&self) -> &str {
         self.writer.store.backend()
     }
@@ -281,8 +267,8 @@ impl DataSink for BlobDataSink {
 
 /// A time-partitioned object name, unique per write.
 ///
-/// Hive-style partitioning so the logs can be queried by time without listing every
-/// object, and a UUID so concurrent writes never collide on a name.
+/// Hive-style partitions, zero-padded so lexical order matches chronological order, and
+/// a UUID so concurrent writes never collide on a name.
 fn time_partitioned_key() -> String {
     let now = chrono::Utc::now();
     format!(
@@ -305,9 +291,7 @@ const KINESIS_MAX_RECORD_BYTES: usize = 10 * 1024 * 1024;
 
 /// Attempts made before a batch is reported lost.
 ///
-/// Bounded on purpose. Retrying indefinitely would hold a send slot until the
-/// accumulator sheds a batch, turning a throttled stream into a wider outage of
-/// observability; better to report the loss and free the slot.
+/// Bounded, so a throttled stream cannot hold a send slot indefinitely.
 const KINESIS_MAX_ATTEMPTS: usize = 3;
 
 /// The part of a Kinesis sink that talks to the stream.
@@ -320,12 +304,11 @@ struct KinesisWriter {
 impl KinesisWriter {
     /// Sends `batches` as records, retrying the ones the stream rejected.
     ///
-    /// The part that is easy to get wrong: `PutRecords` answers **200 even when
-    /// individual records were rejected**, reporting them positionally in the response
-    /// body. A producer that checks only the `Result` loses rows while reporting
-    /// success, so the body is inspected and only the rejected records are retried.
-    ///
-    /// A whole-request failure leaves every record pending.
+    /// `PutRecords` answers **200 even when individual records were rejected**,
+    /// reporting them positionally in the response body, so the body is inspected and
+    /// only the rejected records are retried. A whole-request failure leaves every
+    /// record pending. Anything still pending after `KINESIS_MAX_ATTEMPTS` is reported
+    /// as lost on stderr, as is a batch too large to encode into one record.
     async fn send(&self, batches: Vec<InferenceLogBatch>) {
         let mut pending: Vec<PutRecordsRequestEntry> = Vec::with_capacity(batches.len());
         for batch in batches {
@@ -334,7 +317,7 @@ impl KinesisWriter {
                 Err(reason) => eprintln!(
                     "logs: dropped request {:?} with {} rows: {reason}",
                     batch.request_id,
-                    batch.inference_log_rows.len()
+                    batch.row_ids.len()
                 ),
             }
         }
@@ -359,8 +342,6 @@ impl KinesisWriter {
                         self.stream,
                         describe_aws_error(&e)
                     );
-                    // Not after the last attempt: the loop is about to end, so the
-                    // wait would only hold a send slot while achieving nothing.
                     if attempt < KINESIS_MAX_ATTEMPTS {
                         backoff(attempt).await;
                     }
@@ -405,9 +386,15 @@ pub(crate) struct KinesisDataSink {
 }
 
 impl KinesisDataSink {
-    /// `capacity` is batches, clamped to the 500 records `PutRecords` accepts, because
-    /// one batch becomes one record. A larger buffer would build a request the service
-    /// rejects whole, losing everything in it rather than some of it.
+    /// Builds a Kinesis sink for `stream`.
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - the Kinesis client the records are sent with
+    /// * `stream` - the data stream's name
+    /// * `capacity` - batches per send, clamped to `KINESIS_MAX_RECORDS`, the 500 records
+    ///   `PutRecords` accepts in one call, because one batch becomes one record
+    /// * `max_in_flight` - sends allowed at once
     pub(crate) fn new(
         client: Arc<aws_sdk_kinesis::Client>,
         stream: impl Into<String>,
@@ -456,12 +443,13 @@ impl DataSink for KinesisDataSink {
 
 /// Turns one batch into one stream record.
 ///
-/// The partition key decides the shard, and Kinesis hashes it, so `request_id` gives
-/// an even spread while keeping one request's rows together for a consumer. Using
-/// the model id instead would put every record on one shard, which is the classic
-/// way to throttle a stream that is nominally wide enough.
+/// The partition key is the batch's `request_id`, which Kinesis hashes to pick a shard:
+/// an even spread, with one request's rows kept together for a consumer.
 ///
-/// The limit covers the key as well as the payload.
+/// # Errors
+///
+/// If the encoded batch and its partition key together exceed
+/// `KINESIS_MAX_RECORD_BYTES`, or the record cannot be built.
 fn to_entry(batch: &InferenceLogBatch) -> Result<PutRecordsRequestEntry, String> {
     let data = batch.encode_to_vec();
     let key = partition_key(&batch.request_id);
@@ -483,9 +471,9 @@ fn to_entry(batch: &InferenceLogBatch) -> Result<PutRecordsRequestEntry, String>
 
 /// A partition key that Kinesis will accept.
 ///
-/// The service requires between 1 and 256 characters, so an absent request id and an
-/// over-long one both have to be handled rather than passed through — either would
-/// be rejected for the whole request, not just that record.
+/// The service requires 1 to 256 characters, so a blank `request_id` becomes a random
+/// UUID and an over-long one is truncated to 256 characters, on a character boundary.
+/// Either would otherwise be rejected for the whole request, not just that record.
 fn partition_key(request_id: &str) -> String {
     const MAX: usize = 256;
     let trimmed = request_id.trim();
@@ -501,13 +489,14 @@ fn partition_key(request_id: &str) -> String {
 /// Splits a response into the records that need retrying and why.
 ///
 /// Response records correlate with request records by position, which the API
-/// guarantees, so the pairing is a zip. Kept as a free function because it is the piece
-/// with the logic in it, and testing it needs no network.
+/// guarantees, so the pairing is a zip. A record counts as succeeded when it carries no
+/// error code.
 ///
-/// A response whose length does not match the request cannot be read positionally, so
-/// everything is retried rather than guessed at: a duplicate is recoverable and a lost
-/// row is not. A record counts as succeeded when it has no error code -- checking for a
-/// sequence number instead would treat a malformed success as a failure.
+/// # Returns
+///
+/// The entries to retry, and the error code seen for each. A response whose length does
+/// not match the request cannot be read positionally, so every entry is retried with one
+/// reason explaining why.
 fn failed_entries(
     sent: Vec<PutRecordsRequestEntry>,
     results: &[PutRecordsResultEntry],
@@ -533,7 +522,7 @@ fn failed_entries(
     (retry, reasons)
 }
 
-/// Counts each distinct reason, so a log line does not repeat one 500 times.
+/// Counts each distinct reason, so one line does not repeat a code once per record.
 fn summarise(reasons: &[String]) -> String {
     let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for reason in reasons {
@@ -546,10 +535,7 @@ fn summarise(reasons: &[String]) -> String {
         .join(", ")
 }
 
-/// Waits before a retry, doubling each time.
-///
-/// Throttling is the expected reason a record is rejected, and retrying immediately
-/// would make it worse.
+/// Waits before a retry, doubling with each attempt and levelling off after the sixth.
 async fn backoff(attempt: usize) {
     let millis = 50u64 << (attempt.min(6) as u32);
     tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
@@ -559,19 +545,44 @@ async fn backoff(attempt: usize) {
 mod tests {
     use super::*;
     use crate::io::blob_store::LocalBlobStore;
+    use hushar::hushar_proto::FloatArray;
 
+    /// Scores in the shape a response carries them: one buffer, single precision.
+    fn score_type(values: Vec<f32>) -> hushar::hushar_proto::ScoreType {
+        hushar::hushar_proto::ScoreType {
+            score_type: Some(hushar::hushar_proto::score_type::ScoreType::FloatScores(
+                FloatArray { values },
+            )),
+        }
+    }
+
+    /// A batch of `rows` rows: `row_ids` states the row count, one score per row.
     fn batch(request_id: &str, rows: usize) -> InferenceLogBatch {
         InferenceLogBatch {
             request_id: request_id.to_owned(),
             model_id: "m".to_owned(),
-            inference_log_rows: (0..rows)
-                .map(|i| hushar::hushar_proto::InferenceLogRow {
-                    row_id: format!("row-{i}"),
-                    features: Default::default(),
-                    scores: vec![0.5],
-                })
-                .collect(),
+            row_ids: row_ids(rows),
+            features: text_column(rows),
+            scores: Some(score_type(vec![0.5; rows])),
         }
+    }
+
+    /// The ids a log batch states its rows with.
+    fn row_ids(rows: usize) -> Vec<String> {
+        (0..rows).map(|i| format!("row-{i}")).collect()
+    }
+
+    /// One text feature, so a batch carries what was received as well as what it scored.
+    fn text_column(
+        rows: usize,
+    ) -> std::collections::HashMap<String, hushar::hushar_proto::Feature> {
+        use crate::inference::batch::FeatureData;
+        use crate::inference::proto_columns::test_support;
+
+        test_support::one(
+            "city",
+            FeatureData::Str((0..rows).map(|i| format!("city-{i}")).collect()),
+        )
     }
 
     fn entry(key: &str) -> PutRecordsRequestEntry {
@@ -596,8 +607,6 @@ mod tests {
             .build()
     }
 
-    // ------------------------------------------------------- destinations
-
     #[test]
     fn a_kinesis_uri_is_a_stream_name() {
         assert_eq!(
@@ -613,8 +622,7 @@ mod tests {
             }
         );
     }
-    /// `kinesis://bucket/prefix` is what someone writes after using s3://, and silently
-    /// taking "bucket" as the stream would send logs somewhere real but wrong.
+    /// A `kinesis://` URI carrying a path is refused rather than read as a stream name.
     #[test]
     fn a_kinesis_uri_with_a_path_is_refused_rather_than_mangled() {
         let err = DataDestination::parse("kinesis://stream/extra/path")
@@ -625,7 +633,7 @@ mod tests {
         );
         assert!(DataDestination::parse("kinesis://").is_err());
     }
-    /// And an unsupported scheme is still reported by `Location`.
+    /// Other schemes parse as blob-store locations, and an unsupported one errors.
     #[test]
     fn other_uris_still_mean_a_blob_store() {
         assert!(matches!(
@@ -646,9 +654,7 @@ mod tests {
         }
     }
 
-    // ---------------------------------------------------------- sampling
-
-    /// The default has to be what the service did before there was a lever.
+    /// A rate of one keeps every request.
     #[test]
     fn a_rate_of_one_keeps_every_request() {
         let sampler = Sampler::new(1.0);
@@ -662,17 +668,14 @@ mod tests {
         assert!(!(0..100).any(|_| sampler.sample()));
         assert_eq!(sampler.describe(), "no requests");
     }
-    /// Counted rather than randomised, so the fraction is exact over any window rather
-    /// than approached over a long one -- which is what makes a small sample rate
-    /// predictable instead of a gamble.
+    /// A fractional rate keeps exactly that fraction, not approximately.
     #[test]
     fn a_fractional_rate_keeps_exactly_that_fraction() {
         let sampler = Sampler::new(0.1);
         let kept = (0..1000).filter(|_| sampler.sample()).count();
         assert_eq!(kept, 100, "one in ten, not approximately one in ten");
     }
-    /// A rate that is not a unit fraction cannot be realised exactly by counting, so
-    /// the banner has to report what was chosen rather than what was asked for.
+    /// A rate between unit fractions describes the interval it settled on.
     #[test]
     fn a_rate_between_unit_fractions_reports_what_it_settled_on() {
         let sampler = Sampler::new(0.15);
@@ -681,9 +684,7 @@ mod tests {
         let kept = (0..700).filter(|_| sampler.sample()).count();
         assert_eq!(kept, 100);
     }
-    /// Out-of-range and non-finite values are refused by the command line, but a
-    /// sampler that divided by NaN would produce a nonsense interval rather than a
-    /// clear one, so it is handled here too.
+    /// NaN and negative rates keep nothing; a rate above one keeps everything.
     #[test]
     fn a_nonsensical_rate_degrades_to_keeping_nothing() {
         for rate in [f64::NAN, -1.0, -0.0] {
@@ -694,8 +695,7 @@ mod tests {
         }
         assert!(Sampler::new(2.0).sample(), "above one is still everything");
     }
-    /// Requests arrive on every worker at once, so the count has to be shared: two
-    /// samplers' worth of state would keep twice the configured fraction.
+    /// The kept fraction is exact when requests arrive on many tasks at once.
     #[tokio::test]
     async fn sampling_is_counted_across_concurrent_requests() {
         let sampler = Arc::new(Sampler::new(0.25));
@@ -713,10 +713,7 @@ mod tests {
         assert_eq!(kept, 100, "one in four of 400 requests");
     }
 
-    // -------------------------------------------------- partial failures
-    /// The behaviour that makes a Kinesis producer correct. `PutRecords` answers 200
-    /// with per-record errors, so a producer that only checks the `Result` reports
-    /// success while losing rows.
+    /// Only the records the response reported an error for are retried.
     #[test]
     fn only_the_rejected_records_are_retried() {
         let sent = vec![entry("a"), entry("b"), entry("c")];
@@ -754,9 +751,7 @@ mod tests {
         assert_eq!(keys, vec!["a", "b", "c"]);
         assert_eq!(reasons.len(), 3);
     }
-    /// Positional matching is only valid when the lengths agree. Guessing would risk
-    /// dropping a record that actually failed; a duplicate is recoverable and a lost
-    /// row is not.
+    /// A response whose length does not match the request retries every record.
     #[test]
     fn a_response_that_does_not_line_up_retries_everything() {
         let sent = vec![entry("a"), entry("b"), entry("c")];
@@ -769,7 +764,7 @@ mod tests {
             "got {reasons:?}"
         );
     }
-    /// Five hundred identical throttle messages in one log line is not a log line.
+    /// Repeated error codes are summarised with a count rather than listed.
     #[test]
     fn reasons_are_counted_not_repeated() {
         let reasons = vec![
@@ -785,8 +780,6 @@ mod tests {
         assert!(summary.contains("InternalFailure x1"), "got {summary}");
     }
 
-    // ----------------------------------------------------------- records
-
     #[test]
     fn a_batch_becomes_a_record_keyed_by_its_request_id() {
         let entry = to_entry(&batch("req-7", 3)).expect("valid record");
@@ -796,9 +789,7 @@ mod tests {
             "the encoded batch should be the payload"
         );
     }
-    /// Kinesis rejects an empty partition key, and it rejects the whole request rather
-    /// than that record, so this cannot be passed through. Random rather than constant,
-    /// or every keyless record would land on one shard.
+    /// A blank request id becomes a non-empty key, and a different one each time.
     #[test]
     fn an_absent_request_id_still_produces_a_usable_key() {
         let a = partition_key("");
@@ -806,8 +797,7 @@ mod tests {
         assert!(!a.is_empty() && !b.is_empty());
         assert_ne!(a, b, "keyless records should still spread across shards");
     }
-    /// On a character boundary: the limit is characters, and a byte slice could split a
-    /// multi-byte one.
+    /// An over-long request id is truncated to the limit, on a character boundary.
     #[test]
     fn an_over_long_request_id_is_truncated_to_the_limit() {
         let key = partition_key(&"x".repeat(1000));
@@ -817,25 +807,19 @@ mod tests {
         assert_eq!(key.chars().count(), 256);
         assert!(key.is_char_boundary(key.len()));
     }
-    /// Sending it would fail the whole `PutRecords` call and take 499 good records with
-    /// it, so it is refused individually. Comfortably past the per-record limit once
-    /// encoded.
+    /// A batch over the per-record byte limit is reported as an error, not sent.
     #[test]
     fn a_record_over_the_size_limit_is_reported_not_sent() {
         let huge = InferenceLogBatch {
             request_id: "big".into(),
             model_id: "m".into(),
-            inference_log_rows: vec![hushar::hushar_proto::InferenceLogRow {
-                row_id: "r".into(),
-                features: Default::default(),
-                scores: vec![0.0; KINESIS_MAX_RECORD_BYTES],
-            }],
+            row_ids: row_ids(1),
+            features: text_column(1),
+            scores: Some(score_type(vec![0.0; KINESIS_MAX_RECORD_BYTES])),
         };
         let err = to_entry(&huge).expect_err("over the limit");
         assert!(err.contains("per-record limit"), "got {err}");
     }
-
-    // -------------------------------------------------------- blob sink
 
     /// A blob sink writing to a fresh temporary directory.
     fn blob_sink(dir: &std::path::Path, capacity: usize) -> BlobDataSink {
@@ -851,8 +835,7 @@ mod tests {
         std::env::temp_dir().join(format!("hushar-datasink-{}", uuid::Uuid::new_v4()))
     }
 
-    /// The write is spawned, so `flush` is what makes it observable -- it waits for the
-    /// sends in the air, which is the property shutdown depends on.
+    /// One object is written once the buffer reaches capacity, observable after a flush.
     #[tokio::test]
     async fn the_blob_sink_writes_once_it_reaches_capacity() {
         let dir = temp_dir();
@@ -871,7 +854,7 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
-    /// One batch with a capacity of 100: without the flush this writes nothing.
+    /// A flush writes a buffer that never reached capacity.
     #[tokio::test]
     async fn the_blob_sink_does_not_lose_a_partial_buffer_on_flush() {
         let dir = temp_dir();
@@ -881,8 +864,7 @@ mod tests {
         assert_eq!(walk(&dir).len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
-    /// The service can stop before any batch arrives, and an empty object would be
-    /// noise for whatever reads the prefix.
+    /// Flushing with nothing buffered writes no object.
     #[tokio::test]
     async fn flushing_an_empty_blob_sink_writes_nothing() {
         let dir = temp_dir();
@@ -891,9 +873,7 @@ mod tests {
         assert_eq!(walk(&dir).len(), 0);
         std::fs::remove_dir_all(&dir).ok();
     }
-    /// The point of the whole change: recording must not wait on the destination. A
-    /// local write is fast, but "faster than a hundred writes" is the shape of the
-    /// claim, and an awaited put could not satisfy it.
+    /// Recording returns without waiting for the write.
     #[tokio::test]
     async fn recording_returns_without_waiting_for_the_write() {
         let dir = temp_dir();
@@ -912,8 +892,7 @@ mod tests {
         );
         std::fs::remove_dir_all(&dir).ok();
     }
-    /// Zero-padded, so lexical order matches chronological order, which is what makes a
-    /// partition listing usable.
+    /// A log key carries zero-padded time partitions and is unique per call.
     #[test]
     fn a_log_key_is_partitioned_by_time_and_unique() {
         let a = time_partitioned_key();
@@ -932,12 +911,7 @@ mod tests {
         assert_eq!(month.len(), 2, "month should be zero-padded, got {month}");
     }
 
-    // ----------------------------------------------------- kinesis sink
-
-    /// A Kinesis sink with credentials that will never work.
-    ///
-    /// Enough to test buffering, which is the part with logic in it. Sending is
-    /// covered by `failed_entries` and `to_entry`, which need no network.
+    /// A Kinesis sink with credentials that will never work, for testing buffering.
     fn offline_kinesis(capacity: usize) -> KinesisDataSink {
         let config = aws_sdk_kinesis::Config::builder()
             .behavior_version_latest()
@@ -959,33 +933,27 @@ mod tests {
         sink.record(batch("b", 1));
         assert_eq!(sink.accumulator.buffered(), 2, "still buffered");
     }
-    /// 500 records per call is a hard API limit; a larger buffer would build a request
-    /// the service rejects whole. And zero would send one record per call, which is the
-    /// expensive way. Reported by `batch_size`, so a clamped value is visible at
-    /// startup rather than only in the bill.
+    /// The Kinesis batch size is clamped to what `PutRecords` accepts, and to at least
+    /// one.
     #[tokio::test]
     async fn the_kinesis_capacity_cannot_exceed_what_put_records_accepts() {
         assert_eq!(offline_kinesis(50_000).batch_size(), KINESIS_MAX_RECORDS);
         assert_eq!(offline_kinesis(0).batch_size(), 1);
     }
-    /// A blob store takes an object of any size, so this is the sink where a large
-    /// batch is purely a memory trade and nothing reduces it.
+    /// A blob sink reports the batch size it was given, unclamped.
     #[tokio::test]
     async fn a_blob_sink_keeps_whatever_batch_size_it_was_given() {
         let dir = temp_dir();
         assert_eq!(blob_sink(&dir, 50_000).batch_size(), 50_000);
     }
-    /// Consistent with `BlobStore::backend` and `MetricsSink::backend`: the backend,
-    /// not the address. The address comes from `DataDestination::uri`, so a banner that
-    /// printed both would not repeat itself.
+    /// Each sink names its backend rather than its address.
     #[tokio::test]
     async fn each_sink_names_its_backend_the_way_its_siblings_do() {
         assert_eq!(offline_kinesis(10).backend(), "Amazon Kinesis");
         let dir = temp_dir();
         assert_eq!(blob_sink(&dir, 1).backend(), "local filesystem");
     }
-    /// Throttling is the expected rejection, so retrying at the same rate would make it
-    /// worse. Timed rather than inspected, since the delay is the point.
+    /// A later attempt waits longer than an earlier one.
     #[tokio::test]
     async fn backoff_grows_with_each_attempt() {
         let start = std::time::Instant::now();

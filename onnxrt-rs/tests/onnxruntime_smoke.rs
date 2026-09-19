@@ -35,10 +35,12 @@ fn session(_api: Api) -> (Arc<Environment>, onnxrt_rs::Session) {
     (env, session)
 }
 
+/// Asserts the runtime loads and reports a version when `ORT_DYLIB_PATH` is set.
+///
+/// A runtime the caller named explicitly must load, so this failing is a bug rather
+/// than a reason to skip.
 #[test]
 fn runtime_is_available_when_configured() {
-    // If the caller explicitly pointed us at a runtime, failing to load it is a
-    // real bug, not a reason to skip.
     if std::env::var_os(onnxrt_rs::DYLIB_PATH_ENV).is_some() {
         let api = Api::load().expect("ORT_DYLIB_PATH is set, so the runtime must load");
         assert!(
@@ -49,6 +51,7 @@ fn runtime_is_available_when_configured() {
     }
 }
 
+/// Asserts a single row returns a `[1, 2]` tensor of scores strictly inside (0, 1).
 #[test]
 fn single_row_inference_produces_sigmoid_outputs() {
     let Some(api) = api() else { return };
@@ -70,12 +73,13 @@ fn single_row_inference_produces_sigmoid_outputs() {
     }
 }
 
+/// Asserts a batch of 3 rows x 3 features, laid out row-major, returns a `[3, 2]`
+/// tensor of 6 scores.
 #[test]
 fn batch_inference_returns_one_row_of_scores_per_input_row() {
     let Some(api) = api() else { return };
     let (_env, session) = session(api);
 
-    // 3 rows x 3 features, laid out row-major.
     let mut features = vec![1.0f32, 2.0, 3.0, 0.5, 1.0, 1.5, 0.1, 0.2, 0.3];
     let output = session
         .run_single(&mut features, &[3, 3])
@@ -89,6 +93,10 @@ fn batch_inference_returns_one_row_of_scores_per_input_row() {
     assert!(scores.iter().all(|s| *s >= 0.0 && *s <= 1.0));
 }
 
+/// Asserts the fixture reports one input and one output, each with a non-empty name.
+///
+/// The names come from the model, so only non-emptiness is asserted rather than
+/// whatever the exporter chose.
 #[test]
 fn model_io_names_are_discovered() {
     let Some(api) = api() else { return };
@@ -104,12 +112,11 @@ fn model_io_names_are_discovered() {
         1,
         "the sigmoid test model has a single output"
     );
-    // Names come from the model, so assert they are non-empty rather than
-    // hard-coding whatever the exporter chose.
     assert!(session.input_names().iter().all(|n| !n.is_empty()));
     assert!(session.output_names().iter().all(|n| !n.is_empty()));
 }
 
+/// Asserts garbage model bytes surface as an `Error::Ort` status rather than loading.
 #[test]
 fn invalid_model_bytes_are_reported_as_an_ort_error() {
     let Some(api) = api() else { return };
@@ -127,12 +134,13 @@ fn invalid_model_bytes_are_reported_as_an_ort_error() {
     );
 }
 
+/// Asserts a shape whose element count disagrees with the buffer — 3 values as a 2x3
+/// tensor — is rejected as `ShapeMismatch` before reaching C.
 #[test]
 fn shape_that_disagrees_with_the_buffer_is_rejected_before_reaching_c() {
     let Some(api) = api() else { return };
     let (_env, session) = session(api);
 
-    // 3 values cannot be a 2x3 tensor.
     let mut features = vec![1.0f32, 2.0, 3.0];
     let err = session
         .run_single(&mut features, &[2, 3])
@@ -149,6 +157,7 @@ fn shape_that_disagrees_with_the_buffer_is_rejected_before_reaching_c() {
     }
 }
 
+/// Asserts reading a float output as `i64` is an `ElementTypeMismatch`.
 #[test]
 fn reading_an_output_as_the_wrong_element_type_is_an_error() {
     let Some(api) = api() else { return };
@@ -168,6 +177,7 @@ fn reading_an_output_as_the_wrong_element_type_is_an_error() {
     );
 }
 
+/// Asserts the available-provider list always names CPU, which every build has.
 #[test]
 fn available_providers_always_include_cpu() {
     let Some(api) = api() else { return };
@@ -179,6 +189,11 @@ fn available_providers_always_include_cpu() {
     );
 }
 
+/// Asserts the declared input and output shapes are readable: 3 features in, 2
+/// sigmoid outputs.
+///
+/// Only the trailing dimension is asserted, because the batch axis may be concrete or
+/// dynamic (-1) depending on how the model was exported.
 #[test]
 fn declared_input_and_output_shapes_are_readable() {
     let Some(api) = api() else { return };
@@ -188,15 +203,13 @@ fn declared_input_and_output_shapes_are_readable() {
     let output = session.output_shape(0).expect("output shape");
     eprintln!("model shapes: input {input:?} output {output:?}");
 
-    // The fixture takes 3 features and produces 2 sigmoid outputs. The batch axis
-    // may be concrete or dynamic (-1) depending on how the model was exported, so
-    // only the trailing feature dimension is asserted.
     assert_eq!(input.len(), 2, "expected a 2-D input, got {input:?}");
     assert_eq!(input[1], 3, "expected 3 features, got {input:?}");
     assert_eq!(output.len(), 2, "expected a 2-D output, got {output:?}");
     assert_eq!(output[1], 2, "expected 2 outputs, got {output:?}");
 }
 
+/// Asserts an out-of-range shape index is an `IndexOutOfRange` naming index and count.
 #[test]
 fn out_of_range_shape_index_is_rejected() {
     let Some(api) = api() else { return };
@@ -210,14 +223,13 @@ fn out_of_range_shape_index_is_rejected() {
     }
 }
 
-/// Requesting a provider the loaded library lacks must say so clearly, and name
-/// what is available, rather than surface a bare ONNX Runtime status.
+/// Asserts requesting a provider the loaded library lacks is a `ProviderUnavailable`
+/// naming what is available, not a bare ONNX Runtime status.
 #[test]
 fn requesting_an_absent_provider_names_what_is_available() {
     let Some(api) = api() else { return };
     let env = Environment::shared("onnxrt-rs-absent-provider").expect("create env");
 
-    // A provider name no ONNX Runtime build has.
     let bogus = onnxrt_rs::ExecutionProvider::Custom {
         name: "NoSuchAccelerator".to_owned(),
         options: Vec::new(),
@@ -243,16 +255,13 @@ fn requesting_an_absent_provider_names_what_is_available() {
     let _ = api;
 }
 
-/// The invariant that keeps ONNX Runtime's single-environment rule satisfied.
+/// Asserts [`Environment::shared`] hands out one environment per process, including
+/// under concurrent calls from several threads.
 ///
-/// ONNX Runtime permits only one environment using the default logger at a time,
-/// and creating or tearing down environments concurrently fails with "Only one
-/// instance of LoggingManager created with InstanceType::Default can exist at any
-/// point in time". [`Environment::shared`] answers that by creating exactly one
-/// environment per process and never dropping it, so there is no churn to race.
-///
-/// This is the guard for that: if `shared` ever started handing out distinct
-/// environments, the intermittent failure would come back.
+/// ONNX Runtime permits only one environment using the default logger at a time, and
+/// creating or tearing down environments concurrently fails with "Only one instance of
+/// LoggingManager created with InstanceType::Default can exist at any point in time".
+/// `shared` therefore creates exactly one environment per process and never drops it.
 #[test]
 fn shared_environment_is_created_once() {
     let Some(_api) = api() else { return };
@@ -264,7 +273,6 @@ fn shared_environment_is_created_once() {
         "shared() must hand out one environment, not one per call"
     );
 
-    // Also under contention, which is when the original defect showed up.
     let handles: Vec<_> = (0..8)
         .map(|_| std::thread::spawn(|| Environment::shared("concurrent").expect("shared")))
         .collect();
@@ -280,14 +288,14 @@ fn shared_environment_is_created_once() {
     }
 }
 
+/// Asserts an `Arc<Session>` can run inference from several threads at once, which is
+/// how hushar serves concurrent requests.
 #[test]
 fn sessions_can_be_shared_across_threads() {
     let Some(api) = api() else { return };
     let (_env, session) = session(api);
     let session = Arc::new(session);
 
-    // The point of this test is that `Arc<Session>` is usable from several
-    // threads at once, which is how hushar serves concurrent requests.
     let handles: Vec<_> = (0..8)
         .map(|i| {
             let session = Arc::clone(&session);

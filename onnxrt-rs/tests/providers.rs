@@ -9,38 +9,32 @@
 //! cargo test -p onnxrt-rs --features all-providers    # every accelerator
 //! ```
 //!
-//! Each module asks the same four questions of its accelerator, so a new one has
-//! an obvious shape to copy:
+//! Each module asks the same four questions of its accelerator:
 //!
 //! 1. is the provider registered on a session without error?
 //! 2. does a real inference run on it?
 //! 3. does it agree with the CPU baseline?
 //! 4. is its configuration surface (device id, compute units, threads) accepted?
 //!
-//! Question 3 is the one that matters most. A provider that fails to load is
-//! obvious; a provider that loads and quietly computes something else is not.
-//!
 //! Enabling a feature is not a claim the hardware is present. A module whose
 //! provider is missing from the loaded `libonnxruntime` skips with a reason —
 //! see `common::with_provider`.
 //!
-//! NVIDIA is covered by TensorRT and AMD by MIGraphX, those being the vendors'
-//! strategic inference stacks. The plain CUDA and ROCm providers are not offered;
-//! `"cuda"` and `"rocm"` in configuration are rejected with a pointer to the
-//! supported spelling rather than silently doing something else.
+//! The plain CUDA and ROCm providers are not offered: NVIDIA is covered by TensorRT
+//! and AMD by MIGraphX, and `"cuda"` or `"rocm"` in configuration is rejected with a
+//! pointer to the supported spelling.
 
 mod common;
 
-// Which of these are used depends on which accelerator features are enabled, so
-// a narrow build legitimately leaves some unused.
+// A narrow build legitimately leaves some of these unused.
 #[allow(unused_imports)]
 use common::{
     api, assert_matches_cpu, assert_sigmoid_range, cpu_scores, scores_on, session_on, with_provider,
 };
 use onnxrt_rs::ExecutionProvider;
 
-/// Names every accelerator this build enabled, so the log records what was
-/// actually exercised rather than leaving it to be inferred from which tests ran.
+/// Logs the accelerators this build enables, and asserts the `cpu` feature reports
+/// itself as enabled.
 #[test]
 fn report_enabled_accelerators() {
     eprintln!(
@@ -59,14 +53,14 @@ fn report_enabled_accelerators() {
     );
 }
 
-/// Asking for an accelerator this build did not enable must fail with a message
-/// naming the feature, distinctly from one the library lacks.
+/// Asserts a provider this build did not enable fails with `ProviderNotEnabled`
+/// naming the missing feature, distinctly from one the library lacks.
+///
+/// Skips when this build enables every accelerator.
 #[test]
 fn a_disabled_accelerator_names_the_missing_feature() {
     let Some(_api) = api() else { return };
 
-    // Pick a provider that this build did *not* enable. If everything is enabled
-    // there is nothing to test, which is itself correct.
     let candidates = [
         ExecutionProvider::core_ml(),
         ExecutionProvider::xnnpack(),
@@ -101,8 +95,8 @@ fn a_disabled_accelerator_names_the_missing_feature() {
 mod cpu {
     use super::*;
 
-    /// CPU is the baseline every other accelerator is compared against, so it has
-    /// to be right on its own terms first.
+    /// Asserts CPU inference runs and produces sigmoid outputs; it is the baseline
+    /// every other accelerator is compared against.
     #[test]
     fn cpu_runs_and_produces_sigmoid_output() {
         with_provider(ExecutionProvider::Cpu, |provider| {
@@ -111,8 +105,8 @@ mod cpu {
         });
     }
 
-    /// CPU is present in every ONNX Runtime build, so unlike the accelerators this
-    /// must not be skipped for lack of a provider.
+    /// Asserts CPU registers on any ONNX Runtime build, so this never skips for a
+    /// missing provider.
     #[test]
     fn cpu_is_always_registerable() {
         let Some(_api) = api() else { return };
@@ -125,6 +119,7 @@ mod coreml {
     use super::*;
     use onnxrt_rs::{CoreMlComputeUnits, CoreMlModelFormat};
 
+    /// Asserts CoreML inference runs and produces sigmoid outputs.
     #[test]
     fn coreml_runs_and_produces_sigmoid_output() {
         with_provider(ExecutionProvider::core_ml(), |provider| {
@@ -133,6 +128,7 @@ mod coreml {
         });
     }
 
+    /// Asserts CoreML scores agree with the CPU baseline.
     #[test]
     fn coreml_agrees_with_cpu() {
         with_provider(ExecutionProvider::core_ml(), |provider| {
@@ -141,12 +137,8 @@ mod coreml {
         });
     }
 
-    /// Every compute-unit setting must be one CoreML accepts, and none may change
-    /// the answer.
-    ///
-    /// The `MLComputeUnits` values are documented by ONNX Runtime but not by the
-    /// vendored C header, so they are the one part of the provider mapping that
-    /// could not be confirmed by reading the header. This pins them.
+    /// Asserts every compute-unit setting is accepted by CoreML and none changes the
+    /// answer.
     #[test]
     fn every_coreml_compute_unit_setting_agrees_with_cpu() {
         with_provider(ExecutionProvider::core_ml(), |_| {
@@ -166,13 +158,7 @@ mod coreml {
         });
     }
 
-    /// Both model formats must run and agree with CPU.
-    ///
-    /// The format decides how much of a graph CoreML will take: `NeuralNetwork` has no
-    /// N-dimensional `MatMul`, so it refuses a transformer's attention blocks and hands
-    /// most of the graph back to CPU. That is a throughput question rather than a
-    /// correctness one, which is exactly why it needs a test -- the wrong format is not
-    /// visible in the answer.
+    /// Asserts both CoreML model formats run and agree with CPU.
     #[test]
     fn every_coreml_model_format_agrees_with_cpu() {
         with_provider(ExecutionProvider::core_ml(), |_| {
@@ -210,16 +196,15 @@ mod openvino_spellings {
         }
     }
 
-    /// CPU, because that is what the provider is reached for on a server. A GPU or NPU
-    /// has to be named, so a configuration cannot land on one by accident.
+    /// Asserts a bare `openvino` spelling defaults to CPU with OpenVINO's own thread
+    /// and stream defaults; a GPU or NPU has to be named.
     #[test]
     fn openvino_defaults_to_the_cpu_with_openvinos_own_thread_and_stream_defaults() {
         assert_eq!(parse("openvino"), ("CPU".to_owned(), None, None));
         assert_eq!(parse("open_vino"), ("CPU".to_owned(), None, None));
     }
 
-    /// Uppercased, because OpenVINO's own device names are and a lowercase spelling in a
-    /// configuration should not be a different thing.
+    /// Asserts a device name is uppercased, matching OpenVINO's own spellings.
     #[test]
     fn a_device_is_uppercased() {
         for (spelling, expected) in [
@@ -233,6 +218,8 @@ mod openvino_spellings {
         }
     }
 
+    /// Asserts threads and streams are optional and order-free, in this crate's and
+    /// OpenVINO's own spellings.
     #[test]
     fn threads_and_streams_are_optional_and_order_free() {
         assert_eq!(
@@ -247,15 +234,14 @@ mod openvino_spellings {
             parse("openvino:threads=96:streams=4:gpu"),
             ("GPU".to_owned(), Some(96), Some(4))
         );
-        // The upstream spellings work too, since that is what the docs name them.
         assert_eq!(
             parse("openvino:num_of_threads=8:num_streams=2"),
             ("CPU".to_owned(), Some(8), Some(2))
         );
     }
 
-    /// A multi-device form carries a colon of its own, so it arrives as two tokens and
-    /// has to be rejoined rather than read as two device types.
+    /// Asserts a multi-device form is rejoined rather than read as two device types,
+    /// its own colon notwithstanding.
     #[test]
     fn a_multi_device_form_is_rejoined() {
         assert_eq!(parse("openvino:auto:gpu,cpu").0, "AUTO:GPU,CPU");
@@ -263,6 +249,7 @@ mod openvino_spellings {
         assert_eq!(parse("openvino:multi:gpu,cpu:threads=8").0, "MULTI:GPU,CPU");
     }
 
+    /// Asserts a bad spelling is refused with an error naming the reason.
     #[test]
     fn a_bad_spelling_is_refused_with_a_reason() {
         for (spelling, expected) in [
@@ -282,7 +269,8 @@ mod openvino_spellings {
         }
     }
 
-    /// The banner prints this, so it has to say what was configured.
+    /// Asserts the description, which the banner prints, names the device and any
+    /// options.
     #[test]
     fn the_description_names_the_device_and_any_options() {
         let described = |s: &str| s.parse::<ExecutionProvider>().unwrap().to_string();
@@ -308,7 +296,7 @@ mod coreml_spellings {
         }
     }
 
-    /// ML Program is the default, because the older format cannot take a transformer.
+    /// Asserts CoreML defaults to the ML Program format, whatever the compute units.
     #[test]
     fn coreml_defaults_to_the_ml_program_format() {
         assert_eq!(
@@ -324,8 +312,8 @@ mod coreml_spellings {
         );
     }
 
-    /// Compute units and format are independent, so neither has to be named to reach
-    /// the other and the order between them does not matter.
+    /// Asserts compute units and model format are independent and may be given in
+    /// either order.
     #[test]
     fn the_two_coreml_options_are_independent_and_unordered() {
         let restricted = (
@@ -346,8 +334,8 @@ mod coreml_spellings {
         );
     }
 
-    /// A misspelling names the value and lists what was expected, because a provider
-    /// that silently ignored it would run slowly rather than fail.
+    /// Asserts an unknown CoreML option is refused with the input named and the
+    /// accepted values listed.
     #[test]
     fn an_unknown_coreml_option_is_refused_with_the_alternatives() {
         let error = "coreml:cpu_and_ane"
@@ -373,6 +361,7 @@ mod coreml_spellings {
 mod xnnpack {
     use super::*;
 
+    /// Asserts XNNPACK inference runs and produces sigmoid outputs.
     #[test]
     fn xnnpack_runs_and_produces_sigmoid_output() {
         with_provider(ExecutionProvider::xnnpack(), |provider| {
@@ -381,6 +370,7 @@ mod xnnpack {
         });
     }
 
+    /// Asserts XNNPACK scores agree with the CPU baseline.
     #[test]
     fn xnnpack_agrees_with_cpu() {
         with_provider(ExecutionProvider::xnnpack(), |provider| {
@@ -389,7 +379,7 @@ mod xnnpack {
         });
     }
 
-    /// XNNPACK takes its own thread-pool size.
+    /// Asserts XNNPACK accepts its own thread-pool size and still agrees with CPU.
     #[test]
     fn xnnpack_accepts_an_explicit_thread_count() {
         with_provider(ExecutionProvider::xnnpack(), |_| {
@@ -406,8 +396,8 @@ mod xnnpack {
 mod tensorrt {
     use super::*;
 
-    /// TensorRT compiles the graph on first use, so this is slower than the others
-    /// by design.
+    /// Asserts TensorRT inference runs and produces sigmoid outputs; slower than the
+    /// other providers, since TensorRT compiles the graph on first use.
     #[test]
     fn tensorrt_runs_and_produces_sigmoid_output() {
         with_provider(ExecutionProvider::tensor_rt(0), |provider| {
@@ -416,6 +406,7 @@ mod tensorrt {
         });
     }
 
+    /// Asserts TensorRT scores agree with the CPU baseline.
     #[test]
     fn tensorrt_agrees_with_cpu() {
         with_provider(ExecutionProvider::tensor_rt(0), |provider| {
@@ -429,11 +420,10 @@ mod tensorrt {
 mod migraphx {
     use super::*;
 
-    /// MIGraphX is the one provider whose options struct this crate fills by
-    /// hand, because ONNX Runtime exposes no factory for it. That makes a real run
-    /// the only way to know the defaults are right — in particular
-    /// `migraphx_mem_limit`, where zero would mean zero bytes rather than
-    /// unlimited.
+    /// Asserts MIGraphX inference runs and produces sigmoid outputs, which is the only
+    /// check on this crate's hand-filled options struct — ONNX Runtime exposes no
+    /// factory for it, and a zero `migraphx_mem_limit` would mean zero bytes rather
+    /// than unlimited.
     #[test]
     fn migraphx_runs_and_produces_sigmoid_output() {
         with_provider(ExecutionProvider::migraphx(0), |provider| {
@@ -442,6 +432,7 @@ mod migraphx {
         });
     }
 
+    /// Asserts MIGraphX scores agree with the CPU baseline.
     #[test]
     fn migraphx_agrees_with_cpu() {
         with_provider(ExecutionProvider::migraphx(0), |provider| {

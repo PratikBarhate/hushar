@@ -3,15 +3,14 @@
 
 //! Run-time resolution of the `libnrt` symbols this crate uses.
 //!
-//! Unlike ONNX Runtime, `libnrt` exports plain C functions rather than a
-//! function-pointer table, so each one is resolved individually with
-//! `libloading`. The signatures below are transcribed from the `extern "C"`
-//! declarations `bindgen` produced in [`crate::sys`]; keeping them in one place
-//! makes them easy to diff against a regenerated `sys` module.
+//! `libnrt` exports plain C functions rather than a function-pointer table, so each one
+//! is resolved individually with `libloading`. The signatures below are transcribed from
+//! the `extern "C"` declarations `bindgen` produced in [`crate::sys`], and must be kept
+//! in step with a regenerated `sys` module.
 //!
-//! Loading at run time rather than linking at build time means a hushar binary
-//! is identical on Neuron and non-Neuron hosts. It only fails when something
-//! actually asks for a Neuron device.
+//! Loading at run time rather than linking at build time means one binary is identical
+//! on Neuron and non-Neuron hosts, and only fails when something asks for a Neuron
+//! device.
 
 use std::ffi::{OsStr, OsString};
 use std::os::raw::{c_char, c_int, c_void};
@@ -97,16 +96,20 @@ pub(crate) struct Symbols {
     pub nrt_tensor_get_size: unsafe extern "C" fn(*const sys::nrt_tensor_t) -> usize,
 }
 
-/// Resolves one symbol, transmuting it to the declared signature.
+/// Resolves one symbol from `$library`, transmuting it to the declared signature.
 ///
-/// `libloading::Symbol` borrows the library; since the library is leaked before
-/// this runs, lifting the pointer out is sound.
+/// The signature transmuted to is transcribed from the `extern "C"` declaration bindgen
+/// generated for the same symbol in [`crate::sys`], so the ABI matches whatever `libnrt`
+/// exports. Lifting the raw pointer out of the borrowed `libloading::Symbol` is sound
+/// only because the library is leaked before this runs, so it outlives every pointer
+/// resolved from it.
+///
+/// # Errors
+///
+/// [`Error::MissingSymbol`] when `libnrt` does not export the name.
 macro_rules! symbol {
     ($library:expr, $name:ident) => {{
         let name = concat!(stringify!($name), "\0").as_bytes();
-        // SAFETY: the signature this is transmuted to is transcribed from the
-        // `extern "C"` declaration bindgen generated for the same symbol in
-        // `crate::sys`, so the ABI matches whatever `libnrt` exports.
         let symbol: libloading::Symbol<'_, _> =
             unsafe { $library.get(name) }.map_err(|source| Error::MissingSymbol {
                 symbol: stringify!($name),
@@ -119,8 +122,18 @@ macro_rules! symbol {
 impl Symbols {
     /// Opens `libnrt` and resolves every symbol this crate needs.
     ///
-    /// Fails fast on a missing symbol rather than deferring to the first call,
-    /// so an SDK too old for this crate is reported at startup.
+    /// The library opened is `path` if given, else `$NRT_DYLIB_PATH`, else each name in
+    /// [`DEFAULT_LIBRARY_NAMES`] in turn. Both the library and the resolved [`Symbols`]
+    /// are leaked deliberately: models and tensors hold pointers into the library's code
+    /// and data, and `nrt_close` must still be callable at shutdown, so it must never be
+    /// unmapped. That is what makes the `'static` return sound.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedPlatform`] off Linux, [`Error::LibraryLoad`] when no candidate
+    /// can be opened (the last failure is reported), or [`Error::MissingSymbol`] when a
+    /// symbol is absent. A missing symbol fails here rather than at the first call, so an
+    /// SDK too old for this crate is reported at startup.
     pub(crate) fn load(path: Option<&OsStr>) -> Result<&'static Self> {
         if !cfg!(target_os = "linux") {
             return Err(Error::unsupported_platform());
@@ -136,13 +149,8 @@ impl Symbols {
 
         let mut last_error = None;
         for candidate in &candidates {
-            // SAFETY: `Library::new` runs the library's initialisers, which any
-            // FFI load must trust.
             match unsafe { libloading::Library::new(candidate) } {
                 Ok(library) => {
-                    // Leaked deliberately: models and tensors hold pointers into
-                    // this library's code and data, and `nrt_close` must be able
-                    // to run at shutdown, so it must never be unmapped.
                     let library: &'static libloading::Library = Box::leak(Box::new(library));
                     return Ok(Box::leak(Box::new(Self::resolve(library)?)));
                 }
@@ -182,14 +190,17 @@ impl Symbols {
     }
 
     /// Turns a raw status into a `Result`, attaching `libnrt`'s own description.
+    ///
+    /// `nrt_get_status_as_str` returns the status *name* for most codes, so the
+    /// description is only appended when it differs from the name.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Nrt`] for any status other than `NRT_SUCCESS`.
     pub(crate) fn check(&self, operation: &'static str, status: sys::NRT_STATUS) -> Result<()> {
         match crate::error::Status::from_raw(status) {
             None => Ok(()),
             Some(status) => {
-                // `nrt_get_status_as_str` returns the status *name* for most
-                // codes, so printing it alongside the name duplicates it.
-                // Verified against libnrt 2.34.10.0, where a device-less
-                // `nrt_init` yielded "NRT_INVALID" from both.
                 let text = self.status_text(status.as_raw());
                 let name = status.to_string();
                 let detail = if text == name {
@@ -206,10 +217,11 @@ impl Symbols {
         }
     }
 
+    /// `libnrt`'s description of a status, or `<no description>` if it returns null.
+    ///
+    /// The pointer returned is to a string owned by `libnrt`, never an owned allocation,
+    /// so there is nothing to free and the text is copied out rather than retained.
     fn status_text(&self, status: sys::NRT_STATUS) -> String {
-        // SAFETY: `nrt_get_status_as_str` takes a status by value and returns a
-        // pointer to a static string owned by libnrt; it never returns an owned
-        // allocation, so there is nothing to free.
         unsafe {
             let p = (self.nrt_get_status_as_str)(status);
             if p.is_null() {

@@ -71,7 +71,7 @@ copy_generated() {
 
 if [ "$WITH_CONFIGS" = 1 ]; then
   # Small, and the CLIENT cannot run without them: it reads the model configuration to
-  # know which features to send, and the vocabulary to send tokens the graph has seen.
+  # know the model, and a feature specification to know what to send for each feature.
   copy_generated '*.json' \
     || echo "note: no configurations in $GEN -- run scripts/generate_benchmark_models.py first" >&2
 fi

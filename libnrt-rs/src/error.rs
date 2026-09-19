@@ -12,8 +12,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// An `NRT_STATUS` returned by `libnrt`.
 ///
-/// The variants worth branching on are called out individually; the rest are
-/// preserved in [`Status::Other`] with the raw code so nothing is lost.
+/// Variants worth branching on are named individually; every other code is preserved in
+/// [`Status::Other`] with its raw value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     /// Generic failure with no more specific code.
@@ -133,12 +133,10 @@ impl fmt::Display for Status {
 
 /// Render a [`libloading::Error`] together with its whole source chain.
 ///
-/// `libloading`'s own `Display` for a failed `dlopen` is the bare string
-/// "dlopen failed". The text from `dlerror` — the part that actually says *why*,
-/// whether that is a missing transitive dependency, a `glibc` older than the one
-/// the runtime was built against, or an architecture mismatch — sits one level
-/// down in [`std::error::Error::source`]. Formatting only the top-level error
-/// hands an operator a message with no diagnostic content, so walk the chain.
+/// `libloading`'s `Display` for a failed `dlopen` is the bare string "dlopen failed";
+/// the `dlerror` text that says why — a missing transitive dependency, too old a
+/// `glibc`, an architecture mismatch — sits one level down in
+/// [`std::error::Error::source`], so the chain is walked and joined with ": ".
 fn describe_load_error(error: &libloading::Error) -> String {
     use std::error::Error as _;
 
@@ -187,10 +185,8 @@ pub enum Error {
 
     /// `libnrt` returned a failure status.
     ///
-    /// `detail` is built by the crate's internal `Symbols::check`, which folds the
-    /// status name and `nrt_get_status_as_str` text into one string. For most
-    /// statuses `nrt_get_status_as_str` just echoes the name, so printing both
-    /// unconditionally produced messages like `[NRT_INVALID]: NRT_INVALID`.
+    /// `detail` folds the status name and the `nrt_get_status_as_str` text into one
+    /// string, omitting the text when it only repeats the name.
     #[error("Neuron runtime error in {operation}: {detail}")]
     Nrt {
         operation: &'static str,

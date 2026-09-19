@@ -48,17 +48,18 @@ pub struct TensorInfo {
 
 /// A NEFF loaded onto one or more NeuronCores.
 ///
-/// Holds an `Arc<Runtime>`, so the runtime stays initialised for as long as the
-/// model is loaded.
+/// Holds an `Arc<Runtime>`, so the runtime stays initialised for as long as the model is
+/// loaded, and unloads the NEFF on drop.
+///
+/// `Send` and `Sync` are sound because `nrt_execute` may be called concurrently on a
+/// loaded model, and this type exposes only `&self` accessors plus [`Model::execute`],
+/// whose mutable state lives entirely in the caller's [`TensorSet`].
 pub struct Model {
     runtime: Arc<Runtime>,
     ptr: *mut sys::nrt_model_t,
     tensors: Vec<TensorInfo>,
 }
 
-// SAFETY: `nrt_execute` may be called concurrently on a loaded model, and this
-// type exposes only `&self` accessors plus `execute`, whose mutable state lives
-// entirely in the caller's `TensorSet`.
 unsafe impl Send for Model {}
 unsafe impl Sync for Model {}
 
@@ -67,9 +68,13 @@ impl Model {
     /// `start_neuron_core`.
     ///
     /// Pass `start_neuron_core = 0` and `neuron_core_count = 1` for the common
-    /// single-core case. `neuron_core_count` must match what the NEFF was
-    /// compiled for, or the load fails with
-    /// [`Status::NotEnoughNeuronCores`](crate::Status::NotEnoughNeuronCores).
+    /// single-core case. libnrt copies what it needs from `neff` during the call, so the
+    /// borrow does not have to outlive it.
+    ///
+    /// # Errors
+    ///
+    /// [`Status::NotEnoughNeuronCores`](crate::Status::NotEnoughNeuronCores) when
+    /// `neuron_core_count` does not match what the NEFF was compiled for.
     pub fn load(
         runtime: Arc<Runtime>,
         neff: &[u8],
@@ -78,9 +83,6 @@ impl Model {
     ) -> Result<Self> {
         let mut ptr: *mut sys::nrt_model_t = ptr::null_mut();
 
-        // SAFETY: `neff` is valid for the length we pass, and `ptr` is a valid
-        // out-parameter. libnrt copies what it needs during the call, so the
-        // borrow does not have to outlive it.
         unsafe {
             let status = (runtime.symbols.nrt_load)(
                 neff.as_ptr().cast::<std::os::raw::c_void>(),
@@ -116,11 +118,12 @@ impl Model {
         self.tensors.iter().filter(|t| t.usage == Usage::Output)
     }
 
-    /// Allocates a device tensor for every input and every output, sized from
-    /// the NEFF.
+    /// Allocates a device tensor for every input and every output, sized from the NEFF.
     ///
-    /// Returns `(inputs, outputs)` ready to hand to [`Model::execute`]. Write
-    /// features into the input set, execute, then read the output set.
+    /// # Returns
+    ///
+    /// `(inputs, outputs)` ready to hand to [`Model::execute`]: write features into the
+    /// input set, execute, then read the output set.
     pub fn allocate_io(&self, neuron_core: i32) -> Result<(TensorSet, TensorSet)> {
         let mut inputs = TensorSet::new(Arc::clone(&self.runtime))?;
         for info in self.inputs() {
@@ -151,14 +154,12 @@ impl Model {
 
     /// Runs the model, reading from `inputs` and writing into `outputs`.
     ///
-    /// `outputs` is taken by `&mut` because libnrt writes into its tensors;
-    /// `inputs` only needs to be readable, so concurrent executions can share an
-    /// input set if they want to.
+    /// `outputs` is taken by `&mut` because libnrt writes into its tensors; `inputs` only
+    /// needs to be readable, so concurrent executions can share one input set. Both sets
+    /// must belong to the same runtime as this model. `nrt_execute` takes the model as
+    /// `*mut` but is safe to call concurrently on a shared model, which is what the
+    /// `Sync` impl relies on.
     pub fn execute(&self, inputs: &TensorSet, outputs: &mut TensorSet) -> Result<()> {
-        // SAFETY: both sets are live and belong to the same runtime as this
-        // model. `nrt_execute` takes the model as `*mut` but is safe to call
-        // concurrently on a shared model, which is what the `Sync` impl above
-        // relies on.
         unsafe {
             let status =
                 (self.runtime.symbols.nrt_execute)(self.ptr, inputs.as_ptr(), outputs.as_ptr());
@@ -179,12 +180,12 @@ impl Model {
 
     /// Reads the NEFF's tensor table and copies it into owned Rust values.
     ///
-    /// The C side hands back a heap block with a flexible array member, which
-    /// must be released with `nrt_free_model_tensor_info`, so everything is
-    /// copied out before that happens.
+    /// The C side hands back a heap block with a flexible array member, which must be
+    /// released with `nrt_free_model_tensor_info`, so everything is copied out before
+    /// that happens. `tensor_count` bounds the trailing array, and each entry's `shape`
+    /// is a libnrt-owned array of `ndim` u32s.
     fn read_tensor_info(&self) -> Result<Vec<TensorInfo>> {
         let mut array: *mut sys::nrt_tensor_info_array_t = ptr::null_mut();
-        // SAFETY: live model, valid out-parameter.
         unsafe {
             let status = (self.runtime.symbols.nrt_get_model_tensor_info)(self.ptr, &mut array);
             self.runtime
@@ -195,16 +196,12 @@ impl Model {
             return Ok(Vec::new());
         }
 
-        // SAFETY: `array` is a non-null block libnrt allocated. `tensor_count`
-        // is the number of valid entries in the trailing flexible array, so
-        // `as_slice` over that count stays in bounds. Freed below in all paths.
         let result = unsafe {
             let count = (*array).tensor_count as usize;
             let entries = (*array).tensor_array.as_slice(count);
             entries
                 .iter()
                 .map(|entry| {
-                    // `shape` is a libnrt-owned array of `ndim` u32s.
                     let shape = if entry.shape.is_null() || entry.ndim == 0 {
                         Vec::new()
                     } else {
@@ -221,8 +218,6 @@ impl Model {
                 .collect::<Vec<_>>()
         };
 
-        // SAFETY: `array` came from `nrt_get_model_tensor_info` and everything
-        // borrowed from it has been copied into owned values above.
         unsafe {
             let status = (self.runtime.symbols.nrt_free_model_tensor_info)(array);
             self.runtime
@@ -243,9 +238,8 @@ impl std::fmt::Debug for Model {
 }
 
 impl Drop for Model {
+    /// Unloads the NEFF from its NeuronCores.
     fn drop(&mut self) {
-        // SAFETY: `ptr` came from `nrt_load` and is unloaded exactly once. The
-        // `Arc<Runtime>` guarantees `nrt_close` has not run yet.
         unsafe { (self.runtime.symbols.nrt_unload)(self.ptr) };
     }
 }

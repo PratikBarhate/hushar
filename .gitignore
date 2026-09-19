@@ -2,16 +2,17 @@
 #######################
 # Models, their configurations and the string vocabulary are written together by
 # scripts/generate_benchmark_models.py. A model is ~190 MB, so the whole directory
-# is generated on demand rather than committed. See benchmark-data/README.md.
+# is generated on demand rather than committed. See benchmark-data/TEMPLATE.md.
 benchmark-data/generated/
 
 # Bundles from scripts/benchmark/package.sh -- a build artifact of the working tree.
 benchmark-data/dist/
 
-# Client and server logs and the summary table a run leaves behind. The curated
-# reports in benchmark-data/results/ are what is tracked; the output they were
-# written from is not.
-benchmark-data/results/raw/
+# The Triton comparison harness: model repository generator, server runner, gRPC load
+# generator and the arm results it collects. Kept beside the code so a campaign can be
+# re-run without hunting for it, but deliberately untracked -- it is scaffolding for
+# measuring somebody else's server, not part of hushar. The findings it produced are in
+triton-bench/
 
 # Runbooks and working notes for our own benchmark campaigns. These name accounts,
 # regions, bucket names and instance types we happen to be using, which is operational
@@ -75,6 +76,12 @@ Desktop.ini
 # Logs, temporary and backup files #
 ####################################
 *.log
+
+# ... except a benchmark's own logs under results/raw/. Those are the server banners, the
+# per-second CPU samples and the client output a report's figures are traced to, so they are
+# tracked on purpose -- see benchmark-data/TEMPLATE.md.
+!benchmark-data/results/**/raw/**/*.log
+
 *.tmp
 *.temp
 *.bak
@@ -110,3 +117,8 @@ Desktop.ini
 !CLAUDE.md
 !SOUL.md
 !RULES.md
+
+# The account ids check_privacy.py should treat as known leaks, one per line. Untracked on
+# purpose: an id committed to teach a scanner about it has still been committed. Supply it
+# here or in $HUSHAR_ACCOUNT_IDS.
+.account-ids

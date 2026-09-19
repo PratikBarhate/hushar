@@ -4,67 +4,89 @@
 syntax = "proto3";
 package hushar;
 
+// A batch of rows to score, one entry per feature.
+//
+// # Fields
+//
+// * `request_id` - the caller's id for this batch, echoed back in the response
+// * `row_ids` - one id per row, in row order. Its length is the batch's row count
+// * `features` - the features, keyed by name as the model configuration spells it.
+//   Each entry carries that feature's values for the whole batch. A map rather than
+//   a list, so a name cannot be sent twice and travels exactly once. What decides
+//   where a feature lands inside a concatenated input is `feature_order` in the
+//   model configuration
+// * `model_id` - which model serves this request. Empty lets the server apply the
+//   traffic split from its configuration. A name it has not loaded is an error,
+//   never a fallback, so a caller running its own split cannot be served the
+//   other arm
+//
+// # The feature map
+//
+// * one entry per feature, holding `rows * width` values, row-major
+// * an entry states its own `width`, which is checked against the values it sent, so
+//   a caller that contradicts itself is told which feature did it. What the model
+//   requires still comes from the model configuration, not from the wire
+// * one type per feature, since an entry is one array
+// * a feature a batch has no value for is left out of the map entirely, and its
+//   transformation's default covers it
+// * empty means no features
 message InferenceRequest {
   string request_id = 1;
-  repeated InputRow inputs = 2;
-  // Which model should serve this request. Empty means the server decides, using the
-  // traffic split in its configuration.
-  //
-  // Set it to run the split on the caller's side instead -- when the arm has to agree
-  // with a decision already made elsewhere, such as the experiment bucket a user was
-  // assigned. A name the server has not loaded is an error rather than a fallback: a
-  // request silently served by the other arm would corrupt the comparison it is part of.
-  string model_id = 3;
+  repeated string row_ids = 2;
+  map<string, Feature> features = 3;
+  string model_id = 4;
 }
 
+// One feature's values for the whole batch: `rows * width` values, row-major.
+//
+// The name is not here -- it is the map key that reached this value, so it is
+// stated once per request and cannot disagree with itself.
+//
+// # Fields
+//
+// * `width` - values per row, as the caller believes it. What the model requires
+//   still comes from its own configuration; this is the caller stating its own
+//   intent, so a disagreement can be reported against the request that caused it
+//   rather than inferred later. 0 means not stated, and is not an error
+// * `data` - the values. The variants wrap arrays because a `oneof` cannot hold a
+//   `repeated` field. One type per feature, so a scalar feature is simply one of
+//   width 1
+message Feature {
+  uint32 width = 1;
+  oneof data {
+    FloatArray float_values = 2;
+    DoubleArray double_values = 3;
+    IntegerArray integer_values = 4;
+    LongArray long_values = 5;
+    StringArray string_values = 6;
+  }
+}
+
+// The scores, shaped like the request that asked for them.
+//
+// # Fields
+//
+// * `request_id` - the id from the request
+// * `row_ids` - the ids from the request, in the same order
+// * `model_id` - the model that served this request. Always set, since the server
+//   may be the one that chose it
+// * `scores` - every row's scores back to back. Row `r` begins at `r * width`,
+//   where `width` is `values / rows`, so no shape can disagree with the values it
+//   describes
 message InferenceResponse {
   string request_id = 1;
-  repeated OutputRow outputs = 2;
-  // The model that actually served this request, always set.
-  //
-  // Without it a caller cannot attribute an outcome to an arm, which is the whole
-  // purpose of a split -- and it is the server that chose, so it is the server that
-  // has to say.
+  repeated string row_ids = 2;
   string model_id = 3;
+  ScoreType scores = 4;
 }
 
-message InputRow {
-    string row_id = 1;
-    map<string, DataType> features = 2;
-}
-
-message OutputRow {
-    string row_id = 1;
-    ScoreType scores = 2;
-}
-
-// One row's scores, in the precision the model produces.
+// Scores in the precision the model produces.
 //
-// A `oneof` for the same reason `DataType` is one: a response cannot then claim to be
-// two types at once, and there is no separate label that could disagree with the
-// values. The variants wrap `FloatArray` and `DoubleArray` rather than holding a
-// `repeated` field directly, because protobuf does not allow a `oneof` to contain one.
+// The variants wrap arrays because a `oneof` cannot hold a `repeated` field.
 message ScoreType {
   oneof score_type {
     FloatArray float_scores = 1;
     DoubleArray double_scores = 2;
-  }
-}
-
-// One feature value, as received, before vectorization.
-message DataType {
-  oneof data_type {
-    double double_value = 1;
-    float float_value = 2;
-    int32 integer_value = 3;
-    int64 long_value = 4;
-    string string_value = 5;
-    DoubleArray double_array = 6;
-    FloatArray float_array = 7;
-    IntegerArray integer_array = 8;
-    LongArray long_array = 9;
-    StringArray string_array = 10;
-    bool bool_value = 11;
   }
 }
 
@@ -88,17 +110,24 @@ message StringArray {
   repeated string values = 1;
 }
 
-message InferenceLogRow {
-    string row_id = 1;
-    // The values received for this row, before any transformation.
-    map<string, DataType> features = 2;
-    repeated float scores = 3;
-}
-
+// One batch as it was served, for offline use: the request's shape with the scores
+// added, so writing a log is a move rather than a rebuild.
+//
+// # Fields
+//
+// * `request_id` - the request this batch answered
+// * `model_id` - the model that served it
+// * `row_ids` - one id per row, in row order
+// * `features` - the request's own features, exactly as the caller sent them and
+//   before any transformation: the named values, not the vectorized inputs the
+//   model saw. Empty when feature logging is off
+// * `scores` - exactly what the response carried, in the same precision
 message InferenceLogBatch {
   string request_id = 1;
   string model_id = 2;
-  repeated InferenceLogRow inference_log_rows = 3;
+  repeated string row_ids = 3;
+  map<string, Feature> features = 4;
+  ScoreType scores = 5;
 }
 
 message InferenceLogs {

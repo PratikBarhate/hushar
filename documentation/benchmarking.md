@@ -131,9 +131,24 @@ aws s3 sync /tmp/hushar-server/         "s3://my-bucket/hushar-bench/$STEM/serve
 ## 6 · Record
 
 ```bash
-cp benchmark-data/results/TEMPLATE.md \
-   benchmark-data/results/cpu-arm64/c9g-48xlarge-cpu-2026-09-11.md
+BENCH=<bench-name>        # named for what the run swept; see benchmark-data/TEMPLATE.md
+mkdir -p benchmark-data/results/$BENCH
+cp benchmark-data/TEMPLATE.md \
+   benchmark-data/results/$BENCH/summary.md
 ```
+
+A bucket name embeds an AWS account number, so pass it in rather than committing it, and check
+before you commit — an account id travels by paste, inside a path nobody reads twice:
+
+```bash
+echo <account-id> > .account-ids        # untracked; or export HUSHAR_ACCOUNT_IDS
+python3 scripts/check_privacy.py        # non-zero if a tracked file carries an id or credential
+```
+
+The accounts in use are checked exactly, which catches an id concatenated into a longer name —
+`bucket<account-id>logs` — that the generic twelve-digit pattern steps over. The list stays out
+of the repository, because an id committed to teach a scanner about it has still been committed.
+This paragraph is why it is spelt `<account-id>` here too.
 
 Thirteen columns, four sources — the template names every one:
 
@@ -160,9 +175,7 @@ Both windows matter. `START`/`END` cut CloudWatch to the measured sweep rather t
 including the warmup and the idle tail; `report <from> <to>` does the same for the host
 samples, in seconds from the first sample so no clock arithmetic is needed.
 
-Then fill the table from `summary.txt`, add the peak row to
-[`results/index.md`](../benchmark-data/results/index.md), and commit. Classes are
-`cpu-arm64`, `cpu-x86` and `gpu-nvidia`.
+Then fill the table from `summary.txt` and commit.
 
 ## When it goes wrong
 

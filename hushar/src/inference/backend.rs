@@ -3,15 +3,10 @@
 
 //! The inference engine abstraction.
 //!
-//! Everything above this module works in terms of [`InferenceBackend`] and knows
-//! nothing about ONNX Runtime, Neuron, or any other engine.
-//!
-//! The boundary is named, typed features in and named, typed scores out. That is what
-//! lets one code path serve multi-head classification, multi-target regression,
-//! forecasts and embeddings: they differ only in the outputs they declare.
-//!
-//! Feature building, timing, logging and metrics all sit *outside* it, so adding an
-//! engine cannot change how features are built or how results are reported.
+//! Everything above this module works in terms of [`InferenceBackend`] and knows nothing
+//! about ONNX Runtime, Neuron, or any other engine. The boundary is named, typed features
+//! in and named, typed scores out; feature building, timing, logging and metrics all sit
+//! outside it.
 
 use std::fmt::Debug;
 
@@ -20,32 +15,24 @@ use crate::inference::batch::{InputBatch, IoSpec, OutputBatch};
 
 /// An inference engine.
 ///
-/// Implementations must be usable from many request threads at once through a
-/// shared reference, which is why `run` takes `&self`: the service holds one
-/// backend in an [`std::sync::Arc`] and does not serialise access to it.
+/// Implementations must be usable from many request threads at once through a shared
+/// reference: the service holds one backend in an [`std::sync::Arc`] and does not
+/// serialise access to it.
 pub(crate) trait InferenceBackend: Debug + Send + Sync {
     /// Engine and device, for logs and metric dimensions, such as
     /// `"onnxruntime/CoreML(ALL)"`.
     fn name(&self) -> &str;
 
     /// What the model takes, read from the model rather than configured.
-    ///
-    /// Reading it from the model is what lets a declared configuration be checked
-    /// against the signature at startup instead of being assumed away.
     fn inputs(&self) -> &[IoSpec];
 
     /// What the model produces.
-    ///
-    /// A caller that reads this can interpret any model's output without the
-    /// service knowing what kind of model it is.
     fn outputs(&self) -> &[IoSpec];
 
     /// Runs one batch.
     ///
-    /// Inputs are taken **by value**, and that is load bearing: it preserves the
-    /// zero-copy path. An engine can wrap a caller's buffer instead of copying it, but
-    /// needs mutable access to do so, which owning the features gives a backend and
-    /// `&InputBatch` would not.
+    /// Inputs are taken by value so an implementation may lend their buffers to the
+    /// engine mutably rather than copying them.
     ///
     /// Every input the model declares must be supplied, and matching is by name, not
     /// position.
@@ -68,10 +55,8 @@ pub(crate) mod test_support {
 
     /// A backend that runs no model, for testing everything around one.
     ///
-    /// Each output row is the sum of that input row's values, repeated to the
-    /// output width. Deriving the output from the row's own contents means a test
-    /// can prove row *identity* is preserved -- that row 3's scores came from row
-    /// 3's features -- which a constant would not catch.
+    /// Each output row is the sum of that input row's values, repeated to the output
+    /// width.
     #[derive(Debug)]
     pub(crate) struct SummingBackend {
         inputs: Vec<IoSpec>,
@@ -82,7 +67,7 @@ pub(crate) mod test_support {
 
     impl SummingBackend {
         /// A single `FP32` input named `features` and a single `FP32` output named
-        /// `scores`, which is the shape a plain tabular scorer has.
+        /// `scores`.
         pub(crate) fn new(input_width: usize, output_width: usize) -> Self {
             Self {
                 inputs: vec![IoSpec::new("features", ElementType::F32, Some(input_width))],
@@ -100,16 +85,8 @@ pub(crate) mod test_support {
 
     /// A [`SummingBackend`] whose engine call takes a known, non-trivial amount of time.
     ///
-    /// Timings are recorded in **microseconds**, and a mock backend scoring a handful of
-    /// rows finishes well inside one -- so asserting that a measured stage is non-zero is
-    /// asserting that the machine was slow, which it intermittently is not. Zero is also a
-    /// legitimate reading: `an_empty_batch_is_not_sent_to_the_engine` requires it. That
-    /// leaves no value a test can use to tell "measured 0us" from "never measured".
-    ///
-    /// Sleeping for a duration far longer than the clock's resolution removes the guess. A
-    /// sleep can overrun but never underrun, so a lower-bound assertion on it cannot flake,
-    /// and it checks something stronger than non-zero: that the figure tracks the time
-    /// really spent, in the stage it belongs to.
+    /// Timings are recorded in microseconds, so the delay must be far longer than the
+    /// clock's resolution for a lower-bound assertion on a measured stage to hold.
     #[derive(Debug)]
     pub(crate) struct SlowBackend {
         inner: SummingBackend,
@@ -138,8 +115,7 @@ pub(crate) mod test_support {
             self.inner.outputs()
         }
 
-        /// Delegates, so the scores stay derived from each row's own contents and this
-        /// backend differs from its inner one in timing alone.
+        /// Sleeps for the configured delay, then delegates to the inner backend.
         fn run(&self, inputs: InputBatch) -> Result<OutputBatch, InferenceError> {
             std::thread::sleep(self.delay);
             self.inner.run(inputs)
@@ -187,12 +163,7 @@ pub(crate) mod test_support {
 
     /// A backend that records the size of every batch it is given.
     ///
-    /// Exists for the fixed-batch-size path, where what needs proving is not the scores
-    /// but the *shape of the work*: that a request is cut into batches of exactly the
-    /// pinned size, that a short one is padded up to it, and that the engine is never
-    /// handed a batch of another size. Scores are the row's sum, as [`SummingBackend`]
-    /// computes them, so a batch stitched back together in the wrong order shows up in
-    /// the values as well as in the recorded sizes.
+    /// Scores are the row's sum, as [`SummingBackend`] computes them.
     #[derive(Debug)]
     pub(crate) struct RecordingBackend {
         inner: SummingBackend,
@@ -240,10 +211,8 @@ pub(crate) mod test_support {
 
     /// A backend with several outputs of different widths and both float types.
     ///
-    /// Exists to test that the request path is generic over the model families rather
-    /// than merely typed: one call returns logits, an embedding and a double-precision
-    /// total. Each output is derived from the input row, so a transposition between
-    /// outputs or between rows shows up in the values.
+    /// Returns logits, an embedding and a double-precision total, each derived from the
+    /// input row.
     #[derive(Debug)]
     pub(crate) struct MultiOutputBackend {
         inputs: Vec<IoSpec>,
@@ -301,8 +270,7 @@ pub(crate) mod test_support {
 
     /// A backend whose inputs are named after features: one transformed, one verbatim.
     ///
-    /// The shape a named-input configuration maps onto, so the request path can be
-    /// tested against it without an engine.
+    /// The shape a named-input configuration maps onto.
     #[derive(Debug)]
     pub(crate) struct PerFeatureBackend {
         inputs: Vec<IoSpec>,
@@ -343,8 +311,7 @@ pub(crate) mod test_support {
             &self.outputs
         }
 
-        /// Derives both outputs from both inputs, so a column sent to the wrong input,
-        /// or a row transposition, changes the result.
+        /// Derives both outputs from both inputs.
         fn run(&self, inputs: InputBatch) -> Result<OutputBatch, InferenceError> {
             let age = inputs.get("age").ok_or("missing input \"age\"")?;
             let tags = inputs.get("tags").ok_or("missing input \"tags\"")?;
@@ -373,8 +340,6 @@ pub(crate) mod test_support {
     }
 
     /// A backend whose input and output are double precision.
-    ///
-    /// Exists so the `FP64` score path is exercised without a real engine.
     #[derive(Debug)]
     pub(crate) struct DoubleBackend {
         inputs: Vec<IoSpec>,
@@ -417,10 +382,8 @@ pub(crate) mod test_support {
 
     /// A backend that always fails, for testing error propagation.
     ///
-    /// It declares a plausible signature rather than none, so a request reaches
-    /// `run` and the failure comes from the engine. With no declared inputs the
-    /// request path would reject the batch first, and a test asserting on the
-    /// engine's message would be asserting on validation instead.
+    /// It declares a plausible signature rather than none, so a request reaches `run` and
+    /// the failure comes from the engine.
     #[derive(Debug)]
     pub(crate) struct FailingBackend;
 
@@ -461,6 +424,7 @@ mod tests {
         batch
     }
 
+    /// Each row's scores are that row's sum: two rows of width 3 sum to 3 and 6.
     #[test]
     fn the_test_backend_maps_each_row_to_its_own_sum() {
         let backend = SummingBackend::new(3, 2);
@@ -468,10 +432,7 @@ mod tests {
         inputs
             .push(
                 "features",
-                FeatureData::F32(vec![
-                    1.0, 1.0, 1.0, // row 0 sums to 3
-                    2.0, 2.0, 2.0, // row 1 sums to 6
-                ]),
+                FeatureData::F32(vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0]),
             )
             .expect("valid");
 
@@ -481,7 +442,7 @@ mod tests {
         assert_eq!(scores.row_as_f32(1).expect("row 1"), vec![6.0, 6.0]);
     }
 
-    /// Two rows, but only one value per row where three are wanted.
+    /// A batch whose rows are narrower than the model's input is rejected.
     #[test]
     fn the_test_backend_rejects_a_batch_of_the_wrong_width() {
         let backend = SummingBackend::new(3, 2);
@@ -504,9 +465,7 @@ mod tests {
         );
     }
 
-    /// The central claim at this boundary: the model families need one code path,
-    /// because they differ only in the outputs they declare. Each row sums to 3.0 and
-    /// every output is derived from that, so a transposition would change the values.
+    /// One call returns outputs of different element types and widths, all row-aligned.
     #[test]
     fn a_model_can_return_several_outputs_of_different_types_and_widths() {
         let backend = MultiOutputBackend::new(2);

@@ -5,6 +5,7 @@ pub(crate) mod backend;
 pub(crate) mod batch;
 pub(crate) mod input_builder;
 pub(crate) mod onnx_backend;
+pub(crate) mod proto_columns;
 pub(crate) mod scoring;
 pub(crate) mod traffic_split;
 pub(crate) mod transformations;
@@ -13,19 +14,19 @@ pub(crate) use backend::InferenceBackend;
 
 /// Error type for the inference path.
 ///
-/// `Send + Sync` is load-bearing, not decoration. Inference is CPU-bound and runs
-/// on a blocking thread, so its result has to cross back to the async worker that
-/// will write the response; a plain `Box<dyn Error>` cannot make that trip.
+/// `Send + Sync` is required: inference runs on a blocking thread and its result crosses
+/// back to the async worker that writes the response.
 pub(crate) type InferenceError = Box<dyn std::error::Error + Send + Sync>;
 
 pub(crate) use onnx_backend::OnnxRuntimeBackend;
 
 /// Time spent in each stage of one batch, in microseconds.
 ///
-/// Fields:
-/// - `vec_time` — building the input batch from the request's features.
-/// - `tensor_time` — handing that batch to the backend.
-/// - `inference_time` — the engine call itself.
+/// # Fields
+///
+/// * `vec_time` - building the input batch from the request's features
+/// * `tensor_time` - handing that batch to the backend
+/// * `inference_time` - the engine call itself
 #[derive(Debug)]
 pub(crate) struct InferenceMicros {
     pub vec_time: u128,
