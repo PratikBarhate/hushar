@@ -1,0 +1,1 @@
+{"label": "c9g-2-T-r100t100", "rows": 100, "offered": 100, "achieved": 100.0, "ok": 30001, "failed": 0, "shed": 0, "p50": 12.03, "p95": 12.58, "p99": 14.26, "mean": 12.09, "max": 28.83, "client_cpu": 0.2, "measured_secs": 300.0}

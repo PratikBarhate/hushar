@@ -1,0 +1,74 @@
+
+=============================
+== Triton Inference Server ==
+=============================
+
+NVIDIA Release 26.05 (build 51748363)
+Triton Server Version 2.69.0
+
+Copyright (c) 2018-2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+I1025 22:37:54.712329 1 pinned_memory_manager.cc:277] "Pinned memory pool is created at '0x7f1f84000000' with size 268435456"
+I1025 22:37:54.712431 1 cuda_memory_manager.cc:107] "CUDA memory pool is created on device 0 with size 67108864"
+I1025 22:37:54.714235 1 model_lifecycle.cc:473] "loading: bench_vectorized:1"
+I1025 22:37:54.757920 1 tensorrt.cc:65] "TRITONBACKEND_Initialize: tensorrt"
+I1025 22:37:54.757957 1 tensorrt.cc:75] "Triton TRITONBACKEND API version: 1.19"
+I1025 22:37:54.757963 1 tensorrt.cc:81] "'tensorrt' TRITONBACKEND API version: 1.19"
+I1025 22:37:54.757972 1 tensorrt.cc:105] "backend configuration:\n{\"cmdline\":{\"auto-complete-config\":\"false\",\"backend-directory\":\"/opt/tritonserver/backends\",\"min-compute-capability\":\"6.000000\",\"default-max-batch-size\":\"4\"}}"
+I1025 22:37:54.758184 1 tensorrt.cc:231] "TRITONBACKEND_ModelInitialize: bench_vectorized (version 1)"
+I1025 22:37:54.758894 1 tensorrt.cc:297] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_0 (GPU device 0)"
+I1025 22:37:54.781899 1 logging.cc:46] "Loaded engine size: 35 MiB"
+I1025 22:37:54.824887 1 logging.cc:46] "[MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +19, now: CPU 0, GPU 53 (MiB)"
+I1025 22:37:54.825070 1 instance_state.cc:186] "Created instance bench_vectorized_0_0 on GPU 0 with stream priority 0 and optimization profile default[0];"
+I1025 22:37:54.825317 1 model_lifecycle.cc:849] "successfully loaded 'bench_vectorized'"
+I1025 22:37:54.825382 1 server.cc:639] 
++------------------+------+
+| Repository Agent | Path |
++------------------+------+
++------------------+------+
+
+I1025 22:37:54.825419 1 server.cc:666] 
++----------+-----------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Backend  | Path                                                      | Config                                                                                                                                                         |
++----------+-----------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| tensorrt | /opt/tritonserver/backends/tensorrt/libtriton_tensorrt.so | {"cmdline":{"auto-complete-config":"false","backend-directory":"/opt/tritonserver/backends","min-compute-capability":"6.000000","default-max-batch-size":"4"}} |
++----------+-----------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+I1025 22:37:54.825469 1 server.cc:709] 
++------------------+---------+--------+
+| Model            | Version | Status |
++------------------+---------+--------+
+| bench_vectorized | 1       | READY  |
++------------------+---------+--------+
+
+I1025 22:37:54.825648 1 metrics.cc:782] "Collecting CPU metrics"
+I1025 22:37:54.825777 1 tritonserver.cc:2598] 
++----------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Option                           | Value                                                                                                                                                                                                           |
++----------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| server_id                        | triton                                                                                                                                                                                                          |
+| server_version                   | 2.69.0                                                                                                                                                                                                          |
+| server_extensions                | classification sequence model_repository model_repository(unload_dependents) schedule_policy model_configuration system_shared_memory cuda_shared_memory binary_tensor_data parameters statistics trace logging |
+| model_repository_path[0]         | /models                                                                                                                                                                                                         |
+| model_control_mode               | MODE_NONE                                                                                                                                                                                                       |
+| strict_model_config              | 1                                                                                                                                                                                                               |
+| model_config_name                |                                                                                                                                                                                                                 |
+| rate_limit                       | OFF                                                                                                                                                                                                             |
+| pinned_memory_pool_byte_size     | 268435456                                                                                                                                                                                                       |
+| cuda_memory_pool_byte_size{0}    | 67108864                                                                                                                                                                                                        |
+| min_supported_compute_capability | 6.0                                                                                                                                                                                                             |
+| strict_readiness                 | 1                                                                                                                                                                                                               |
+| exit_timeout                     | 30                                                                                                                                                                                                              |
+| cache_enabled                    | 0                                                                                                                                                                                                               |
++----------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+I1025 22:37:54.827918 1 grpc_server.cc:2579] "Started GRPCInferenceService at 0.0.0.0:8001"
+I1025 22:37:54.828141 1 http_server.cc:4961] "Started HTTPService at 0.0.0.0:8000"
+I1025 22:37:54.869360 1 http_server.cc:400] "Started Metrics Service at 0.0.0.0:8002"

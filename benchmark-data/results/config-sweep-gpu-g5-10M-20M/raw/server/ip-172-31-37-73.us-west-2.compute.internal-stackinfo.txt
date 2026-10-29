@@ -1,0 +1,15 @@
+triton_image=nvcr.io/nvidia/tritonserver:26.05-py3
+image_tensorrt=10.16.1
+image_cuda_major=13
+onnxruntime=1.28.3
+onnxruntime_build=onnxruntime-linux-x64-gpu_cuda13-1.28.3
+onnxruntime_so=1.28.3
+nvidia_driver=595.112.07
+gpu=NVIDIA A10G
+gpu_memory_mib=23028
+gpu_compute_cap=8.6
+kernel=6.12.111-136.204.amzn2023.x86_64
+nproc=8
+instance_type=g5.2xlarge
+model_specs=10m:5539c97131c896db6c58088d9f9b9ee3 20m:30f9c5330b808a34b55fe88048a20da6
+plans=10m-5539c97131c8-r100-fp32.plan 20m-30f9c5330b80-r100-fp32.plan 

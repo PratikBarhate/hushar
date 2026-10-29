@@ -6,7 +6,7 @@
 # the generated configurations and models.
 #
 #   scripts/benchmark/package.sh                  # source + configs   (~2 MB)
-#   scripts/benchmark/package.sh --with-models    # + the .onnx files  (~800 MB)
+#   scripts/benchmark/package.sh --with-models    # + generated .onnx/.neff files
 #   scripts/benchmark/package.sh --source-only    # source alone
 #
 # Source rather than binaries, deliberately. A release build for ARM64, x86-64 and CUDA
@@ -51,8 +51,14 @@ PREFIX="$STAGE/$STEM"
 # Everything git considers part of the project: tracked files, plus untracked ones that
 # are not ignored. `--cached` alone would silently drop a brand-new script, and no
 # `--exclude-standard` would drag in build output and the 190 MB generated models.
+#
+# `benchmark-data/results/` is excluded: those are the OUTPUT of previous runs, and a host
+# about to produce new measurements has no use for a copy of the old ones. Including them
+# put 22 MB of superseded JSON on every instance. The retired campaigns under
+# `old-results/` are gitignored, so `--exclude-standard` already drops them.
 git ls-files -z --cached --others --exclude-standard | while IFS= read -r -d '' file; do
   [ -f "$file" ] || continue
+  case "$file" in benchmark-data/results/*) continue ;; esac
   mkdir -p "$PREFIX/$(dirname "$file")"
   cp "$file" "$PREFIX/$file"
 done
@@ -77,8 +83,11 @@ if [ "$WITH_CONFIGS" = 1 ]; then
 fi
 
 if [ "$WITH_MODELS" = 1 ]; then
-  copy_generated '*.onnx' \
-    || echo "note: no models in $GEN -- run scripts/generate_benchmark_models.py first" >&2
+  copy_generated '*.onnx' || true
+  copy_generated '*.neff' || true
+  if ! compgen -G "$GEN/*.onnx" >/dev/null && ! compgen -G "$GEN/*.neff" >/dev/null; then
+    echo "note: no models in $GEN -- generate ONNX or compile NEFF models first" >&2
+  fi
 fi
 
 cat > "$PREFIX/BUNDLE_INFO" <<EOF
@@ -95,7 +104,7 @@ TARBALL="$OUT_DIR/$STEM.tgz"
 # carrying an extended attribute. Unpacked on Linux those become real files, and a
 # "._structs.proto" landing next to the schema is picked up by the proto glob in build.rs
 # and fails the build on binary junk. Ignored on Linux, so it is safe to set always.
-COPYFILE_DISABLE=1 tar -czf "$TARBALL" -C "$STAGE" "$STEM"
+COPYFILE_DISABLE=1 tar --no-xattrs -czf "$TARBALL" -C "$STAGE" "$STEM"
 
 echo "wrote $TARBALL ($(du -h "$TARBALL" | cut -f1))"
 cat "$PREFIX/BUNDLE_INFO" | sed 's/^/  /'

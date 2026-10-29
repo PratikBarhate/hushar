@@ -1,0 +1,2 @@
+model                      offered  achieved   share   p50_ms   p95_ms   p99_ms   shed  failed
+cell                           100     100.0       -     5.56     6.68     6.79      0       0

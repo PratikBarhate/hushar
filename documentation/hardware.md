@@ -1,16 +1,103 @@
 # Hardware
 
-One line of configuration picks the accelerator:
+hushar has two engine families. ONNX Runtime reads `.onnx` and selects a CPU/GPU
+execution provider. AWS Neuron Runtime reads a precompiled `.neff` and places complete
+replicas on NeuronCores.
+
+```mermaid
+flowchart LR
+  m["model.json"] --> b{"backend"}
+  b -->|"default"| o["ONNX Runtime"]
+  o --> cpu["CPU"]
+  o --> gpu["TensorRT · MIGraphX"]
+  b -->|"type: neuron"| n["libnrt"]
+  n --> trn["Trainium · Inferentia"]
+  style o fill:#d4edda
+  style n fill:#fff3cd
+```
+
+This page is the reference: every provider, what has to agree for one to register, and how
+to build a runtime that is not prebuilt. For a working configuration on one of them, the
+quick starts are shorter: [CPU](quickstart-cpu.md), [GPU](quickstart-gpu.md),
+[Trainium and Inferentia](quickstart-neuron.md).
+
+## AWS Neuron
+
+Neuron is not an ONNX Runtime execution provider. The service loads a complete NEFF through
+`libnrt-rs`, so compilation happens before startup and no graph falls back to CPU. The
+[AWS Neuron compiler documentation](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/compiler/index.html)
+describes NEFF as the compiler output consumed by Neuron Runtime.
+
+```mermaid
+flowchart LR
+  p["seeded PyTorch model"] -->|"torch_neuronx.trace"| c["neuronx-cc"]
+  c --> f[("fixed-shape NEFF")]
+  f --> h["hushar"]
+  h --> r["libnrt"]
+  r --> nc["NeuronCore"]
+  style f fill:#fff3cd
+  style h fill:#cfe2ff
+```
+
+```json
+{
+  "model_path": "model-b50.neff",
+  "backend": {
+    "type": "neuron",
+    "start_neuron_core": 0,
+    "neuron_cores_per_replica": 1,
+    "execution_contexts_per_replica": 2
+  },
+  "mini_batch_size": 50,
+  "is_fixed": true
+}
+```
+
+The row shape is part of the executable. The configured `mini_batch_size` must equal the
+NEFF batch and `is_fixed` must be true. Inputs may be FP32, INT32 or INT64; outputs must be
+FP32 scores. Unsupported ranks, types and byte sizes fail at startup.
+
+`threading.sessions_per_model` loads logical replicas. On
+[`trn1.2xlarge`](https://aws.amazon.com/ec2/instance-types/trn1/), one Trainium chip
+provides two NeuronCores and 32 GB accelerator memory alongside 8 vCPUs and 32 GiB host
+memory. Two one-core replicas occupy cores 0 and 1. Alternatively, one two-core logical
+replica loads a full NEFF copy on each core and distributes its execution contexts across
+them, so two mini-batches from one request can run in parallel. This is data parallelism,
+not model sharding. ORT's `intra_op_threads`, `inter_op_threads`, `allow_spinning` and
+`session_config` do not apply; `execution_contexts_per_replica` must be at least the core
+count and bounds concurrent mini-batch executions within the logical replica.
+
+The benchmark compiler rebuilds the same deterministic vectorized model source used for
+ONNX, because [Neuron does not compile ONNX files directly](https://awsdocs-neuron.readthedocs-hosted.com/en/v2.9.1/general/faq/onnx-faq.html):
+
+```bash
+source /opt/aws_neuronx_venv_pytorch_2_9/bin/activate
+python scripts/benchmark/compile_neuron.py --params 10M --batch-size 50
+scripts/benchmark/bootstrap.sh --role server --provider neuron
+```
+
+Use a Neuron 2.31 DLAMI for this trace path. The compiler work directory and a metadata JSON
+are retained beside the generated NEFF, including the compiler version, hash and maximum
+compiled-versus-PyTorch error.
+
+---
+
+## ONNX Runtime execution providers
+
+One line selects an ONNX Runtime provider:
 
 ```json
 { "execution_provider": "tensorrt:0" }
 ```
 
-An *execution provider* is ONNX Runtime's term for a hardware backend. Registering one
-asks the runtime to place as much of the graph as it can on that device and leave the rest
-on the CPU. Registering none runs everything on the CPU.
+An *execution provider* asks ONNX Runtime to place supported graph nodes on that device and
+leave the rest on CPU. Registering none runs everything on CPU.
 
-The targets this service is built and measured for:
+Every feature is transformed into floats before it reaches the model, so no element type a
+provider lacks — a string above all — can arrive at one. A model is free to run whole on
+any provider. See [configuration.md](configuration.md#vectorization_config).
+
+The ONNX Runtime targets are:
 
 ```mermaid
 flowchart LR
@@ -102,8 +189,8 @@ Two practical consequences:
 - **Pin the thread settings, not just the instance.** With `threading.intra_op_threads: 1`
   (the default) throughput scales with cores; a benchmark that leaves the `threading` group
   unset on one host and set on another is measuring two configurations. Record every
-  field — `connection_concurrency`, `worker_threads`, `inference_concurrency`,
-  `intra_op_threads`, `sessions_per_model` — since the counts multiply.
+  field — `connection_concurrency`, `worker_threads`, `intra_op_threads`,
+  `sessions_per_model` — since the counts multiply.
 
 ---
 
@@ -127,6 +214,7 @@ flowchart LR
 | `openvino:cpu:threads=96:streams=4` | and its `num_of_threads` / `num_streams` |
 | `openvino:auto:gpu,cpu` | a multi-device mode and its device list |
 | `tensorrt:0` / `trt:1` | CUDA device id |
+| `trt:0:cache=/var/cache/trt` | and any of its own options, below |
 | `migraphx:0` | device id |
 
 ```json
@@ -136,6 +224,28 @@ flowchart LR
 "execution_provider": "xnnpack:4"
 "execution_provider": "openvino:cpu:threads=96"
 ```
+
+### TensorRT options
+
+Each further `:key=value` becomes a provider option. Five have short names because they are
+the ones a deployment reaches for; anything else spelled `trt_*` is passed through untouched.
+
+| Suffix | Sets |
+|---|---|
+| `cache=<path>` | `trt_engine_cache_enable=1` and `trt_engine_cache_path` |
+| `timing_cache=<path>` | `trt_timing_cache_enable=1` and `trt_timing_cache_path` |
+| `fp16=on` | `trt_fp16_enable`; takes `1/true/on/yes` or `0/false/off/no` |
+| `workspace=<bytes>` | `trt_max_workspace_size` |
+| `opt_level=<n>` | `trt_builder_optimization_level` |
+| `trt_<anything>=<value>` | that key, as ONNX Runtime spells it |
+
+```json
+"execution_provider": "trt:0:cache=/var/cache/trt:fp16=on"
+```
+
+The engine cache is the one worth setting before a first deployment: TensorRT compiles the
+graph ahead of first use, and the cache moves that compile to the first run ever rather
+than the first run of every process. It shortens a restart rather than removing the wait.
 
 ### OpenVINO options
 
@@ -196,7 +306,7 @@ Two independent numbers, and confusing them is the usual cause of a slow deploym
 ```mermaid
 flowchart TB
   subgraph a["hushar · across requests"]
-    r1["request"] --> p["blocking pool<br/>≈ one inference per core"]
+    r1["request"] --> p["blocking pool<br/>one thread per session"]
     r2["request"] --> p
     r3["request"] --> p
   end
@@ -211,11 +321,11 @@ flowchart TB
 `threading.intra_op_threads` defaults to 1 because concurrent requests already saturate
 the machine — letting one operator fan out across cores adds contention rather than
 throughput. Raising it is a latency trade, not a throughput one, and it only pays when
-`threading.inference_concurrency` comes down to match: the intra-op pool is per session and
-shared, so concurrent callers contend for it. A low-concurrency configuration also has to
-run at low utilisation to keep its tail, since one blocking thread is a single-server
-queue. See [threads-and-cores.md](threads-and-cores.md) for the whole picture, including
-which cores each pool runs on.
+`threading.sessions_per_model` comes down to match: the two multiply into the thread budget,
+so widening the pool without narrowing the session count oversubscribes the host. A
+low-concurrency configuration also has to run at low utilisation to keep its tail, since one
+session is a single-server queue. See [threads-and-cores.md](threads-and-cores.md) for the
+whole picture.
 
 ---
 
@@ -252,8 +362,8 @@ reported as `UnsupportedApiVersion` rather than crashing.
 Prebuilt archives are on the
 [releases page](https://github.com/microsoft/onnxruntime/releases), named
 `onnxruntime-<os>-<arch>-<version>` with the library under `lib/` — see
-[step 1 of the README](../README.md#1--get-onnx-runtime) for the asset-to-library mapping.
-Two exceptions worth knowing before you plan a run:
+[step 1 of the CPU quick start](quickstart-cpu.md#1--get-onnx-runtime) for the
+asset-to-library mapping. Two exceptions worth knowing before you plan a run:
 
 | Target | Where the library comes from |
 |---|---|
@@ -293,7 +403,7 @@ Four things about the toolchain, each of which fails the build rather than degra
 sudo dnf install -y git gcc gcc-c++ make patch zlib-devel protobuf-compiler \
   python3.11 python3.11-pip python3.11-devel
 python3.11 -m pip install "cmake~=3.31.0" packaging setuptools wheel numpy
-git clone --depth 1 --recursive --branch v1.29.0 https://github.com/microsoft/onnxruntime
+git clone --depth 1 --recursive --branch v1.28.0 https://github.com/microsoft/onnxruntime
 cd onnxruntime
 python3.11 tools/ci_build/build.py --build_dir build/Linux \
   --config Release --build_shared_lib --parallel "$(nproc)" \
@@ -315,7 +425,7 @@ python3.11 tools/ci_build/build.py --build_dir build/Linux \
 
 An OpenVINO build needs OpenVINO itself, and two more things beyond the list above:
 
-- **OpenVINO 2026.0 or newer**, for ONNX Runtime 1.29. Anything older is a hard
+- **OpenVINO 2026.0 or newer**, for ONNX Runtime 1.28. Anything older is a hard
   `FATAL_ERROR` out of `cmake/onnxruntime_providers_openvino.cmake`, so check this before
   waiting on a compile.
 - **GCC 13 or newer.** The OpenVINO EP sources use C++20 `<format>`, which libstdc++ only
@@ -394,10 +504,16 @@ cargo test --features all-providers   # compile every provider's tests
 To compare one provider against another, run the benchmark on an instance of that
 hardware — see [benchmarking.md](benchmarking.md).
 
----
+Neuron's pure signature tests run everywhere. Loading and execution tests require a Neuron
+host with `libnrt.so.1`, a matching driver, and a compiled NEFF:
 
-## Not ONNX Runtime
+```bash
+cargo test -p hushar neuron
+PROVIDER=neuron \
+  MODEL_CONFIG=benchmark-data/generated/bench_model_neuron_10m_b50_config.json \
+  NEFF_PATH=benchmark-data/generated/bench_model_neuron_10m_b50.neff \
+  MINI_BATCH_SIZE=50 SESSIONS=2 scripts/benchmark/run_server.sh start
+```
 
-[`libnrt-rs`](../libnrt-rs/README.md) is a finished safe wrapper over the AWS Neuron
-runtime, for Inferentia and Trainium. The backend trait it would sit behind has four
-methods; what is missing is hardware to test against.
+The startup banner reports the libnrt version, occupied NeuronCore range, replica count and
+execution contexts. Treat that banner as the deployment contract.

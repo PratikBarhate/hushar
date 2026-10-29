@@ -1,0 +1,13 @@
+hushar: model d20-c9g-1-features loaded on onnxruntime/CPU (runtime 1.28.0)
+  inputs   : features FP32[690]
+  outputs  : scores FP32[5]
+  features : 1 binding(s)
+             features FP32[690] <- 210 features transformed and concatenated [emb_review, emb_category, emb_sentiment, emb_region, oh_color, oh_size, oh_channel, oh_status, ... +202 more]
+  batch  : rows split into mini batches of 4, scored together, the last is however many remain
+hushar: metrics -> HusharBench [every 333 batches, 4 in flight]
+hushar: inference logs -> /root/hushar-bench-ffba569-dirty/inference-logs [local filesystem, 16 prefix shard(s), every 5000 batches, 4 in flight, logging no requests]
+hushar: threads -> 32 async, 2 concurrent inference(s) x 32 intra-op x 2 ONNX Runtime session(s) = 64 compute on 64 core(s)
+  spin   : idle intra-op and inter-op threads sleep
+  admit  : 512 in flight per connection
+  pool   : 2 blocking thread(s) for 2 session(s) per model, each session with its own intra-op pool; a request leases an idle session while it scores
+hushar: listening on 0.0.0.0:8279

@@ -1,0 +1,225 @@
+{
+  "size": "10m",
+  "run": "minibatch-gpu-g5-10M-20M",
+  "rev": "7af1bf77",
+  "host": "g5-1",
+  "cache_root": "/root/trt-cache/10m",
+  "shapes": [
+    {
+      "mini_batch": 25,
+      "engine_cache": "/root/trt-cache/10m/mb25",
+      "engine_shape": [
+        25,
+        690
+      ],
+      "passes": [
+        {
+          "pass_": "first",
+          "seconds": 25.2,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 1.47,
+            "p95": 1.66,
+            "p99": 1.74,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 35976\n-rw-r--r--. 1 root root 36834820 Oct 27 02:26 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.engine\n-rw-r--r--. 1 root root       24 Oct 27 02:26 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.profile"
+        },
+        {
+          "pass_": "cached",
+          "seconds": 22.1,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 1.6,
+            "p95": 1.86,
+            "p99": 1.88,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 35976\n-rw-r--r--. 1 root root 36834820 Oct 27 02:26 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.engine\n-rw-r--r--. 1 root root       24 Oct 27 02:26 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.profile"
+        }
+      ],
+      "build_seconds": 25.2,
+      "cached_seconds": 22.1,
+      "speedup": 1.1
+    },
+    {
+      "mini_batch": 50,
+      "engine_cache": "/root/trt-cache/10m/mb50",
+      "engine_shape": [
+        50,
+        690
+      ],
+      "passes": [
+        {
+          "pass_": "first",
+          "seconds": 25.2,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 1.77,
+            "p95": 2.11,
+            "p99": 2.12,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 35916\n-rw-r--r--. 1 root root 36773388 Oct 27 02:27 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.engine\n-rw-r--r--. 1 root root       24 Oct 27 02:27 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.profile"
+        },
+        {
+          "pass_": "cached",
+          "seconds": 22.1,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 1.9,
+            "p95": 2.23,
+            "p99": 2.24,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 35916\n-rw-r--r--. 1 root root 36773388 Oct 27 02:27 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.engine\n-rw-r--r--. 1 root root       24 Oct 27 02:27 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.profile"
+        }
+      ],
+      "build_seconds": 25.2,
+      "cached_seconds": 22.1,
+      "speedup": 1.1
+    },
+    {
+      "mini_batch": 100,
+      "engine_cache": "/root/trt-cache/10m/mb100",
+      "engine_shape": [
+        100,
+        690
+      ],
+      "passes": [
+        {
+          "pass_": "first",
+          "seconds": 25.3,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 2.79,
+            "p95": 3.09,
+            "p99": 3.16,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 35964\n-rw-r--r--. 1 root root 36819804 Oct 27 02:28 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.engine\n-rw-r--r--. 1 root root       24 Oct 27 02:28 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.profile"
+        },
+        {
+          "pass_": "cached",
+          "seconds": 22.1,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 2.58,
+            "p95": 2.98,
+            "p99": 3.02,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 35964\n-rw-r--r--. 1 root root 36819804 Oct 27 02:28 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.engine\n-rw-r--r--. 1 root root       24 Oct 27 02:28 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.profile"
+        }
+      ],
+      "build_seconds": 25.3,
+      "cached_seconds": 22.1,
+      "speedup": 1.1
+    },
+    {
+      "mini_batch": 250,
+      "engine_cache": "/root/trt-cache/10m/mb250",
+      "engine_shape": [
+        250,
+        690
+      ],
+      "passes": [
+        {
+          "pass_": "first",
+          "seconds": 25.5,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 4.48,
+            "p95": 4.88,
+            "p99": 5.12,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 35980\n-rw-r--r--. 1 root root 36836852 Oct 27 02:30 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.engine\n-rw-r--r--. 1 root root       30 Oct 27 02:30 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.profile"
+        },
+        {
+          "pass_": "cached",
+          "seconds": 22.1,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 4.78,
+            "p95": 5.27,
+            "p99": 5.31,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 35980\n-rw-r--r--. 1 root root 36836852 Oct 27 02:30 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.engine\n-rw-r--r--. 1 root root       30 Oct 27 02:30 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.profile"
+        }
+      ],
+      "build_seconds": 25.5,
+      "cached_seconds": 22.1,
+      "speedup": 1.2
+    },
+    {
+      "mini_batch": 500,
+      "engine_cache": "/root/trt-cache/10m/mb500",
+      "engine_shape": [
+        500,
+        690
+      ],
+      "passes": [
+        {
+          "pass_": "first",
+          "seconds": 26.0,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 7.38,
+            "p95": 8.04,
+            "p99": 8.66,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 36012\n-rw-r--r--. 1 root root 36870948 Oct 27 02:31 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.engine\n-rw-r--r--. 1 root root       30 Oct 27 02:31 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.profile"
+        },
+        {
+          "pass_": "cached",
+          "seconds": 22.1,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 7.44,
+            "p95": 7.79,
+            "p99": 8.96,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 36012\n-rw-r--r--. 1 root root 36870948 Oct 27 02:31 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.engine\n-rw-r--r--. 1 root root       30 Oct 27 02:31 TensorrtExecutionProvider_TRTKernel_graph_main_graph_12539640917189404479_0_0_sm86.profile"
+        }
+      ],
+      "build_seconds": 26.0,
+      "cached_seconds": 22.1,
+      "speedup": 1.2
+    }
+  ],
+  "note": "One entry per engine SHAPE, which is the mini batch: `is_fixed` pads the last piece up to it, so a 500-row request at mini batch 100 and a 100-row request scored whole present the same [100, 690] engine and share one cache. build_seconds is a 20 s trickle against a cold cache, so it carries the TensorRT engine build; cached_seconds is the same trickle against a FRESH server that loaded the cache. The gap is the cost every cell would otherwise have paid inside its warm-up."
+}

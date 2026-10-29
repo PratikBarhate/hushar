@@ -2,158 +2,68 @@
 
 # hushar &nbsp;·&nbsp; हुशार
 
-**A gRPC server for machine-learning model inference, written in Rust.**
+**A gRPC server for low-latency tabular model inference.**
 
 `हुशार` is मराठी [ Marāṭhī ] for *intelligent*.
+
+[Quick start](#quick-start) &nbsp;·&nbsp; [The contract](#features-in-scores-out)
+&nbsp;·&nbsp; [Docs](#documentation)
 
 </div>
 
 
 ```mermaid
 flowchart LR
-  client(["client"]) -->|"features<br/>age=30, city:london"| h
-  h -->|"scores<br/>[0.93, 0.07]"| client
+  client(["client"]) <-->|"features →<br/>age=30, city:london<br/>← scores<br/>[0.93, 0.07]"| h
   subgraph h["hushar"]
     direction TB
-    v["vectorize"] --> e["ONNX Runtime"]
+    v["vectorize"] --> e{"model backend"}
+    e --> o["ONNX Runtime"]
+    e --> n["AWS Neuron"]
   end
-  h -.-> logs[("inference logs<br/>S3 · Kinesis · disk")]
+  h -.-> logs[("inference logs<br/>S3 · disk")]
   h -.-> met[("metrics<br/>CloudWatch · stderr")]
   style h fill:#cfe2ff
   style logs fill:#e2e3e5
   style met fill:#e2e3e5
 ```
 
-The dotted arrows never block a response. Everything else about this service follows
-from that, and from one more idea: **there is no tensor on the wire.** A caller sends
-values with names, and a configuration file — checked against the model at startup —
-says how they become inputs.
+The dotted arrows never block a response. Everything else about this service follows from
+that, and from one more idea: **there is no tensor on the wire.** A caller sends values with
+names, and a configuration file, checked against the model at startup, says how they become
+model inputs.
 
 ---
 
 ## Quick start
 
-Five steps, one model, one request.
+Pick your hardware. Each guide is five steps, one throwaway model, and one scored request.
 
-### 1 · Get ONNX Runtime
+| Your hardware | Guide | What is different about it |
+|---|---|---|
+| any CPU: Graviton, Ampere, Intel, AMD | [quickstart-cpu.md](documentation/quickstart-cpu.md) | nothing to install but the engine; start here if unsure |
+| NVIDIA or AMD GPU | [quickstart-gpu.md](documentation/quickstart-gpu.md) | a GPU-enabled engine, one Cargo feature, and a graph that compiles on first use |
+| Trainium or Inferentia | [quickstart-neuron.md](documentation/quickstart-neuron.md) | a precompiled NEFF with a fixed batch, placed on NeuronCores |
 
-The engine is loaded at run time, never linked, so this is a download rather than a
-build dependency. The
-[releases page](https://github.com/microsoft/onnxruntime/releases) carries a prebuilt
-shared library for every platform, named `onnxruntime-<os>-<arch>-<version>`:
+The engine is loaded at run time and never linked, so every one of those is a download
+rather than a build dependency, and one binary reads the same `model.json` on all of them.
 
-| Platform            | Asset for 1.29.0 | Library inside `lib/` |
-|---------------------|---|---|
-| Linux x64           | `onnxruntime-linux-x64-1.29.0.tgz` | `libonnxruntime.so` |
-| Linux arm64         | `onnxruntime-linux-aarch64-1.29.0.tgz` | `libonnxruntime.so` |
-| NVIDIA GPU, CUDA 12 | `onnxruntime-linux-x64-gpu_cuda12-1.29.0.tgz` | `libonnxruntime.so` |
-
-Unpack it and point `ORT_DYLIB_PATH` at the library:
+## Features in, scores out
 
 ```bash
-# Linux
-export ORT_DYLIB_PATH=$PWD/onnxruntime-linux-x64-1.29.0/lib/libonnxruntime.so
-```
-
-Already have ONNX Runtime installed system-wide? Leave `ORT_DYLIB_PATH` unset and the
-usual library names are tried for you —
-[hardware.md](documentation/hardware.md#finding-the-runtime) lists them.
-
-### 2 · Make a model
-
-Three features in, two scores out — a sigmoid over a linear layer with fixed weights,
-so the answer is predictable.
-
-```bash
-pip install -r scripts/requirements.txt
-python scripts/generate_test_model.py 3
-# wrote hushar/test-data/sigmoid_model_3.onnx
-# wrote onnxrt-rs/test-data/sigmoid_model_3.onnx
-```
-
-### 3 · Write two config files
-
-```mermaid
-flowchart LR
-  a["--config-uri"] --> s["service.json<br/><i>about the process</i>"]
-  s -->|"model_config_path"| m["model.json<br/><i>about the model</i>"]
-  m -->|"model_path"| o[("model.onnx")]
-  style s fill:#d4edda
-  style m fill:#d4edda
-```
-```bash
-cat > service.json <<'EOF'
-{
-  "port_number": 50051,
-  "model_config_path": "model.json",
-  "inference_log": { "uri": "./logs" }
-}
-EOF
-
-cat > model.json <<'EOF'
-{
-  "model_id": "quickstart",
-  "model_path": "hushar/test-data/sigmoid_model_3.onnx",
-  "vectorization_config": { "feature_order": ["f1", "f2", "f3"] }
-}
-EOF
-```
-
-`feature_order` is the whole mapping here: three features, concatenated in that order,
-into the model's one 3-wide float input. Every other field has a default.
-
-### 4 · Run it
-
-One flag, because `service.json` carries everything else — the listener, where inference
-logs go, and where timings go.
-
-```bash
-cargo run --release -p hushar -- --config-uri ./service.json
-```
-
-The banner is the contract — read it before sending anything:
-
-```
-hushar: model quickstart loaded on onnxruntime/CPU (runtime 1.29.0)
-  inputs   : input FP32[3]
-  outputs  : output FP32[2]
-  features : 1 binding(s)
-             input FP32[3] <- [f1, f2, f3] transformed and concatenated
-hushar: metrics -> stderr [every 500 batches, 4 in flight]
-hushar: inference logs -> ./logs [local filesystem, every 5000 batches, 4 in flight, logging every request]
-hushar: threads -> 8 async, 8 inference x 1 intra-op x 1 session(s) = 8 compute on 8 core(s)
-  admit  : 500 in flight per connection
-hushar: listening on 0.0.0.0:50051
-```
-```
-
-### 5 · Send a request
-
-```bash
-SMOKE_FEATURES='f1=1.0,f2=2.0,f3=3.0' \
-  SERVER_ADDR=http://127.0.0.1:50051 \
-  cargo run -p benchmark-client --example smoke
+cargo run -p benchmark-client --example smoke
 #   row-0 FP32 = [0.9568927, 0.9568927]
 ```
-
-`name=value` is a number, `name:value` is text — kept apart because `city=1` and
-`city:1` mean different things to a one-hot encoding.
-
----
-
-## Request and response
 
 ```mermaid
 flowchart LR
   subgraph req["InferenceRequest"]
     direction TB
-    rid["request_id"]
     ids["row_ids [row-0, row-1]"]
     arw["features: map&lt;string, Feature&gt;<br/><i>one entry per feature, whole batch each</i><br/>age    w1  float  [30, 41]<br/>city   w1  string [london, leeds]<br/>embed  w3  float  [… 6 values …]"]
   end
   subgraph res["InferenceResponse"]
     direction TB
-    sid["request_id"]
     oids["row_ids [row-0, row-1]"]
     osc["scores<br/>[0.93, 0.07, 0.11, 0.89]"]
   end
@@ -162,79 +72,61 @@ flowchart LR
   style res fill:#d4edda
 ```
 
-- **Features are a `map<string, Feature>`**, one entry per feature, each carrying that
-  feature's values for the whole batch. A name travels once per request as the map key
-  rather than once per row — at 100 rows over 212 features that is 212 names instead of
-  21,200 — and a map cannot carry the same name twice.
-- A `Feature` is a `oneof` over `FloatArray`, `DoubleArray`, `IntegerArray`, `LongArray`
-  and `StringArray`. One type per feature, since an entry is one array.
-- **Width is stated by the caller and required by the model.** An entry's `width` is
-  values per row, and the service checks it against the values that arrived with it — so a
-  caller that contradicts itself is told which feature did it. What the model *needs* comes
-  from its own configuration, so the two are checked separately and a failure says which
-  one it was. A `width` of 0 is "not stated", and then only the weaker check applies: the
-  value count must divide by the row count.
-- Row identity is `row_ids`, one id per row, and its length is the row count every entry
-  is measured against.
-- A feature the batch has no value for is left out of the map entirely, and its
-  transformation's default covers it.
-- The response mirrors the request: the same ids in the same order, and **one** score
-  buffer for the whole batch. Row `r` is `scores[r × width ..]`, the width being
-  `values / rows`.
-- `scores` is a `oneof` over `FloatArray` and `DoubleArray`, so a model asked for double
-  precision is not narrowed on the way out.
-- Already vectorized? That is the ordinary case now: send the vector as one entry of that
-  width and configure `model_inputs`, and it reaches the model unchanged.
-- Only the model's **first output** is returned — class probabilities, a regression
-  value, a forecast horizon or an embedding.
+One request is a batch of rows. Features arrive as a `map<string, Feature>`, one entry per
+feature carrying that feature's values for the whole batch, so a name travels once per
+request rather than once per row: at 100 rows over 210 features that is 210 names instead
+of 21,000. Values may be float, double, int32, int64 or string, one type per feature. Row
+identity is `row_ids`, and the response returns the same ids in the same order with one
+score buffer for the whole batch.
+
+Already have a finished vector? That is the ordinary case: send it as one entry of that
+width with an `identity` transformation, and it reaches the model unchanged.
 
 Anything that speaks protobuf can build the payload, in any language with a generated
-client and nothing else to install. Definitions live in
-[`schemas/protos`](schemas/protos/structs.proto).
-
----
+client and nothing else to install. [api.md](documentation/api.md) is the full contract;
+the definitions are in [`schemas/protos`](schemas/protos/structs.proto).
 
 ## Where things live
 
 ```
 hushar/            the service
-onnxrt-rs/         safe Rust front end over the ONNX Runtime C API   (in use)
-libnrt-rs/         safe Rust front end over the AWS Neuron C API     (backend not written)
+onnxrt-rs/         safe Rust front end over the ONNX Runtime C API
+libnrt-rs/         safe Rust front end over the AWS Neuron C API
+hushar/src/inference/{onnx,neuron}_backend.rs   engine adapters
 schemas/protos/    gRPC service and message definitions
 scripts/           model generators, and scripts/benchmark/ for a two-host run
 benchmark-client/  load generator, plus the `smoke` and `inspect_log` examples
-benchmark-data/    generated models (ignored) and curated results (tracked)
+benchmark-data/    generated models and retired results (ignored), new results (tracked)
 documentation/     the docs below
 ```
 
-## Where to read next
+## Documentation
 
-| Doc | Answers |
-|---|---|
-| [configuration.md](documentation/configuration.md) | every config field, CLI flag, transformation and data type |
-| [hardware.md](documentation/hardware.md) | choosing an execution provider, build features, testing on accelerators |
-| [threads-and-cores.md](documentation/threads-and-cores.md) | thread pools, how many of each, and which cores they run on |
-| [benchmarking.md](documentation/benchmarking.md) | running a benchmark on real instances, client and server on separate hosts |
-| [request-walkthrough.md](documentation/request-walkthrough.md) | one request, socket to response, function by function |
-| [bindgen.md](documentation/bindgen.md) | why the FFI bindings are checked in and the library loaded at run time |
-| [benchmark-data/TEMPLATE.md](benchmark-data/TEMPLATE.md) | where a benchmark's inputs and results live, and how to record one |
+| | Doc | Answers |
+|---|---|---|
+| **Run it** | [quickstart-cpu.md](documentation/quickstart-cpu.md) | first server and first request, on any CPU |
+| | [quickstart-gpu.md](documentation/quickstart-gpu.md) | the same on NVIDIA through TensorRT or AMD through MIGraphX |
+| | [quickstart-neuron.md](documentation/quickstart-neuron.md) | the same on Trainium and Inferentia, from NEFF to NeuronCore placement |
+| **Use it** | [api.md](documentation/api.md) | the request and response contract, and why it has that shape |
+| | [configuration.md](documentation/configuration.md) | every config field, CLI flag, transformation and data type |
+| | [hardware.md](documentation/hardware.md) | choosing an execution provider, build features, building a runtime that is not prebuilt |
+| | [threads-and-cores.md](documentation/threads-and-cores.md) | thread pools, how many of each, and which cores they run on |
+| **Measure it** | [benchmarking.md](documentation/benchmarking.md) | a two-host run on real instances, and how a run is recorded |
+| **Read it** | [request-walkthrough.md](documentation/request-walkthrough.md) | one request, socket to response, function by function |
+| | [bindgen.md](documentation/bindgen.md) | why the FFI bindings are checked in and the library loaded at run time |
 
 ## Testing
 
-Unit tests need nothing. The tests that exercise real inference skip with a reason when
-no ONNX Runtime is present.
+Unit tests need nothing. The tests that exercise real inference skip with a reason when no
+ONNX Runtime is present, so the suite stays green everywhere.
 
 ```bash
-cargo test              # unit tests only
-export ORT_DYLIB_PATH=… # the library from step 1
-cargo test              # everything, on CPU
+cargo test                   # unit tests only
+export ORT_DYLIB_PATH=…      # a library from any quick start, step 1
+cargo test                   # everything, on CPU
+cargo test --features tensorrt   # plus TensorRT, on an NVIDIA host
+cargo test -p hushar neuron      # Neuron signature and config tests; hardware validation uses a NEFF
 ```
-
-## Future Scope
-
-- **Model reloading.** The model is read at startup, so updating one means a restart.
-- **A Neuron backend** for Inferentia and Trainium. [`libnrt-rs`](libnrt-rs/README.md)
-  is ready and the trait has four methods; it needs the hardware to test against.
 
 ## Licence
 

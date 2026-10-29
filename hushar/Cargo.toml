@@ -27,12 +27,11 @@ all-providers = ["cpu", "coreml", "xnnpack", "openvino", "tensorrt", "migraphx"]
 [dependencies]
 aws-config = { workspace = true }
 aws-sdk-cloudwatch = { workspace = true }
-aws-sdk-kinesis = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 half = { workspace = true }
-libc = { workspace = true }
+libnrt-rs = { workspace = true }
 onnxrt-rs = { workspace = true }
 prost = { workspace = true }
 rayon = { workspace = true }

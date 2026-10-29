@@ -1,0 +1,36 @@
+launched 2026-10-26T01:37:38Z for g5-1 phase=main specs=[20m:30f9c5330b808a34b55fe88048a20da6]
+
+===== 20m (2026-10-26T01:37:38Z) =====
+2026-10-26T01:37:38Z preflight g5-1: {'type': 'g5.2xlarge', 'ami': 'ami-06a84c332fb06b778', 'kernel': '6.12.111-136.204.amzn2023.x86_64', 'nproc': '8', 'gpu': 'NVIDIA_A10G', 'gpucount': '1', 'driver': '595.112.07', 'md5': '30f9c5330b808a34b55fe88048a20da6', 'hushar': 'yes', 'plans': '1', 'image': 'yes', 'gpusampler': 'yes', 'ortso': '1.28.3', 'trtso': '10.16.1', 'cudamaj': '13', 'trtmissing': '0'}
+2026-10-26T01:37:38Z preflight g5-1: OK -- g5.2xlarge, NVIDIA_A10G, driver 595.112.07, TensorRT 10.16.1 on CUDA 13, ONNX Runtime 1.28.3, 20m md5 30f9c5330b808a34b55fe88048a20da6
+2026-10-26T01:37:38Z run=config-sweep-gpu-g5-10M-20M rev=ffba569-dirty host=g5-1 size=20m arms=['hushar', 'triton'] phase=main loads=[(100, 200), (100, 400), (100, 600), (100, 800), (100, 1000)] parallelism=(1, 2, 4) warmup=120s measured=300s/5slices settle=60s
+2026-10-26T01:37:41Z selection hushar: sessions=4 (no probe sustained; highest achieved rate)
+2026-10-26T01:37:41Z selection triton: instances=4 (no probe sustained; highest achieved rate)
+2026-10-26T01:37:42Z g5-hushar-20m-r100t200-p4 already measured, skipping
+2026-10-26T01:37:43Z g5-hushar-20m-r100t400-p4 already measured, skipping
+2026-10-26T01:37:44Z g5-hushar-20m-r100t600-p4 start  hushar/features sessions=4 100rows x 600tps = 60000 rows/s 120+300s
+2026-10-26T01:45:13Z g5-hushar-20m-r100t600-p4 done   p50=3.59 p95=4.4 p99=4.79 achieved=600.0/600 shed=0 srvcpu=23.1 sustained (5/5 slice(s) held) -- settling 60s
+2026-10-26T01:46:14Z g5-hushar-20m-r100t800-p4 already measured, skipping
+2026-10-26T01:46:15Z g5-hushar-20m-r100t1000-p4 already measured, skipping
+2026-10-26T01:46:16Z g5-triton-20m-r100t200-p4 already measured, skipping
+2026-10-26T01:46:17Z g5-triton-20m-r100t400-p4 already measured, skipping
+2026-10-26T01:46:19Z g5-triton-20m-r100t600-p4 start  triton/tensor instances=4 100rows x 600tps = 60000 rows/s 120+300s
+2026-10-26T01:54:13Z g5-triton-20m-r100t600-p4 done   p50=2.79 p95=2.98 p99=3.03 achieved=600.0/600 shed=0 srvcpu=7.1 sustained (5/5 slice(s) held) -- settling 60s
+2026-10-26T01:55:14Z g5-triton-20m-r100t800-p4 already measured, skipping
+2026-10-26T01:55:15Z g5-triton-20m-r100t1000-p4 already measured, skipping
+2026-10-26T01:55:16Z lane complete
+===== 20m done rc=0 (2026-10-26T01:55:16Z) =====
+ALL DONE rc=0 2026-10-26T01:55:17Z
+
+launched 2026-10-26T21:05:08Z for g5-1 phase=main specs=[20m:30f9c5330b808a34b55fe88048a20da6]
+
+===== 20m (2026-10-26T21:05:08Z) =====
+2026-10-26T21:05:09Z preflight g5-1: {'type': 'g5.2xlarge', 'ami': 'ami-06a84c332fb06b778', 'kernel': '6.12.111-136.204.amzn2023.x86_64', 'nproc': '8', 'gpu': 'NVIDIA_A10G', 'gpucount': '1', 'driver': '595.112.07', 'md5': '30f9c5330b808a34b55fe88048a20da6', 'hushar': 'yes', 'plans': '1', 'image': 'yes', 'gpusampler': 'yes', 'ortso': '1.28.3', 'trtso': '10.16.1', 'cudamaj': '13', 'trtmissing': '0'}
+2026-10-26T21:05:09Z preflight g5-1: OK -- g5.2xlarge, NVIDIA_A10G, driver 595.112.07, TensorRT 10.16.1 on CUDA 13, ONNX Runtime 1.28.3, 20m md5 30f9c5330b808a34b55fe88048a20da6
+2026-10-26T21:05:09Z run=config-sweep-gpu-g5-10M-20M rev=ffba569-dirty host=g5-1 size=20m arms=['triton'] phase=main loads=[(100, 750)] parallelism=(1, 2, 4) warmup=120s measured=300s/5slices settle=60s
+2026-10-26T21:05:09Z selection triton: instances=4 (pinned, no probe)
+2026-10-26T21:05:09Z g5-triton-20m-r100t750-p4 start  triton/tensor instances=4 100rows x 750tps = 75000 rows/s 120+300s
+2026-10-26T21:13:13Z g5-triton-20m-r100t750-p4 done   p50=3.36 p95=3.7 p99=5.15 achieved=750.0/750 shed=0 srvcpu=16.8 sustained (5/5 slice(s) held) -- settling 60s
+2026-10-26T21:14:14Z lane complete
+===== 20m done rc=0 (2026-10-26T21:14:14Z) =====
+ALL DONE rc=0 2026-10-26T21:14:14Z

@@ -1,0 +1,20 @@
+hushar benchmark [cell @ 100 req/s]
+  server    : http://172.31.33.183:8279
+  model     : bench-vectorized-tensor on cpu
+  features  : 1 per row
+  asking    : whichever the server's split chooses
+  offering  : 100 req/s x 100 row(s), 400 in flight (4s of latency), 120s warmup + 300s measured
+  warmup done, measuring
+
+  bench-vectorized-tensor on cpu
+  ---------------------------------------------
+  achieved      :     100.0 req/s   (10000.0 rows/s)
+  offered       :       100 req/s
+  measured      :     30000 requests  (of 41999 that succeeded overall)
+  latency  p50  :     12.33 ms
+           p95  :     12.46 ms
+           p99  :     12.55 ms
+           max  :     14.62 ms
+           mean :     12.32 ms
+  failed        :         0
+  shed          :         0  (offered but never sent: 400 in flight was the cap)

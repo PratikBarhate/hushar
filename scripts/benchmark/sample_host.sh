@@ -18,6 +18,23 @@
 # Reads /proc directly rather than shelling out to mpstat, so there is nothing to
 # install and the memory figure is the server process rather than the host's page cache.
 #
+# CPU is the scheduler's own account of time spent running tasks -- the per-CPU
+# `rq_cpu_time` counters in /proc/schedstat, summed over the host and divided by wall
+# time and CPU count -- not the tick-based user/system/idle columns of /proc/stat. The
+# tick columns depend on the timer tick firing on every busy CPU, and on the kernels these
+# benchmarks ran on (6.18, NO_HZ) whole five-minute windows were seen with busy CPUs
+# accounted as idle: the sampler read 0.05 % while the scheduler saw 30 % and the
+# hypervisor agreed with the scheduler. `rq_cpu_time` is measured from the scheduler
+# clock at every context switch, so it needs no tick. The tick figure is still written,
+# as a sixth column, so the two can be compared for any window afterwards; on a kernel
+# without /proc/schedstat (CONFIG_SCHEDSTATS off) the sampler falls back to the tick
+# figure and says so.
+#
+# One property of the scheduler counter to know about: a task's run time is added when it
+# leaves its CPU, so a thread that runs for several seconds without a context switch lands
+# in one sample rather than being spread over them. Single samples can therefore exceed
+# 100 %; the mean over a window is exact. Read the window mean, not one line.
+#
 # Environment:
 #   RUN_DIR    /tmp/hushar-server   where run_server.sh put server.pid
 #   OUT        $RUN_DIR/samples.log
@@ -42,11 +59,29 @@ esac
   exit 1
 }
 
-# Busy is total minus idle, which is what "100 - %idle" means in mpstat -- iowait counts
-# as busy in both, so a number from either is comparable with a number from the other.
-cpu_snapshot() {
+# The scheduler's run-time counters exist only with CONFIG_SCHEDSTATS; nearly every
+# distribution kernel has it. Without them the tick figure is all there is.
+if [ -r /proc/schedstat ] && grep -q '^cpu0 ' /proc/schedstat; then
+  SCHEDSTAT=1
+else
+  SCHEDSTAT=0
+fi
+
+# The tick-based figure: busy is total minus idle, which is what "100 - %idle" means in
+# mpstat -- iowait counts as busy in both, so a number from either is comparable with a
+# number from the other.
+tick_snapshot() {
   awk '/^cpu / { idle = $5; total = 0; for (i = 2; i <= NF; i++) total += $i;
                  print total, idle; exit }' /proc/stat
+}
+
+# The scheduler's figure: on each `cpuN` line of /proc/schedstat the eighth field is
+# `rq_cpu_time`, the nanoseconds tasks other than the idle task have spent running on
+# that CPU (the same field in every version of the file since 15). Summed over the host,
+# with the number of CPUs it was summed over.
+run_snapshot() {
+  awk '$1 ~ /^cpu[0-9]+$/ { run += $8; n++ } END { printf "%.0f %d\n", run, n }' \
+    /proc/schedstat
 }
 
 server_pid() {
@@ -54,34 +89,54 @@ server_pid() {
   [ -r "$RUN_DIR/server.pid" ] && cat "$RUN_DIR/server.pid"
 }
 
-# Four numbers per line, so `report` is one awk pass and the raw file is still readable:
-#   epoch  cpu_busy_%  process_RSS_%_of_host  process_RSS_kB  host_memory_used_%
+# Six numbers per line, so `report` is one awk pass and the raw file is still readable:
+#   epoch  cpu_busy_%  process_RSS_%_of_host  process_RSS_kB  host_memory_used_%  tick_busy_%
+# cpu_busy_% is the scheduler figure; tick_busy_% is /proc/stat's for the same second, or
+# `-` when the scheduler figure was unavailable and the second column is the tick figure.
 sample_loop() {
-  local prev_total prev_idle total idle pid rss mem_total mem_avail now
-  read -r prev_total prev_idle < <(cpu_snapshot)
+  local prev_total prev_idle total idle prev_run run n prev_ns now_ns now dw
+  local pid rss mem_total mem_avail
+  read -r prev_total prev_idle < <(tick_snapshot)
+  run=0; n=0
+  [ "$SCHEDSTAT" = 1 ] && read -r prev_run _ < <(run_snapshot)
+  prev_ns=$(date +%s%N)
   while :; do
     sleep "$INTERVAL"
-    read -r total idle < <(cpu_snapshot)
-    now=$(date -u '+%s')
+    read -r total idle < <(tick_snapshot)
+    [ "$SCHEDSTAT" = 1 ] && read -r run n < <(run_snapshot)
+    now_ns=$(date +%s%N)
+    now=$((now_ns / 1000000000))
+    # The wall-clock delta is taken in the shell, whose integers are 64-bit; awk's doubles
+    # would round a nanosecond epoch.
+    dw=$((now_ns - prev_ns))
     pid="$(server_pid)"
     rss=0
     [ -n "$pid" ] && [ -r "/proc/$pid/status" ] \
       && rss=$(awk '/^VmRSS:/ { print $2; exit }' "/proc/$pid/status")
     mem_total=$(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo)
     mem_avail=$(awk '/^MemAvailable:/ { print $2; exit }' /proc/meminfo)
-    # The timestamp comes from the shell rather than awk's systime(), which not every
-    # awk has -- the whole file is then readable by the plainest one.
+    # Wall time comes from the shell's clock, measured between the two reads rather than
+    # assumed to be INTERVAL, so a late wake-up does not inflate the figure.
     awk -v t="$total" -v i="$idle" -v pt="$prev_total" -v pi="$prev_idle" \
+        -v run="$run" -v prun="${prev_run:-0}" -v n="$n" -v dw="$dw" -v sched="$SCHEDSTAT" \
         -v rss="${rss:-0}" -v mt="$mem_total" -v ma="$mem_avail" -v now="$now" \
         'BEGIN {
            dt = t - pt; di = i - pi;
-           cpu = (dt > 0 ? 100 * (dt - di) / dt : 0);
+           tick = (dt > 0 ? 100 * (dt - di) / dt : 0);
+           if (sched) {
+             cpu = (dw > 0 && n > 0 ? 100 * (run - prun) / (dw * n) : 0);
+             tickcol = sprintf("%.2f", tick);
+           } else {
+             cpu = tick; tickcol = "-";
+           }
            mem = (mt > 0 ? 100 * rss / mt : 0);
            host = (mt > 0 ? 100 * (mt - ma) / mt : 0);
-           printf "%d %.2f %.3f %d %.2f\n", now, cpu, mem, rss, host;
+           printf "%d %.2f %.3f %d %.2f %s\n", now, cpu, mem, rss, host, tickcol;
          }'
     prev_total=$total
     prev_idle=$idle
+    prev_run=$run
+    prev_ns=$now_ns
   done
 }
 
@@ -101,6 +156,11 @@ start() {
   echo $! > "$PID_FILE"
   echo "sampling every ${INTERVAL}s into $OUT, pid $(cat "$PID_FILE")"
   echo "  server pid ${pid:-none}"
+  if [ "$SCHEDSTAT" = 1 ]; then
+    echo "  cpu from the scheduler's run time (/proc/schedstat); the tick figure is column 6"
+  else
+    echo "  note: no /proc/schedstat on this kernel -- cpu is the tick-based /proc/stat figure" >&2
+  fi
   echo "  stop it after the sweep, then: $0 report"
 }
 
@@ -116,6 +176,9 @@ stop() {
 
 # `from`/`to` are seconds from the first sample, so a rate's window is arithmetic on the
 # sweep's own shape rather than on wall-clock timestamps nobody wrote down.
+#
+# The first line is the CPU figure the drivers read. `tick` is printed only when the file
+# carries the sixth column, so a log from the tick-only sampler reports as it always did.
 report() {
   [ -r "$OUT" ] || { echo "no samples at $OUT -- was the sampler started?" >&2; exit 1; }
   local from="${1:-0}" to="${2:-}"
@@ -126,12 +189,17 @@ report() {
       if (offset < from) next;
       if (to >= 0 && offset > to) next;
       cpu += $2; mem += $3; rss += $4; host += $5; n++;
+      if (NF >= 6 && $6 != "-") { tick += $6; tn++ }
       if (n == 1) first = offset;
       last = offset;
     }
     END {
       if (n == 0) { print "no samples in that window"; exit 1 }
-      printf "cpu    %.1f %%   mean host utilisation\n", cpu / n;
+      printf "cpu    %.1f %%   mean host utilisation%s\n", cpu / n,
+             (tn > 0 ? ", scheduler run time" : "");
+      if (tn > 0)
+        printf "tick   %.1f %%   the same window from /proc/stat, tick-based, for comparison\n",
+               tick / tn;
       printf "mem    %.1f %%   server process, %.1f GiB resident\n",
              mem / n, rss / n / 1048576;
       printf "host   %.1f %%   memory used including page cache\n", host / n;

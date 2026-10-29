@@ -2,7 +2,7 @@
 #######################
 # Models, their configurations and the string vocabulary are written together by
 # scripts/generate_benchmark_models.py. A model is ~190 MB, so the whole directory
-# is generated on demand rather than committed. See benchmark-data/TEMPLATE.md.
+# is generated on demand rather than committed. See documentation/benchmarking.md.
 benchmark-data/generated/
 
 # Bundles from scripts/benchmark/package.sh -- a build artifact of the working tree.
@@ -20,9 +20,22 @@ triton-bench/
 # campaign belong in documentation/ and benchmark-data/results/ instead.
 benchmark-data/private/
 
+# The config sweeps from the first round of benchmarking, retired here when a narrower
+# round started. 69 MB and 6,539 files of breadth -- every threading permutation on every
+# accelerator -- which is more evidence than insight for someone reading the repository,
+# and it is superseded the moment the service's own numbers move. Kept on disk so the old
+# figures can still be looked up, untracked so the repository carries only the round it is
+# actually making a case with. See documentation/benchmarking.md §6.
+benchmark-data/old-results/
+
 # Written by scripts/benchmark/bootstrap.sh on a benchmark instance: that host's
 # ORT_DYLIB_PATH and provider, which are per-host and not the repository's business.
 /env.sh
+
+# The write-up of the benchmark campaigns as a paper (LaTeX sources, generated figures and
+# tables). It is a document about the results, not part of hushar, and is kept beside the
+# repository rather than in it.
+tabular-inference-paper/
 
 # Rust build output #
 #####################
@@ -79,7 +92,7 @@ Desktop.ini
 
 # ... except a benchmark's own logs under results/raw/. Those are the server banners, the
 # per-second CPU samples and the client output a report's figures are traced to, so they are
-# tracked on purpose -- see benchmark-data/TEMPLATE.md.
+# tracked on purpose -- see documentation/benchmarking.md §6.
 !benchmark-data/results/**/raw/**/*.log
 
 *.tmp
@@ -122,3 +135,9 @@ Desktop.ini
 # purpose: an id committed to teach a scanner about it has still been committed. Supply it
 # here or in $HUSHAR_ACCOUNT_IDS.
 .account-ids
+
+# Triton's raw Prometheus dumps stay in S3 only: they are verbatim counter text whose
+# twelve-digit microsecond totals are indistinguishable from an AWS account id to any
+# scanner, and every number derived from them is already in cells/. The `**` before the
+# filename matters: the dumps sit one level down, under raw/server/<host>/.
+benchmark-data/results/**/raw/server/**/*.metrics-*.txt

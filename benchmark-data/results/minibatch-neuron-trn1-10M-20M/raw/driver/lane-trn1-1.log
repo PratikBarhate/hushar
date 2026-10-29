@@ -1,0 +1,65 @@
+launched 2026-10-27T21:25:11Z for trn1-1 phase=all sizes=[10m]
+
+===== 10m (2026-10-27T21:25:11Z) =====
+2026-10-27T21:25:12Z preflight trn1-1: {'type': 'trn1.2xlarge', 'ami': 'ami-0dee875b4887bc141', 'kernel': '6.17.0-1019-aws', 'nproc': '8', 'dev': '1', 'cores': '2', 'nrt': 'yes', 'monitor': 'yes', 'sampler': 'yes', 'hushar': 'yes', 'provider': 'neuron', 'venv': 'yes', 'nrtpath': 'libnrt.so.1'}
+2026-10-27T21:25:12Z preflight trn1-1: OK -- trn1.2xlarge, 1 neuron device(s), libnrt.so.1, kernel 6.17.0-1019-aws, ami ami-0dee875b4887bc141
+2026-10-27T21:25:12Z run=minibatch-neuron-trn1-10M-20M rev=6e00a5f7-dirty host=trn1-1 size=10m target=10M phase=all loads=[(100, 1000), (500, 200)] mini_batches={100: [100, 50, 25], 500: [500, 250, 100]} replicas=[2, 4, 6] shapes=[25, 50, 100, 250, 500] cores_per_replica=1 contexts=pieces warmup=120s measured=900s/15slices settle=60s
+2026-10-27T21:25:12Z prime 10m: 5 NEFF shape(s) [25, 50, 100, 250, 500]
+2026-10-27T21:25:18Z prime 10m mb25: compiling (target 10M)
+2026-10-27T21:27:14Z prime 10m mb25: compiled 71.1s, NEFF 32.4 MiB, 9,142,789 params / 2 layers, trace error 1.33e-06, served a trickle in 22.1s (at 6 replicas the device is asked for ~194.4 MiB of NEFF copies)
+2026-10-27T21:27:20Z prime 10m mb50: restoring from s3://hushar-bench-<account-id>-us-west-2/models/neuron/10m
+2026-10-27T21:28:00Z prime 10m mb50: s3-cache 2.8s, NEFF 32.5 MiB, 9,142,789 params / 2 layers, trace error 1.3e-06, served a trickle in 22.1s (at 6 replicas the device is asked for ~195.0 MiB of NEFF copies)
+2026-10-27T21:28:06Z prime 10m mb100: restoring from s3://hushar-bench-<account-id>-us-west-2/models/neuron/10m
+2026-10-27T21:28:47Z prime 10m mb100: s3-cache 2.7s, NEFF 32.7 MiB, 9,142,789 params / 2 layers, trace error 1.43e-06, served a trickle in 22.1s (at 6 replicas the device is asked for ~196.2 MiB of NEFF copies)
+2026-10-27T21:28:53Z prime 10m mb250: compiling (target 10M)
+2026-10-27T21:31:01Z prime 10m mb250: compiled 85.4s, NEFF 33.2 MiB, 9,142,789 params / 2 layers, trace error 1.43e-06, served a trickle in 22.1s (at 6 replicas the device is asked for ~199.2 MiB of NEFF copies)
+2026-10-27T21:31:07Z prime 10m mb500: compiling (target 10M)
+2026-10-27T21:33:31Z prime 10m mb500: compiled 100.7s, NEFF 34.3 MiB, 9,142,789 params / 2 layers, trace error 1.83e-06, served a trickle in 22.1s (at 6 replicas the device is asked for ~205.8 MiB of NEFF copies)
+2026-10-27T21:33:31Z prime 10m complete: 9,142,789 parameters, 2 layers, shapes b25 32.4MiB compiled, b50 32.5MiB s3-cache, b100 32.7MiB s3-cache, b250 33.2MiB compiled, b500 34.3MiB compiled
+2026-10-27T21:33:31Z main: 18 cell(s) -- 100x1000 mb100/1p s2c1, 100x1000 mb50/2p s2c2, 100x1000 mb25/4p s2c4, 100x1000 mb100/1p s4c1, 100x1000 mb50/2p s4c2, 100x1000 mb25/4p s4c4, 100x1000 mb100/1p s6c1, 100x1000 mb50/2p s6c2, 100x1000 mb25/4p s6c4, 500x200 mb500/1p s2c1, 500x200 mb250/2p s2c2, 500x200 mb100/5p s2c5, 500x200 mb500/1p s4c1, 500x200 mb250/2p s4c2, 500x200 mb100/5p s4c5, 500x200 mb500/1p s6c1, 500x200 mb250/2p s6c2, 500x200 mb100/5p s6c5
+2026-10-27T21:33:31Z trn1-10m-r100t1000-mb100-s2 start  mb=100/1p replicas=2 (1/core) ctx=1 100rows x 1000tps = 100000 rows/s 120+900s
+2026-10-27T21:51:14Z trn1-10m-r100t1000-mb100-s2 done   p50=3.46 p95=4.5 p99=10.15 achieved=1000.0/1000 shed=0 srvcpu=33.0 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T21:52:15Z trn1-10m-r100t1000-mb50-s2 start  mb=50/2p replicas=2 (1/core) ctx=2 100rows x 1000tps = 100000 rows/s 120+900s
+2026-10-27T22:10:14Z trn1-10m-r100t1000-mb50-s2 done   p50=2.94 p95=3.51 p99=3.87 achieved=1000.0/1000 shed=0 srvcpu=36.2 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T22:11:15Z trn1-10m-r100t1000-mb25-s2 start  mb=25/4p replicas=2 (1/core) ctx=4 100rows x 1000tps = 100000 rows/s 120+900s
+2026-10-27T22:29:18Z trn1-10m-r100t1000-mb25-s2 done   p50=4157.06 p95=4171.45 p99=4183.23 achieved=961.7/1000 shed=35029 srvcpu=54.8 failed (0/15 slice(s) held) -- settling 60s
+2026-10-27T22:30:19Z trn1-10m-r100t1000-mb100-s4 start  mb=100/1p replicas=4 (2/core) ctx=1 100rows x 1000tps = 100000 rows/s 120+900s
+2026-10-27T22:48:14Z trn1-10m-r100t1000-mb100-s4 done   p50=3.4 p95=3.95 p99=4.44 achieved=1000.0/1000 shed=0 srvcpu=33.2 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T22:49:15Z trn1-10m-r100t1000-mb50-s4 start  mb=50/2p replicas=4 (2/core) ctx=2 100rows x 1000tps = 100000 rows/s 120+900s
+2026-10-27T23:07:14Z trn1-10m-r100t1000-mb50-s4 done   p50=3.23 p95=3.79 p99=4.29 achieved=1000.0/1000 shed=0 srvcpu=37.9 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T23:08:15Z trn1-10m-r100t1000-mb25-s4 start  mb=25/4p replicas=4 (2/core) ctx=4 100rows x 1000tps = 100000 rows/s 120+900s
+2026-10-27T23:26:14Z trn1-10m-r100t1000-mb25-s4 done   p50=3.84 p95=4.57 p99=5.1 achieved=1000.0/1000 shed=0 srvcpu=58.5 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T23:27:15Z trn1-10m-r100t1000-mb100-s6 start  mb=100/1p replicas=6 (3/core) ctx=1 100rows x 1000tps = 100000 rows/s 120+900s
+2026-10-27T23:45:14Z trn1-10m-r100t1000-mb100-s6 done   p50=3.41 p95=3.97 p99=4.55 achieved=1000.0/1000 shed=0 srvcpu=33.4 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T23:46:15Z trn1-10m-r100t1000-mb50-s6 start  mb=50/2p replicas=6 (3/core) ctx=2 100rows x 1000tps = 100000 rows/s 120+900s
+2026-10-28T00:04:14Z trn1-10m-r100t1000-mb50-s6 done   p50=3.29 p95=3.86 p99=4.62 achieved=1000.0/1000 shed=0 srvcpu=37.9 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-28T00:05:15Z trn1-10m-r100t1000-mb25-s6 start  mb=25/4p replicas=6 (3/core) ctx=4 100rows x 1000tps = 100000 rows/s 120+900s
+2026-10-28T00:23:14Z trn1-10m-r100t1000-mb25-s6 done   p50=3.84 p95=4.7 p99=5.87 achieved=1000.0/1000 shed=0 srvcpu=58.6 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-28T00:24:15Z trn1-10m-r500t200-mb500-s2 start  mb=500/1p replicas=2 (1/core) ctx=1 500rows x 200tps = 100000 rows/s 120+900s
+2026-10-28T00:42:14Z trn1-10m-r500t200-mb500-s2 done   p50=12.26 p95=837.21 p99=3666.81 achieved=199.9/200 shed=60 srvcpu=28.1 partial (14/15 slice(s) held) -- settling 60s
+2026-10-28T00:43:15Z trn1-10m-r500t200-mb250-s2 start  mb=250/2p replicas=2 (1/core) ctx=2 500rows x 200tps = 100000 rows/s 120+900s
+2026-10-28T01:01:14Z trn1-10m-r500t200-mb250-s2 done   p50=11.18 p95=12.65 p99=13.42 achieved=200.0/200 shed=0 srvcpu=29.0 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-28T01:02:15Z trn1-10m-r500t200-mb100-s2 start  mb=100/5p replicas=2 (1/core) ctx=5 500rows x 200tps = 100000 rows/s 120+900s
+2026-10-28T01:20:14Z trn1-10m-r500t200-mb100-s2 done   p50=10.9 p95=11.92 p99=12.53 achieved=200.0/200 shed=0 srvcpu=37.3 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-28T01:21:15Z trn1-10m-r500t200-mb500-s4 start  mb=500/1p replicas=4 (2/core) ctx=1 500rows x 200tps = 100000 rows/s 120+900s
+2026-10-28T01:39:14Z trn1-10m-r500t200-mb500-s4 done   p50=12.35 p95=16.32 p99=17.96 achieved=200.0/200 shed=0 srvcpu=28.1 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-28T01:40:15Z trn1-10m-r500t200-mb250-s4 start  mb=250/2p replicas=4 (2/core) ctx=2 500rows x 200tps = 100000 rows/s 120+900s
+2026-10-28T01:58:14Z trn1-10m-r500t200-mb250-s4 done   p50=11.21 p95=14.69 p99=17.56 achieved=200.0/200 shed=0 srvcpu=29.4 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-28T01:59:15Z trn1-10m-r500t200-mb100-s4 start  mb=100/5p replicas=4 (2/core) ctx=5 500rows x 200tps = 100000 rows/s 120+900s
+2026-10-28T02:17:14Z trn1-10m-r500t200-mb100-s4 done   p50=10.96 p95=12.13 p99=13.63 achieved=200.0/200 shed=0 srvcpu=37.5 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-28T02:18:15Z trn1-10m-r500t200-mb500-s6 start  mb=500/1p replicas=6 (3/core) ctx=1 500rows x 200tps = 100000 rows/s 120+900s
+2026-10-28T02:36:14Z trn1-10m-r500t200-mb500-s6 done   p50=12.42 p95=16.82 p99=18.01 achieved=200.0/200 shed=0 srvcpu=28.3 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-28T02:37:15Z trn1-10m-r500t200-mb250-s6 start  mb=250/2p replicas=6 (3/core) ctx=2 500rows x 200tps = 100000 rows/s 120+900s
+2026-10-28T02:55:14Z trn1-10m-r500t200-mb250-s6 done   p50=11.25 p95=15.14 p99=17.74 achieved=200.0/200 shed=0 srvcpu=29.5 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-28T02:56:15Z trn1-10m-r500t200-mb100-s6 start  mb=100/5p replicas=6 (3/core) ctx=5 500rows x 200tps = 100000 rows/s 120+900s
+2026-10-28T03:14:14Z trn1-10m-r500t200-mb100-s6 done   p50=10.98 p95=12.2 p99=14.64 achieved=200.0/200 shed=0 srvcpu=37.6 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-28T03:15:14Z control: 2 cell(s) at contexts=1 -- trn1-10m-r100t1000-mb25-s2-ctx1, trn1-10m-r500t200-mb100-s2-ctx1
+2026-10-28T03:15:15Z trn1-10m-r100t1000-mb25-s2-ctx1 start  mb=25/4p replicas=2 (1/core) ctx=1 100rows x 1000tps = 100000 rows/s 120+900s
+2026-10-28T03:33:19Z trn1-10m-r100t1000-mb25-s2-ctx1 done   p50=4430.61 p95=4446.07 p99=4497.85 achieved=902.1/1000 shed=95790 srvcpu=40.1 failed (0/15 slice(s) held) -- settling 60s
+2026-10-28T03:34:19Z trn1-10m-r500t200-mb100-s2-ctx1 start  mb=100/5p replicas=2 (1/core) ctx=1 500rows x 200tps = 100000 rows/s 120+900s
+2026-10-28T03:52:14Z trn1-10m-r500t200-mb100-s2-ctx1 done   p50=11.22 p95=12.42 p99=13.02 achieved=200.0/200 shed=0 srvcpu=30.5 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-28T03:53:15Z lane complete
+===== 10m done rc=0 (2026-10-28T03:53:15Z) =====
+ALL DONE rc=0 2026-10-28T03:53:15Z
+
+[redacted on commit: the bucket name was replaced with <account-id> because it embeds an AWS account number. sweep.py no longer logs the bucket.]

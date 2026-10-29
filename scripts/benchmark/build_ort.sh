@@ -31,7 +31,7 @@
 #                       warning. Both are checked before the compile, not after it
 #
 # Options:
-#   --version V     ONNX Runtime tag to build, default 1.29.0
+#   --version V     ONNX Runtime tag to build, default 1.28.0
 #   --out DIR       where to assemble the libraries, default ~/ort-<provider>
 #   --src DIR       where to clone, default ~/onnxruntime
 #   --jobs N        compile parallelism, default nproc
@@ -45,7 +45,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 usage() { awk 'NR>3 && /^#/ { sub(/^# ?/, ""); print; next } NR>3 { exit }' "$0"; }
 
 PROVIDER=""
-VERSION=1.29.0
+VERSION=1.28.0
 OUT=""
 SRC="${HOME:-/root}/onnxruntime"
 JOBS="$(nproc)"

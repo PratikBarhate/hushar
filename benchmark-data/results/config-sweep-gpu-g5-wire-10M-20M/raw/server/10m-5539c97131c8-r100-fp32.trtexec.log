@@ -1,0 +1,174 @@
+$ docker run --rm --gpus all -v /root/triton/plans:/w nvcr.io/nvidia/tritonserver:26.05-py3 /usr/src/tensorrt/bin/trtexec --onnx=/w/10m-5539c97131c896db6c58088d9f9b9ee3.onnx --saveEngine=/w/10m-5539c97131c8-r100-fp32.plan --minShapes=features:100x690 --optShapes=features:100x690 --maxShapes=features:100x690 --builderOptimizationLevel=3 --skipInference
+
+
+=============================
+== Triton Inference Server ==
+=============================
+
+NVIDIA Release 26.05 (build 51748363)
+Triton Server Version 2.69.0
+
+Copyright (c) 2018-2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+&&&& RUNNING TensorRT.trtexec [TensorRT v101601] [b11] # /usr/src/tensorrt/bin/trtexec --onnx=/w/10m-5539c97131c896db6c58088d9f9b9ee3.onnx --saveEngine=/w/10m-5539c97131c8-r100-fp32.plan --minShapes=features:100x690 --optShapes=features:100x690 --maxShapes=features:100x690 --builderOptimizationLevel=3 --skipInference
+[10/26/2026-08:28:03] [I] TF32 is enabled by default. Add --noTF32 flag to further improve accuracy with some performance cost.
+[10/26/2026-08:28:03] [I] === Model Options ===
+[10/26/2026-08:28:03] [I] Format: ONNX
+[10/26/2026-08:28:03] [I] Model: /w/10m-5539c97131c896db6c58088d9f9b9ee3.onnx
+[10/26/2026-08:28:03] [I] Output:
+[10/26/2026-08:28:03] [I] === Build Options ===
+[10/26/2026-08:28:03] [I] Memory Pools: workspace: default, dlaSRAM: default, dlaLocalDRAM: default, dlaGlobalDRAM: default, tacticSharedMem: default
+[10/26/2026-08:28:03] [I] avgTiming: 8
+[10/26/2026-08:28:03] [I] Precision: FP32
+[10/26/2026-08:28:03] [I] LayerPrecisions: 
+[10/26/2026-08:28:03] [I] Layer Device Types: 
+[10/26/2026-08:28:03] [I] Decomposable Attentions: 
+[10/26/2026-08:28:03] [I] Calibration: 
+[10/26/2026-08:28:03] [I] Refit: Disabled
+[10/26/2026-08:28:03] [I] Strip weights: Disabled
+[10/26/2026-08:28:03] [I] Version Compatible: Disabled
+[10/26/2026-08:28:03] [I] ONNX Plugin InstanceNorm: Disabled
+[10/26/2026-08:28:03] [I] ONNX kENABLE_UINT8_AND_ASYMMETRIC_QUANTIZATION_DLA flag: Disabled
+[10/26/2026-08:28:03] [I] ONNX kREPORT_CAPABILITY_DLA flag: Disabled
+[10/26/2026-08:28:03] [I] ONNX kADJUST_FOR_DLA flag: Disabled
+[10/26/2026-08:28:03] [I] ONNX kENABLE_PLUGIN_OVERRIDE flag: Disabled
+[10/26/2026-08:28:03] [I] TensorRT runtime: full
+[10/26/2026-08:28:03] [I] Lean DLL Path: 
+[10/26/2026-08:28:03] [I] Tempfile Controls: { in_memory: allow, temporary: allow }
+[10/26/2026-08:28:03] [I] Exclude Lean Runtime: Disabled
+[10/26/2026-08:28:03] [I] Sparsity: Disabled
+[10/26/2026-08:28:03] [I] Safe mode: Disabled
+[10/26/2026-08:28:03] [I] Build DLA standalone loadable: Disabled
+[10/26/2026-08:28:03] [I] Allow GPU fallback for DLA: Disabled
+[10/26/2026-08:28:03] [I] DirectIO mode: Disabled
+[10/26/2026-08:28:03] [I] Restricted mode: Disabled
+[10/26/2026-08:28:03] [I] Skip inference: Enabled
+[10/26/2026-08:28:03] [I] Save engine: /w/10m-5539c97131c8-r100-fp32.plan
+[10/26/2026-08:28:03] [I] Load engine: 
+[10/26/2026-08:28:03] [I] Profiling verbosity: 0
+[10/26/2026-08:28:03] [I] Tactic sources: Using default tactic sources
+[10/26/2026-08:28:03] [I] timingCacheMode: local
+[10/26/2026-08:28:03] [I] timingCacheFile: 
+[10/26/2026-08:28:03] [I] Enable Compilation Cache: Enabled
+[10/26/2026-08:28:03] [I] Enable Monitor Memory: Disabled
+[10/26/2026-08:28:03] [I] CPU Only Mode: Disabled
+[10/26/2026-08:28:03] [I] errorOnTimingCacheMiss: Disabled
+[10/26/2026-08:28:03] [I] Preview Features: Use default preview flags.
+[10/26/2026-08:28:03] [I] MaxAuxStreams: -1
+[10/26/2026-08:28:03] [I] BuilderOptimizationLevel: 3
+[10/26/2026-08:28:03] [I] MaxTactics: -1
+[10/26/2026-08:28:03] [I] Calibration Profile Index: 0
+[10/26/2026-08:28:03] [I] Weight Streaming: Disabled
+[10/26/2026-08:28:03] [I] Runtime Platform: Same As Build
+[10/26/2026-08:28:03] [I] Debug Tensors: 
+[10/26/2026-08:28:03] [I] Distributive Independence: Disabled
+[10/26/2026-08:28:03] [I] Mark Unfused Tensors As Debug Tensors: Disabled
+[10/26/2026-08:28:03] [I] Input(s)s format: fp32:CHW
+[10/26/2026-08:28:03] [I] Output(s)s format: fp32:CHW
+[10/26/2026-08:28:03] [I] Input build shape (profile 0): features=100x690+100x690+100x690
+[10/26/2026-08:28:03] [I] Input calibration shapes: model
+[10/26/2026-08:28:03] [I] === System Options ===
+[10/26/2026-08:28:03] [I] Device: 0
+[10/26/2026-08:28:03] [I] DLACore: 
+[10/26/2026-08:28:03] [I] Loaded static plugins:
+[10/26/2026-08:28:03] [I] setPluginsToSerialize:
+[10/26/2026-08:28:03] [I] dynamicPlugins:
+[10/26/2026-08:28:03] [I] ignoreParsedPluginLibs: 0
+[10/26/2026-08:28:03] [I] 
+[10/26/2026-08:28:03] [I] === Inference Options ===
+[10/26/2026-08:28:03] [I] Batch: Explicit
+[10/26/2026-08:28:03] [I] Input inference shape : features=100x690
+[10/26/2026-08:28:03] [I] Iterations: 10
+[10/26/2026-08:28:03] [I] Duration: 3s (+ 200ms warm up)
+[10/26/2026-08:28:03] [I] Sleep time: 0ms
+[10/26/2026-08:28:03] [I] Idle time: 0ms
+[10/26/2026-08:28:03] [I] Inference Streams: 1
+[10/26/2026-08:28:03] [I] ExposeDMA: Disabled
+[10/26/2026-08:28:03] [I] Data transfers: Enabled
+[10/26/2026-08:28:03] [I] Spin-wait: Disabled
+[10/26/2026-08:28:03] [I] Multithreading: Disabled
+[10/26/2026-08:28:03] [I] CUDA Graph: Disabled
+[10/26/2026-08:28:03] [I] Separate profiling: Disabled
+[10/26/2026-08:28:03] [I] Time Deserialize: Disabled
+[10/26/2026-08:28:03] [I] Time Refit: Disabled
+[10/26/2026-08:28:03] [I] NVTX verbosity: 0
+[10/26/2026-08:28:03] [I] Persistent Cache Ratio: 0
+[10/26/2026-08:28:03] [I] Optimization Profile Index: 0
+[10/26/2026-08:28:03] [I] Weight Streaming Budget: 100.000000%
+[10/26/2026-08:28:03] [I] Inputs:
+[10/26/2026-08:28:03] [I] Debug Tensor Save Destinations:
+[10/26/2026-08:28:03] [I] Dump All Debug Tensor in Formats: 
+[10/26/2026-08:28:03] [I] === Reporting Options ===
+[10/26/2026-08:28:03] [I] Verbose: Disabled
+[10/26/2026-08:28:03] [I] Averages: 10 inferences
+[10/26/2026-08:28:03] [I] Percentiles: 90,95,99
+[10/26/2026-08:28:03] [I] Dump refittable layers:Disabled
+[10/26/2026-08:28:03] [I] Dump output: Disabled
+[10/26/2026-08:28:03] [I] Profile: Disabled
+[10/26/2026-08:28:03] [I] Export timing to JSON file: 
+[10/26/2026-08:28:03] [I] Export output to JSON file: 
+[10/26/2026-08:28:03] [I] Export profile to JSON file: 
+[10/26/2026-08:28:03] [I] 
+[10/26/2026-08:28:03] [I] === Device Information ===
+[10/26/2026-08:28:03] [I] Available Devices: 
+[10/26/2026-08:28:03] [I]   Device 0: "NVIDIA A10G" UUID: GPU-241a7625-81aa-0b97-2451-aa60d16cc041
+[10/26/2026-08:28:04] [I] Selected Device: NVIDIA A10G
+[10/26/2026-08:28:04] [I] Selected Device ID: 0
+[10/26/2026-08:28:04] [I] Selected Device UUID: GPU-241a7625-81aa-0b97-2451-aa60d16cc041
+[10/26/2026-08:28:04] [I] Compute Capability: 8.6
+[10/26/2026-08:28:04] [I] SMs: 80
+[10/26/2026-08:28:04] [I] Device Global Memory: 22589 MiB
+[10/26/2026-08:28:04] [I] Shared Memory per SM: 100 KiB
+[10/26/2026-08:28:04] [I] Memory Bus Width: 384 bits (ECC enabled)
+[10/26/2026-08:28:04] [I] Application Compute Clock Rate: 1.71 GHz
+[10/26/2026-08:28:04] [I] Application Memory Clock Rate: 6.251 GHz
+[10/26/2026-08:28:04] [I] 
+[10/26/2026-08:28:04] [I] Note: The application clock rates do not reflect the actual clock rates that the GPU is currently running at.
+[10/26/2026-08:28:04] [I] 
+[10/26/2026-08:28:04] [I] TensorRT version: 10.16.1
+[10/26/2026-08:28:04] [I] Loading standard plugins
+[10/26/2026-08:28:04] [I] [TRT] [MemUsageChange] Init CUDA: CPU +0, GPU +0, now: CPU 28, GPU 258 (MiB)
+[10/26/2026-08:28:04] [I] Start parsing network model.
+[10/26/2026-08:28:04] [I] [TRT] ----------------------------------------------------------------
+[10/26/2026-08:28:04] [I] [TRT] Input filename:   /w/10m-5539c97131c896db6c58088d9f9b9ee3.onnx
+[10/26/2026-08:28:04] [I] [TRT] ONNX IR version:  0.0.8
+[10/26/2026-08:28:04] [I] [TRT] Opset version:    17
+[10/26/2026-08:28:04] [I] [TRT] Producer name:    pytorch
+[10/26/2026-08:28:04] [I] [TRT] Producer version: 2.10.0
+[10/26/2026-08:28:04] [I] [TRT] Domain:           
+[10/26/2026-08:28:04] [I] [TRT] Model version:    0
+[10/26/2026-08:28:04] [I] [TRT] Doc string:       
+[10/26/2026-08:28:04] [I] [TRT] ----------------------------------------------------------------
+[10/26/2026-08:28:04] [I] Finished parsing network model. Parse time: 0.0490507
+[10/26/2026-08:28:04] [I] Set shape of input tensor features for optimization profile 0 to: MIN=100x690 OPT=100x690 MAX=100x690
+[10/26/2026-08:28:04] [I] [TRT] [MemUsageChange] Init builder kernel library: CPU +196, GPU +4, now: CPU 525, GPU 262 (MiB)
+[10/26/2026-08:28:04] [I] [TRT] Local timing cache in use. Profiling results in this builder pass will not be stored.
+[10/26/2026-08:28:04] [I] [TRT] Compiler backend is used during engine build.
+[10/26/2026-08:28:09] [I] [TRT] Detected 1 inputs and 1 output network tensors.
+[10/26/2026-08:28:09] [I] [TRT] Total Host Persistent Memory: 80 bytes
+[10/26/2026-08:28:09] [I] [TRT] Total Device Persistent Memory: 0 bytes
+[10/26/2026-08:28:09] [I] [TRT] Max Scratch Memory: 19660800 bytes
+[10/26/2026-08:28:09] [I] [TRT] [BlockAssignment] Started assigning block shifts. This will take 1 steps to complete.
+[10/26/2026-08:28:09] [I] [TRT] [BlockAssignment] Algorithm ShiftNTopDown took 0.012781ms to assign 1 blocks to 1 nodes requiring 19660800 bytes.
+[10/26/2026-08:28:09] [I] [TRT] Total Activation Memory: 19660800 bytes
+[10/26/2026-08:28:09] [I] [TRT] Total Weights Memory: 36555648 bytes
+[10/26/2026-08:28:09] [I] [TRT] Compiler backend is used during engine execution.
+[10/26/2026-08:28:09] [I] [TRT] Engine generation completed in 4.45735 seconds.
+[10/26/2026-08:28:09] [I] [TRT] [MemUsageStats] Peak memory usage of TRT CPU/GPU memory allocators: CPU 0 MiB, GPU 54 MiB
+[10/26/2026-08:28:09] [I] Created engine with size: 35.116 MiB
+[10/26/2026-08:28:09] [I] Engine built in 4.94862 sec.
+[10/26/2026-08:28:09] [I] [TRT] Loaded engine size: 35 MiB
+[10/26/2026-08:28:09] [I] Engine deserialized in 0.0268849 sec.
+[10/26/2026-08:28:09] [I] Skipped inference phase since --skipInference is added.
+&&&& PASSED TensorRT.trtexec [TensorRT v101601] [b11] # /usr/src/tensorrt/bin/trtexec --onnx=/w/10m-5539c97131c896db6c58088d9f9b9ee3.onnx --saveEngine=/w/10m-5539c97131c8-r100-fp32.plan --minShapes=features:100x690 --optShapes=features:100x690 --maxShapes=features:100x690 --builderOptimizationLevel=3 --skipInference
+
+
+
+build seconds: 7.7

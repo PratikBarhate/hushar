@@ -1,0 +1,86 @@
+launched 2026-10-27T02:25:53Z for g5-1 phase=all specs=[10m:5539c97131c896db6c58088d9f9b9ee3 20m:30f9c5330b808a34b55fe88048a20da6]
+
+===== 10m (2026-10-27T02:25:53Z) =====
+2026-10-27T02:25:54Z preflight g5-1: {'type': 'g5.2xlarge', 'ami': 'ami-06a84c332fb06b778', 'kernel': '6.12.111-136.204.amzn2023.x86_64', 'nproc': '8', 'gpu': 'NVIDIA_A10G', 'gpucount': '1', 'driver': '595.112.07', 'md5': '5539c97131c896db6c58088d9f9b9ee3', 'hushar': 'yes', 'plans': '2', 'image': 'yes', 'gpusampler': 'yes', 'ortso': '1.28.3', 'trtso': '10.16.1', 'cudamaj': '13', 'trtmissing': '0'}
+2026-10-27T02:25:54Z preflight g5-1: OK -- g5.2xlarge, NVIDIA_A10G, driver 595.112.07, TensorRT 10.16.1 on CUDA 13, ONNX Runtime 1.28.3, 10m md5 5539c97131c896db6c58088d9f9b9ee3
+2026-10-27T02:25:54Z run=minibatch-gpu-g5-10M-20M rev=7af1bf77 host=g5-1 size=10m arms=['hushar', 'triton'] phase=all loads=[(100, 1000), (500, 200)] mini_batches={100: [100, 50, 25], 500: [500, 250, 100]} shapes=[25, 50, 100, 250, 500] pinned_parallelism=10m:2,20m:4 warmup=120s measured=900s/15slices settle=60s
+2026-10-27T02:25:54Z prime 10m: 5 engine shape(s) [25, 50, 100, 250, 500]
+2026-10-27T02:26:28Z prime 10m mb25 first pass: rc=0 25s {'offered': 2, 'achieved': 2.0, 'p50': 1.47, 'p95': 1.66, 'p99': 1.74, 'shed': 0, 'failed': 0}
+2026-10-27T02:27:07Z prime 10m mb25 cached pass: rc=0 22s {'offered': 2, 'achieved': 2.0, 'p50': 1.6, 'p95': 1.86, 'p99': 1.88, 'shed': 0, 'failed': 0}
+2026-10-27T02:27:55Z prime 10m mb50 first pass: rc=0 25s {'offered': 2, 'achieved': 2.0, 'p50': 1.77, 'p95': 2.11, 'p99': 2.12, 'shed': 0, 'failed': 0}
+2026-10-27T02:28:34Z prime 10m mb50 cached pass: rc=0 22s {'offered': 2, 'achieved': 2.0, 'p50': 1.9, 'p95': 2.23, 'p99': 2.24, 'shed': 0, 'failed': 0}
+2026-10-27T02:29:20Z prime 10m mb100 first pass: rc=0 25s {'offered': 2, 'achieved': 2.0, 'p50': 2.79, 'p95': 3.09, 'p99': 3.16, 'shed': 0, 'failed': 0}
+2026-10-27T02:29:59Z prime 10m mb100 cached pass: rc=0 22s {'offered': 2, 'achieved': 2.0, 'p50': 2.58, 'p95': 2.98, 'p99': 3.02, 'shed': 0, 'failed': 0}
+2026-10-27T02:30:46Z prime 10m mb250 first pass: rc=0 26s {'offered': 2, 'achieved': 2.0, 'p50': 4.48, 'p95': 4.88, 'p99': 5.12, 'shed': 0, 'failed': 0}
+2026-10-27T02:31:25Z prime 10m mb250 cached pass: rc=0 22s {'offered': 2, 'achieved': 2.0, 'p50': 4.78, 'p95': 5.27, 'p99': 5.31, 'shed': 0, 'failed': 0}
+2026-10-27T02:32:12Z prime 10m mb500 first pass: rc=0 26s {'offered': 2, 'achieved': 2.0, 'p50': 7.38, 'p95': 8.04, 'p99': 8.66, 'shed': 0, 'failed': 0}
+2026-10-27T02:32:51Z prime 10m mb500 cached pass: rc=0 22s {'offered': 2, 'achieved': 2.0, 'p50': 7.44, 'p95': 7.79, 'p99': 8.96, 'shed': 0, 'failed': 0}
+2026-10-27T02:33:05Z prime 10m mb25: build 25.2s -> cached 22.1s
+2026-10-27T02:33:05Z prime 10m mb50: build 25.2s -> cached 22.1s
+2026-10-27T02:33:05Z prime 10m mb100: build 25.3s -> cached 22.1s
+2026-10-27T02:33:05Z prime 10m mb250: build 25.5s -> cached 22.1s
+2026-10-27T02:33:05Z prime 10m mb500: build 26.0s -> cached 22.1s
+2026-10-27T02:33:05Z selection hushar: sessions=2 (pinned, no probe)
+2026-10-27T02:33:05Z selection triton: instances=2 (pinned, no probe)
+2026-10-27T02:33:06Z main: 8 cell(s) -- 100x1000 mb100/1p [hushar], 100x1000 mb50/2p [hushar], 100x1000 mb25/4p [hushar], 500x200 mb500/1p [hushar], 500x200 mb250/2p [hushar], 500x200 mb100/5p [hushar], 100x1000 unsplit [triton], 500x200 unsplit [triton]
+2026-10-27T02:33:06Z g5-hushar-10m-r100t1000-mb100-p2 start  hushar/features sessions=2 100rows x 1000tps = 100000 rows/s 120+900s
+2026-10-27T02:51:13Z g5-hushar-10m-r100t1000-mb100-p2 done   p50=2.64 p95=3.11 p99=3.32 achieved=1000.0/1000 shed=0 srvcpu=24.1 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T02:52:14Z g5-hushar-10m-r100t1000-mb50-p2 start  hushar/features sessions=2 100rows x 1000tps = 100000 rows/s 120+900s
+2026-10-27T03:10:13Z g5-hushar-10m-r100t1000-mb50-p2 done   p50=3.09 p95=3.59 p99=3.83 achieved=1000.0/1000 shed=0 srvcpu=33.1 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T03:11:14Z g5-hushar-10m-r100t1000-mb25-p2 start  hushar/features sessions=2 100rows x 1000tps = 100000 rows/s 120+900s
+2026-10-27T03:29:18Z g5-hushar-10m-r100t1000-mb25-p2 done   p50=4851.65 p95=4905.81 p99=4986.71 achieved=823.6/1000 shed=175592 srvcpu=39.8 failed (0/15 slice(s) held) -- settling 60s
+2026-10-27T03:30:19Z g5-hushar-10m-r500t200-mb500-p2 start  hushar/features sessions=2 500rows x 200tps = 100000 rows/s 120+900s
+2026-10-27T03:48:13Z g5-hushar-10m-r500t200-mb500-p2 done   p50=7.48 p95=8.36 p99=8.72 achieved=200.0/200 shed=0 srvcpu=16.3 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T03:49:14Z g5-hushar-10m-r500t200-mb250-p2 start  hushar/features sessions=2 500rows x 200tps = 100000 rows/s 120+900s
+2026-10-27T04:07:13Z g5-hushar-10m-r500t200-mb250-p2 done   p50=7.2 p95=8.13 p99=8.43 achieved=200.0/200 shed=0 srvcpu=17.7 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T04:08:14Z g5-hushar-10m-r500t200-mb100-p2 start  hushar/features sessions=2 500rows x 200tps = 100000 rows/s 120+900s
+2026-10-27T04:26:13Z g5-hushar-10m-r500t200-mb100-p2 done   p50=7.35 p95=8.32 p99=8.58 achieved=200.0/200 shed=0 srvcpu=21.8 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T04:27:14Z g5-triton-10m-r100t1000-mb100-p2 start  triton/tensor instances=2 100rows x 1000tps = 100000 rows/s 120+900s
+2026-10-27T04:45:13Z g5-triton-10m-r100t1000-mb100-p2 done   p50=1.6 p95=1.89 p99=8.52 achieved=1000.0/1000 shed=0 srvcpu=9.7 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T04:46:14Z g5-triton-10m-r500t200-mb500-p2 start  triton/tensor instances=2 500rows x 200tps = 100000 rows/s 120+900s
+2026-10-27T05:04:15Z g5-triton-10m-r500t200-mb500-p2 done   p50=5.29 p95=5.42 p99=5.48 achieved=200.0/200 shed=0 srvcpu=4.4 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T05:05:16Z lane complete
+===== 10m done rc=0 (2026-10-27T05:05:16Z) =====
+
+===== 20m (2026-10-27T05:05:17Z) =====
+2026-10-27T05:05:17Z preflight g5-1: {'type': 'g5.2xlarge', 'ami': 'ami-06a84c332fb06b778', 'kernel': '6.12.111-136.204.amzn2023.x86_64', 'nproc': '8', 'gpu': 'NVIDIA_A10G', 'gpucount': '1', 'driver': '595.112.07', 'md5': '30f9c5330b808a34b55fe88048a20da6', 'hushar': 'yes', 'plans': '2', 'image': 'yes', 'gpusampler': 'yes', 'ortso': '1.28.3', 'trtso': '10.16.1', 'cudamaj': '13', 'trtmissing': '0'}
+2026-10-27T05:05:17Z preflight g5-1: OK -- g5.2xlarge, NVIDIA_A10G, driver 595.112.07, TensorRT 10.16.1 on CUDA 13, ONNX Runtime 1.28.3, 20m md5 30f9c5330b808a34b55fe88048a20da6
+2026-10-27T05:05:17Z run=minibatch-gpu-g5-10M-20M rev=7af1bf77 host=g5-1 size=20m arms=['hushar', 'triton'] phase=all loads=[(100, 750), (500, 150)] mini_batches={100: [100, 50, 25], 500: [500, 250, 100]} shapes=[25, 50, 100, 250, 500] pinned_parallelism=10m:2,20m:4 warmup=120s measured=900s/15slices settle=60s
+2026-10-27T05:05:18Z prime 20m: 5 engine shape(s) [25, 50, 100, 250, 500]
+2026-10-27T05:05:50Z prime 20m mb25 first pass: rc=0 26s {'offered': 2, 'achieved': 2.0, 'p50': 1.74, 'p95': 1.92, 'p99': 1.94, 'shed': 0, 'failed': 0}
+2026-10-27T05:06:29Z prime 20m mb25 cached pass: rc=0 22s {'offered': 2, 'achieved': 2.0, 'p50': 1.86, 'p95': 2.11, 'p99': 2.3, 'shed': 0, 'failed': 0}
+2026-10-27T05:07:16Z prime 20m mb50 first pass: rc=0 26s {'offered': 2, 'achieved': 2.0, 'p50': 2.53, 'p95': 2.82, 'p99': 2.86, 'shed': 0, 'failed': 0}
+2026-10-27T05:07:55Z prime 20m mb50 cached pass: rc=0 22s {'offered': 2, 'achieved': 2.0, 'p50': 2.38, 'p95': 2.69, 'p99': 2.69, 'shed': 0, 'failed': 0}
+2026-10-27T05:08:42Z prime 20m mb100 first pass: rc=0 26s {'offered': 2, 'achieved': 2.0, 'p50': 3.45, 'p95': 3.73, 'p99': 3.82, 'shed': 0, 'failed': 0}
+2026-10-27T05:09:21Z prime 20m mb100 cached pass: rc=0 22s {'offered': 2, 'achieved': 2.0, 'p50': 3.63, 'p95': 3.97, 'p99': 4.24, 'shed': 0, 'failed': 0}
+2026-10-27T05:10:08Z prime 20m mb250 first pass: rc=0 26s {'offered': 2, 'achieved': 2.0, 'p50': 6.64, 'p95': 6.91, 'p99': 7.25, 'shed': 0, 'failed': 0}
+2026-10-27T05:10:47Z prime 20m mb250 cached pass: rc=0 22s {'offered': 2, 'achieved': 2.0, 'p50': 6.69, 'p95': 7.17, 'p99': 7.24, 'shed': 0, 'failed': 0}
+2026-10-27T05:11:34Z prime 20m mb500 first pass: rc=0 27s {'offered': 2, 'achieved': 2.0, 'p50': 11.5, 'p95': 12.34, 'p99': 13.12, 'shed': 0, 'failed': 0}
+2026-10-27T05:12:13Z prime 20m mb500 cached pass: rc=0 22s {'offered': 2, 'achieved': 2.0, 'p50': 11.23, 'p95': 11.52, 'p99': 12.0, 'shed': 0, 'failed': 0}
+2026-10-27T05:12:27Z prime 20m mb25: build 25.6s -> cached 22.1s
+2026-10-27T05:12:27Z prime 20m mb50: build 25.7s -> cached 22.1s
+2026-10-27T05:12:27Z prime 20m mb100: build 25.7s -> cached 22.1s
+2026-10-27T05:12:27Z prime 20m mb250: build 25.9s -> cached 22.1s
+2026-10-27T05:12:27Z prime 20m mb500: build 26.5s -> cached 22.1s
+2026-10-27T05:12:27Z selection hushar: sessions=4 (pinned, no probe)
+2026-10-27T05:12:27Z selection triton: instances=4 (pinned, no probe)
+2026-10-27T05:12:28Z main: 8 cell(s) -- 100x750 mb100/1p [hushar], 100x750 mb50/2p [hushar], 100x750 mb25/4p [hushar], 500x150 mb500/1p [hushar], 500x150 mb250/2p [hushar], 500x150 mb100/5p [hushar], 100x750 unsplit [triton], 500x150 unsplit [triton]
+2026-10-27T05:12:28Z g5-hushar-20m-r100t750-mb100-p4 start  hushar/features sessions=4 100rows x 750tps = 75000 rows/s 120+900s
+2026-10-27T05:30:13Z g5-hushar-20m-r100t750-mb100-p4 done   p50=4.74 p95=5.5 p99=5.89 achieved=750.0/750 shed=0 srvcpu=37.9 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T05:31:14Z g5-hushar-20m-r100t750-mb50-p4 start  hushar/features sessions=4 100rows x 750tps = 75000 rows/s 120+900s
+2026-10-27T05:49:18Z g5-hushar-20m-r100t750-mb50-p4 done   p50=5246.94 p95=5251.78 p99=5253.87 achieved=571.6/750 shed=178092 srvcpu=57.2 failed (0/15 slice(s) held) -- settling 60s
+2026-10-27T05:50:19Z g5-hushar-20m-r100t750-mb25-p4 start  hushar/features sessions=4 100rows x 750tps = 75000 rows/s 120+900s
+2026-10-27T06:08:22Z g5-hushar-20m-r100t750-mb25-p4 done   p50=9227.84 p95=9295.01 p99=9514.42 achieved=324.8/750 shed=430622 srvcpu=26.6 failed (0/15 slice(s) held) -- settling 60s
+2026-10-27T06:09:23Z g5-hushar-20m-r500t150-mb500-p4 start  hushar/features sessions=4 500rows x 150tps = 75000 rows/s 120+900s
+2026-10-27T06:27:13Z g5-hushar-20m-r500t150-mb500-p4 done   p50=12.34 p95=13.66 p99=14.17 achieved=150.0/150 shed=0 srvcpu=21.9 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T06:28:14Z g5-hushar-20m-r500t150-mb250-p4 start  hushar/features sessions=4 500rows x 150tps = 75000 rows/s 120+900s
+2026-10-27T06:46:13Z g5-hushar-20m-r500t150-mb250-p4 done   p50=15.38 p95=16.63 p99=17.22 achieved=150.0/150 shed=0 srvcpu=29.1 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T06:47:14Z g5-hushar-20m-r500t150-mb100-p4 start  hushar/features sessions=4 500rows x 150tps = 75000 rows/s 120+900s
+2026-10-27T07:05:13Z g5-hushar-20m-r500t150-mb100-p4 done   p50=16.63 p95=17.53 p99=17.94 achieved=150.0/150 shed=0 srvcpu=33.6 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T07:06:14Z g5-triton-20m-r100t750-mb100-p4 start  triton/tensor instances=4 100rows x 750tps = 75000 rows/s 120+900s
+2026-10-27T07:24:13Z g5-triton-20m-r100t750-mb100-p4 done   p50=3.6 p95=3.9 p99=5.28 achieved=750.0/750 shed=0 srvcpu=8.4 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T07:25:14Z g5-triton-20m-r500t150-mb500-p4 start  triton/tensor instances=4 500rows x 150tps = 75000 rows/s 120+900s
+2026-10-27T07:43:15Z g5-triton-20m-r500t150-mb500-p4 done   p50=9.66 p95=10.25 p99=10.45 achieved=150.0/150 shed=0 srvcpu=4.1 sustained (15/15 slice(s) held) -- settling 60s
+2026-10-27T07:44:16Z lane complete
+===== 20m done rc=0 (2026-10-27T07:44:16Z) =====
+ALL DONE rc=0 2026-10-27T07:44:17Z

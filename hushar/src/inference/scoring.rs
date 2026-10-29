@@ -4,9 +4,10 @@
 //! Turning a request into model outputs.
 //!
 //! [`score_features`] takes named feature columns and hands them to an [`InputBuilder`]
-//! resolved against the model's signature at startup. A caller that has already
-//! vectorized sends its vector as one `FixedSizeList` column, which a pass-through
-//! transformation hands to the model unchanged.
+//! resolved against the model's signature at startup. Every feature is transformed and
+//! concatenated into the model's one input, so a caller that has already vectorized
+//! sends its vector as one column and a pass-through transformation hands it to the
+//! model unchanged.
 //!
 //! The engine is reached only through [`InferenceBackend`].
 
@@ -426,8 +427,8 @@ mod tests {
     use super::*;
     use crate::config::vectorization_config::VectorizationConfig;
     use crate::inference::backend::test_support::{
-        DoubleBackend, FailingBackend, MultiOutputBackend, PerFeatureBackend, RecordingBackend,
-        SlowBackend, SummingBackend,
+        DoubleBackend, FailingBackend, MultiOutputBackend, RecordingBackend, SlowBackend,
+        SummingBackend,
     };
     use crate::inference::input_builder::test_support::{V, request, row};
     use std::time::Duration;
@@ -445,6 +446,24 @@ mod tests {
             r#"{{"data_type": "{data_type}", "feature_order": [{}]}}"#,
             names.join(", ")
         )
+    }
+
+    /// A configuration mixing a numeric feature with a text one, three values wide.
+    ///
+    /// The text feature is looked up in a table, so it reaches the model as floats while
+    /// the request keeps the text it sent.
+    fn text_and_number_config() -> &'static str {
+        r#"{
+            "feature_transformations": {
+                "age": {"type": "identity", "default_val": [0.0]},
+                "tags": {
+                    "type": "embedding_lookup",
+                    "embeddings": {"london": [1.0, 2.0]},
+                    "default_val": [0.0, 0.0]
+                }
+            },
+            "feature_order": ["age", "tags"]
+        }"#
     }
 
     /// A request of `rows` rows whose features `f0..fn` all hold `value`.
@@ -680,32 +699,28 @@ mod tests {
         assert_eq!(recorded.scores.len(), 4);
     }
 
-    /// A long text feature reaches the log intact.
+    /// A text feature reaches the log as the text it was, whatever it became on the way
+    /// in.
+    ///
+    /// Both a value the table knows and a long one it does not, so the log is shown to
+    /// keep the feature intact rather than the floats it produced.
     #[test]
-    fn the_log_receives_the_requests_own_feature_values() {
-        let backend = PerFeatureBackend::new();
-        let builder = builder_for(
-            &backend,
-            r#"{
-                "model_inputs": {
-                    "age": {"data_type": "float"},
-                    "tags": {"data_type": "string"}
-                }
-            }"#,
-        );
+    fn a_text_feature_is_logged_as_the_text_it_was() {
+        let backend = SummingBackend::new(3, 1);
+        let builder = builder_for(&backend, text_and_number_config());
 
         let long_text = "x".repeat(4096);
-        let columns = request(&[row(
-            "a",
-            &[("age", V::f32(1.0)), ("tags", V::str(&long_text))],
-        )]);
+        let columns = request(&[
+            row("a", &[("age", V::f32(1.0)), ("tags", V::str("london"))]),
+            row("b", &[("age", V::f32(2.0)), ("tags", V::str(&long_text))]),
+        ]);
         score_features(&backend, &columns, &builder, None, FeatureLogging::Record).expect("scored");
 
         let (_, features) = columns.into_wire();
         assert_eq!(
-            logged_text(&features, 1, "tags"),
-            vec![long_text],
-            "the whole value should arrive in the log"
+            logged_text(&features, 2, "tags"),
+            vec!["london".to_owned(), long_text],
+            "the log keeps text as text, and a long value arrives whole"
         );
     }
 
@@ -724,109 +739,6 @@ mod tests {
         )
         .expect_err("the engine failed");
         assert!(err.to_string().contains("engine exploded"), "got {err}");
-    }
-
-    /// A model with two inputs of different element types is fed from the request's
-    /// columns.
-    #[test]
-    fn a_named_input_model_is_fed_from_the_requests_columns() {
-        let backend = PerFeatureBackend::new();
-        let builder = builder_for(
-            &backend,
-            r#"{
-                "model_inputs": {
-                    "age": {"data_type": "float"},
-                    "tags": {"data_type": "string"}
-                }
-            }"#,
-        );
-
-        let columns = request(&[
-            row("a", &[("age", V::f32(10.0)), ("tags", V::str("abc"))]),
-            row("b", &[("age", V::f32(20.0)), ("tags", V::str("de"))]),
-        ]);
-        let scored = score_features(&backend, &columns, &builder, None, FeatureLogging::Record)
-            .expect("scored");
-
-        assert_eq!(float_row(&scored.scores, 2, 0), vec![13.0]);
-        assert_eq!(float_row(&scored.scores, 2, 1), vec![22.0]);
-    }
-
-    /// A text feature reaches the log as text, not as whatever number it became.
-    #[test]
-    fn a_text_feature_is_logged_as_the_text_it_was() {
-        let backend = PerFeatureBackend::new();
-        let builder = builder_for(
-            &backend,
-            r#"{
-                "model_inputs": {
-                    "age": {"data_type": "float"},
-                    "tags": {"data_type": "string"}
-                }
-            }"#,
-        );
-
-        let columns = request(&[row(
-            "a",
-            &[("age", V::f32(1.0)), ("tags", V::str("london"))],
-        )]);
-        score_features(&backend, &columns, &builder, None, FeatureLogging::Record).expect("scored");
-
-        let (_, features) = columns.into_wire();
-        assert_eq!(
-            logged_text(&features, 1, "tags"),
-            vec!["london".to_owned()],
-            "the log keeps text as text rather than as whatever number it became"
-        );
-    }
-
-    /// A verbatim input whose feature was never sent is refused, naming the feature.
-    ///
-    /// Never sent is the only way a feature can be missing now: a record batch's columns
-    /// are all the same length, so a feature sent for *some* rows is not expressible, and
-    /// a column that does not cover every row is refused as the payload is decoded.
-    #[test]
-    fn an_absent_text_feature_is_refused() {
-        let backend = PerFeatureBackend::new();
-        let builder = builder_for(
-            &backend,
-            r#"{
-                "model_inputs": {
-                    "age": {"data_type": "float"},
-                    "tags": {"data_type": "string"}
-                }
-            }"#,
-        );
-
-        let columns = request(&[row("a", &[("age", V::f32(3.0))])]);
-        let err = score_features(&backend, &columns, &builder, None, FeatureLogging::Record)
-            .expect_err("a named input has no default to fall back on");
-        let m = err.to_string();
-        assert!(
-            m.contains("tags") && m.contains("does not send"),
-            "the refusal should name the missing feature and say it was not sent; got {m}"
-        );
-    }
-
-    /// A feature of the wrong type for a verbatim input is refused, naming the feature.
-    #[test]
-    fn a_feature_of_the_wrong_type_for_a_verbatim_input_is_refused() {
-        let backend = PerFeatureBackend::new();
-        let builder = builder_for(
-            &backend,
-            r#"{
-                "model_inputs": {
-                    "age": {"data_type": "float"},
-                    "tags": {"data_type": "string"}
-                }
-            }"#,
-        );
-
-        let columns = request(&[row("r9", &[("age", V::f32(1.0)), ("tags", V::i64(7))])]);
-        let err = score_features(&backend, &columns, &builder, None, FeatureLogging::Record)
-            .expect_err("a long is not text");
-        let m = err.to_string();
-        assert!(m.contains("tags") && m.contains("must be text"), "got {m}");
     }
 
     /// A single-precision model's scores come back as floats.
@@ -999,25 +911,17 @@ mod tests {
         assert_eq!(float_row(&scored.scores, 8, 7), vec![21.0]);
     }
 
-    /// Padding a pass-through configuration needs no features, so no synthetic row is
-    /// built and no ballast score reaches the caller.
+    /// Padding a configuration with a text feature uses its transformation's default, so
+    /// no ballast score reaches the caller.
     #[test]
-    fn a_fixed_size_pads_a_pass_through_configuration_without_inventing_rows() {
-        let backend = PerFeatureBackend::new();
-        let builder = builder_for(
-            &backend,
-            r#"{
-                "model_inputs": {
-                    "age": {"data_type": "float"},
-                    "tags": {"data_type": "string"}
-                }
-            }"#,
-        );
+    fn a_fixed_size_pads_a_configuration_with_a_text_feature() {
+        let backend = SummingBackend::new(3, 1);
+        let builder = builder_for(&backend, text_and_number_config());
 
         let columns = request(&[
             row("a", &[("age", V::f32(1.0)), ("tags", V::str("x"))]),
             row("b", &[("age", V::f32(2.0)), ("tags", V::str("y"))]),
-            row("c", &[("age", V::f32(3.0)), ("tags", V::str("z"))]),
+            row("c", &[("age", V::f32(3.0)), ("tags", V::str("london"))]),
         ]);
         let scored = score_features(
             &backend,
@@ -1031,7 +935,7 @@ mod tests {
         assert_eq!(scored.scores.len(), 3, "only the real rows come back");
         assert_eq!(
             scored.scores.as_f32(),
-            vec![2.0, 3.0, 4.0],
+            vec![1.0, 2.0, 6.0],
             "no ballast score reaches the caller"
         );
     }

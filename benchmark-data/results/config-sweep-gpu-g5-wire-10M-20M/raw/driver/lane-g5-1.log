@@ -1,0 +1,22 @@
+launched 2026-10-26T08:28:28Z for g5-1 phase=all specs=[10m:5539c97131c896db6c58088d9f9b9ee3]
+
+===== 10m (2026-10-26T08:28:28Z) =====
+2026-10-26T08:28:29Z preflight g5-1: {'type': 'g5.2xlarge', 'ami': 'ami-06a84c332fb06b778', 'kernel': '6.12.111-136.204.amzn2023.x86_64', 'nproc': '8', 'gpu': 'NVIDIA_A10G', 'gpucount': '1', 'driver': '595.112.07', 'md5': '5539c97131c896db6c58088d9f9b9ee3', 'hushar': 'yes', 'plans': '1', 'image': 'yes', 'gpusampler': 'yes', 'ortso': '1.28.3', 'trtso': '10.16.1', 'cudamaj': '13', 'trtmissing': '0'}
+2026-10-26T08:28:29Z preflight g5-1: OK -- g5.2xlarge, NVIDIA_A10G, driver 595.112.07, TensorRT 10.16.1 on CUDA 13, ONNX Runtime 1.28.3, 10m md5 5539c97131c896db6c58088d9f9b9ee3
+2026-10-26T08:28:29Z run=config-sweep-gpu-g5-wire-10M-20M rev=ffba569-dirty host=g5-1 size=10m arms=['hushar', 'hushar-tensor'] phase=all loads=[(100, 200), (100, 1000)] parallelism=(1, 2, 4) warmup=120s measured=300s/5slices settle=60s
+2026-10-26T08:29:03Z prime 10m first pass: rc=0 25s {'offered': 2, 'achieved': 2.0, 'p50': 2.75, 'p95': 3.03, 'p99': 3.14, 'shed': 0, 'failed': 0}
+2026-10-26T08:29:43Z prime 10m cached pass: rc=0 22s {'offered': 2, 'achieved': 2.0, 'p50': 2.55, 'p95': 2.9, 'p99': 3.06, 'shed': 0, 'failed': 0}
+2026-10-26T08:29:57Z prime 10m: build 25.4s -> cached 22.1s
+2026-10-26T08:29:57Z selection hushar: sessions=2 (pinned, no probe)
+2026-10-26T08:29:57Z selection hushar-tensor: sessions=2 (pinned, no probe)
+2026-10-26T08:29:58Z g5-hushar-10m-r100t200-p2 start  hushar/features sessions=2 100rows x 200tps = 20000 rows/s 120+300s
+2026-10-26T08:38:13Z g5-hushar-10m-r100t200-p2 done   p50=2.06 p95=2.45 p99=2.56 achieved=200.0/200 shed=0 srvcpu=5.5 sustained (5/5 slice(s) held) -- settling 60s
+2026-10-26T08:39:14Z g5-hushar-10m-r100t1000-p2 start  hushar/features sessions=2 100rows x 1000tps = 100000 rows/s 120+300s
+2026-10-26T08:47:13Z g5-hushar-10m-r100t1000-p2 done   p50=2.55 p95=3.01 p99=3.25 achieved=1000.0/1000 shed=0 srvcpu=24.3 sustained (5/5 slice(s) held) -- settling 60s
+2026-10-26T08:48:14Z g5-hushar-tensor-10m-r100t200-p2 start  hushar/tensor sessions=2 100rows x 200tps = 20000 rows/s 120+300s
+2026-10-26T08:56:13Z g5-hushar-tensor-10m-r100t200-p2 done   p50=2.27 p95=2.67 p99=2.82 achieved=200.0/200 shed=0 srvcpu=5.2 sustained (5/5 slice(s) held) -- settling 60s
+2026-10-26T08:57:14Z g5-hushar-tensor-10m-r100t1000-p2 start  hushar/tensor sessions=2 100rows x 1000tps = 100000 rows/s 120+300s
+2026-10-26T09:05:13Z g5-hushar-tensor-10m-r100t1000-p2 done   p50=2.53 p95=3.01 p99=3.26 achieved=1000.0/1000 shed=0 srvcpu=22.9 sustained (5/5 slice(s) held) -- settling 60s
+2026-10-26T09:06:14Z lane complete
+===== 10m done rc=0 (2026-10-26T09:06:14Z) =====
+ALL DONE rc=0 2026-10-26T09:06:15Z

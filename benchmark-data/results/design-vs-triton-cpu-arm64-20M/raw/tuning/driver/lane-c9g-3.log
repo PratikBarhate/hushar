@@ -1,0 +1,35 @@
+launched 2026-10-25T04:28:17Z for c9g-3
+2026-10-25T04:28:17Z preflight c9g-3: {'type': 'c9g.16xlarge', 'ami': 'ami-025d1d5c1b9b090aa', 'kernel': '6.18.54-121.166.amzn2023.aarch64', 'nproc': '64', 'providers': '0', 'ortso': '1.28.0', 'md5': '30f9c5330b808a34b55fe88048a20da6', 'tensorcfg': 'yes', 'tensorspec': 'yes', 'onnx': 'yes', 'docker': 'yes'}
+2026-10-25T04:28:17Z preflight c9g-3: both clients report slices
+2026-10-25T04:28:17Z preflight c9g-3: OK, c9g.16xlarge, 64 CPUs, CPU-only runtime, ami ami-025d1d5c1b9b090aa, kernel 6.18.54-121.166.amzn2023.aarch64, model md5 30f9c5330b808a34b55fe88048a20da6
+2026-10-25T04:28:17Z host=c9g-3 rev=ffba569-dirty run=design-vs-triton-cpu-arm64-20M-tune phase=tune bucket set
+2026-10-25T04:28:17Z model bench_model.onnx size=20m md5=30f9c5330b808a34b55fe88048a20da6
+2026-10-25T04:28:17Z   arm U: hushar/features, 12 cell(s)
+2026-10-25T04:28:17Z 12 cell(s) at most: U-hushar-r1-mbrows-spin0-t4000, U-hushar-r1-mb4-spin1-t4000, U-hushar-r1-mb4-s8x8-t4000, U-hushar-r1-mb4-s2x32-t4000, U-hushar-r1-mb4-s16x4-t4000, U-hushar-r1-mb4-s32x2-t4000, U-hushar-r1-mbrows-spin0-t5000, U-hushar-r1-mb4-spin1-t5000, U-hushar-r1-mb4-s8x8-t5000, U-hushar-r1-mb4-s2x32-t5000, U-hushar-r1-mb4-s16x4-t5000, U-hushar-r1-mb4-s32x2-t5000
+2026-10-25T04:28:17Z warmup=120s measured=300s in 3 slice(s) settle=45s -> 10.6 min/cell, at most 2.1 h
+2026-10-25T04:28:18Z c9g-3-U-hushar-r1-mbrows-spin0-t4000 start  hushar/features s4x16 mbrows spin0 64thr/64cpu 1rows x 4000tps = 4000 rows/s
+2026-10-25T04:35:39Z c9g-3-U-hushar-r1-mbrows-spin0-t4000 done   p50=6017.89 p95=6075.44 achieved=2658.9/4000 shed=546773 srvcpu=39.2 clicpu=0.9 failed (0/3 slice(s) held) -- settling 45s
+2026-10-25T04:36:24Z c9g-3-U-hushar-r1-mb4-spin1-t4000 start  hushar/features s4x16 mbrows spin1 64thr/64cpu 1rows x 4000tps = 4000 rows/s
+2026-10-25T04:43:45Z c9g-3-U-hushar-r1-mb4-spin1-t4000 done   p50=4952.22 p95=5003.48 achieved=3237.7/4000 shed=296999 srvcpu=100.0 clicpu=1.1 failed (0/3 slice(s) held) -- settling 45s
+2026-10-25T04:44:31Z c9g-3-U-hushar-r1-mb4-s8x8-t4000 start  hushar/features s8x8 mbrows spin0 64thr/64cpu 1rows x 4000tps = 4000 rows/s
+2026-10-25T04:51:50Z c9g-3-U-hushar-r1-mb4-s8x8-t4000 done   p50=4335.54 p95=4365.79 achieved=3689.6/4000 shed=115509 srvcpu=63.0 clicpu=1.2 failed (0/3 slice(s) held) -- settling 45s
+2026-10-25T04:52:36Z c9g-3-U-hushar-r1-mb4-s2x32-t4000 start  hushar/features s2x32 mbrows spin0 64thr/64cpu 1rows x 4000tps = 4000 rows/s
+2026-10-25T05:00:03Z c9g-3-U-hushar-r1-mb4-s2x32-t4000 done   p50=12166.69 p95=12591.2 achieved=1312.4/4000 shed=1108005 srvcpu=19.0 clicpu=0.5 failed (0/3 slice(s) held) -- settling 45s
+2026-10-25T05:00:48Z c9g-3-U-hushar-r1-mb4-s16x4-t4000 start  hushar/features s16x4 mbrows spin0 64thr/64cpu 1rows x 4000tps = 4000 rows/s
+2026-10-25T05:08:04Z c9g-3-U-hushar-r1-mb4-s16x4-t4000 done   p50=4.21 p95=5.49 achieved=4000.0/4000 shed=0 srvcpu=69.4 clicpu=1.4 sustained (3/3 slice(s) held) -- settling 45s
+2026-10-25T05:08:49Z c9g-3-U-hushar-r1-mb4-s32x2-t4000 start  hushar/features s32x2 mbrows spin0 64thr/64cpu 1rows x 4000tps = 4000 rows/s
+2026-10-25T05:16:05Z c9g-3-U-hushar-r1-mb4-s32x2-t4000 done   p50=9.05 p95=30.29 achieved=4000.0/4000 shed=0 srvcpu=80.4 clicpu=1.5 sustained (3/3 slice(s) held) -- settling 45s
+2026-10-25T05:16:51Z c9g-3-U-hushar-r1-mbrows-spin0-t5000 start  hushar/features s4x16 mbrows spin0 64thr/64cpu 1rows x 5000tps = 5000 rows/s
+2026-10-25T05:24:13Z c9g-3-U-hushar-r1-mbrows-spin0-t5000 done   p50=7528.19 p95=7604.84 achieved=2651.9/5000 shed=968847 srvcpu=40.0 clicpu=0.9 failed (0/3 slice(s) held) -- settling 45s
+2026-10-25T05:24:59Z c9g-3-U-hushar-r1-mb4-spin1-t5000 start  hushar/features s4x16 mbrows spin1 64thr/64cpu 1rows x 5000tps = 5000 rows/s
+2026-10-25T05:32:20Z c9g-3-U-hushar-r1-mb4-spin1-t5000 done   p50=6196.15 p95=6420.99 achieved=3227.4/5000 shed=713556 srvcpu=99.6 clicpu=1.1 failed (0/3 slice(s) held) -- settling 45s
+2026-10-25T05:33:06Z c9g-3-U-hushar-r1-mb4-s8x8-t5000 start  hushar/features s8x8 mbrows spin0 64thr/64cpu 1rows x 5000tps = 5000 rows/s
+2026-10-25T05:40:27Z c9g-3-U-hushar-r1-mb4-s8x8-t5000 done   p50=5578.34 p95=5612.2 achieved=3593.1/5000 shed=560986 srvcpu=62.0 clicpu=1.2 failed (0/3 slice(s) held) -- settling 45s
+2026-10-25T05:41:12Z c9g-3-U-hushar-r1-mb4-s2x32-t5000 start  hushar/features s2x32 mbrows spin0 64thr/64cpu 1rows x 5000tps = 5000 rows/s
+2026-10-25T05:48:42Z c9g-3-U-hushar-r1-mb4-s2x32-t5000 done   p50=14850.92 p95=15455.46 achieved=1354.1/5000 shed=1514271 srvcpu=19.5 clicpu=0.5 failed (0/3 slice(s) held) -- settling 45s
+2026-10-25T05:49:28Z c9g-3-U-hushar-r1-mb4-s16x4-t5000 start  hushar/features s16x4 mbrows spin0 64thr/64cpu 1rows x 5000tps = 5000 rows/s
+2026-10-25T05:56:48Z c9g-3-U-hushar-r1-mb4-s16x4-t5000 done   p50=4561.49 p95=4599.26 achieved=4381.3/5000 shed=241939 srvcpu=76.4 clicpu=1.4 failed (0/3 slice(s) held) -- settling 45s
+2026-10-25T05:57:34Z c9g-3-U-hushar-r1-mb4-s32x2-t5000 start  hushar/features s32x2 mbrows spin0 64thr/64cpu 1rows x 5000tps = 5000 rows/s
+2026-10-25T06:04:55Z c9g-3-U-hushar-r1-mb4-s32x2-t5000 done   p50=4539.7 p95=4587.44 achieved=4505.3/5000 shed=181061 srvcpu=87.3 clicpu=1.5 failed (0/3 slice(s) held) -- settling 45s
+2026-10-25T06:05:40Z host=c9g-3 SWEEP COMPLETE
+ALL DONE rc=0 2026-10-25T06:05:41Z

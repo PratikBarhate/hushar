@@ -1,0 +1,23 @@
+{
+  "run": "minibatch-gpu-g5-10M-20M",
+  "size": "10m",
+  "host": "g5-1",
+  "rev": "7af1bf77",
+  "pinned": true,
+  "selection": {
+    "hushar": {
+      "parallelism": 2,
+      "parallelism_kind": "sessions",
+      "rule": "pinned by PIN_PARALLELISM=10m:2,20m:4; no probe ran",
+      "source": "config-sweep-gpu-g5-10M-20M, lowest p50 among sustained probes",
+      "probes": []
+    },
+    "triton": {
+      "parallelism": 2,
+      "parallelism_kind": "instances",
+      "rule": "pinned by PIN_PARALLELISM=10m:2,20m:4; no probe ran",
+      "source": "config-sweep-gpu-g5-10M-20M, lowest p50 among sustained probes",
+      "probes": []
+    }
+  }
+}

@@ -4,7 +4,7 @@
 """Generates the fixtures that exercise typed, heterogeneous tensor I/O.
 
 `generate_test_model.py` builds the single-input f32 model the original request
-path used. These three cover what that one cannot, and each exists to make a
+path used. These cover what that one cannot, and each exists to make a
 specific claim testable:
 
 * `float_multi_io.onnx` -- one f32 input, two f32 outputs of different widths.
@@ -12,12 +12,10 @@ specific claim testable:
   covers multi-output scoring without needing a type it refuses.
 * `f64_scale.onnx` -- DOUBLE in and out, so the FP64 path is exercised against a
   real engine rather than only asserted in a unit test.
-* `per_feature_io.onnx` -- one input per feature (`age`, `city`) plus a text input
-  (`tags`), so `feature_order` is unused. Covers the per-feature and vector-plus-text
-  signatures.
 * `numbers_and_text.onnx` -- an f32 vector plus a text input, both outputs f32. The
-  vector-plus-text signature hushar serves. The label code is cast to float, because a
-  response carries FP32 or FP64 scores.
+  signature is reported faithfully even though hushar feeds one concatenated input, so
+  this covers the backend's element-type reporting. The label code is cast to float,
+  because a response carries FP32 or FP64 scores.
 * `mixed_io.onnx` -- two inputs of *different element types* (f32 and string) and
   four outputs of different types and shapes. This is the case
   `Session::run<T: Element>` cannot express at any dtype count, and the reason
@@ -196,53 +194,6 @@ def numbers_and_text() -> onnx.ModelProto:
     )
 
 
-def per_feature_io() -> onnx.ModelProto:
-    """One input per feature, plus a text input. Signature 2 and 3 in one model.
-
-    `age` is a scalar feature, `city` a 5-wide one-hot, and `tags` text passed through
-    untransformed. Nothing is concatenated, so `feature_order` is irrelevant -- which
-    is the property the tests need to observe.
-    """
-    city_weights = np.full((5, 1), 0.2, dtype=np.float32)
-    nodes = [
-        # score = age + sum(city * 0.2)      -> [batch, 1]
-        helper.make_node("MatMul", ["city", "city_w"], ["city_part"]),
-        helper.make_node("Add", ["age", "city_part"], ["score"]),
-        # code = lookup(tags)                -> [batch]
-        helper.make_node(
-            "LabelEncoder",
-            ["tags"],
-            ["code_i64"],
-            domain="ai.onnx.ml",
-            keys_strings=TAG_KEYS,
-            values_int64s=TAG_VALUES,
-            default_int64=TAG_DEFAULT,
-        ),
-        helper.make_node("Cast", ["code_i64"], ["code"], to=TensorProto.FLOAT),
-    ]
-    graph = helper.make_graph(
-        nodes,
-        "per_feature_io",
-        inputs=[
-            helper.make_tensor_value_info("age", TensorProto.FLOAT, ["batch", 1]),
-            helper.make_tensor_value_info("city", TensorProto.FLOAT, ["batch", 5]),
-            helper.make_tensor_value_info("tags", TensorProto.STRING, ["batch", 1]),
-        ],
-        outputs=[
-            helper.make_tensor_value_info("score", TensorProto.FLOAT, ["batch", 1]),
-            helper.make_tensor_value_info("code", TensorProto.FLOAT, ["batch", 1]),
-        ],
-        initializer=[numpy_helper.from_array(city_weights, "city_w")],
-    )
-    return helper.make_model(
-        graph,
-        opset_imports=[
-            helper.make_opsetid("", 13),
-            helper.make_opsetid("ai.onnx.ml", 2),
-        ],
-    )
-
-
 def f64_scale() -> onnx.ModelProto:
     """DOUBLE in, DOUBLE out, doubled then offset so the test can tell it ran."""
     two = numpy_helper.from_array(np.array([2.0], dtype=np.float64), "two")
@@ -292,7 +243,6 @@ if __name__ == "__main__":
         ("mixed_io", mixed_io, [HUSHAR, ONNXRT]),
         ("float_multi_io", float_multi_io, [HUSHAR]),
         ("f64_scale", f64_scale, [HUSHAR]),
-        ("per_feature_io", per_feature_io, [HUSHAR]),
         ("numbers_and_text", numbers_and_text, [HUSHAR]),
         ("f16_identity", f16_identity, [ONNXRT]),
         ("bool_not", bool_not, [ONNXRT]),

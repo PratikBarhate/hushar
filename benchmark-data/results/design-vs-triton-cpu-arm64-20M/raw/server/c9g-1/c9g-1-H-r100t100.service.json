@@ -1,0 +1,23 @@
+{
+  "bind_address": "0.0.0.0",
+  "port_number": 8279,
+  "model_config_path": "/tmp/hushar-server/c9g-1-H-r100t100.model.json",
+  "inference_log": {
+    "uri": "/root/hushar-bench-ffba569-dirty/inference-logs",
+    "batch_size": 5000,
+    "sample_rate": 0.0,
+    "max_sends_in_flight": 4
+  },
+  "metrics": {
+    "batch_size": 500,
+    "max_sends_in_flight": 4,
+    "cloudwatch_namespace": "HusharBench"
+  },
+  "threading": {
+    "intra_op_threads": 16,
+    "sessions_per_model": 4,
+    "worker_threads": 32,
+    "allow_spinning": false,
+    "connection_concurrency": 512
+  }
+}

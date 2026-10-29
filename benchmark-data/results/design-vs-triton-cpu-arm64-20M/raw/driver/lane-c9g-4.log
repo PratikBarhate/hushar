@@ -1,0 +1,21 @@
+launched 2026-10-25T01:27:37Z for c9g-4
+2026-10-25T01:27:38Z preflight c9g-4: {'type': 'c9g.16xlarge', 'ami': 'ami-025d1d5c1b9b090aa', 'kernel': '6.18.54-121.166.amzn2023.aarch64', 'nproc': '64', 'providers': '0', 'ortso': '1.28.0', 'md5': '30f9c5330b808a34b55fe88048a20da6', 'tensorcfg': 'yes', 'tensorspec': 'yes', 'onnx': 'yes', 'docker': 'yes'}
+2026-10-25T01:27:38Z preflight c9g-4: both clients report slices
+2026-10-25T01:27:38Z preflight c9g-4: OK, c9g.16xlarge, 64 CPUs, CPU-only runtime, ami ami-025d1d5c1b9b090aa, kernel 6.18.54-121.166.amzn2023.aarch64, model md5 30f9c5330b808a34b55fe88048a20da6
+2026-10-25T01:27:38Z host=c9g-4 rev=ffba569-dirty run=design-vs-triton-cpu-arm64-20M phase=head bucket set
+2026-10-25T01:27:38Z model bench_model.onnx size=20m md5=30f9c5330b808a34b55fe88048a20da6
+2026-10-25T01:27:38Z pinned hushar: 4x16 mb8 spin0
+2026-10-25T01:27:38Z pinned triton: 8x8 on intra, one call per request
+2026-10-25T01:27:38Z configurations were TUNED by PHASE=tune
+2026-10-25T01:27:38Z   ladder r100: 6000, 8000, 10000, 12000, 14000, 16000, 18000 rows/s
+2026-10-25T01:27:38Z   arm P: hushar/features, 3 cell(s)
+2026-10-25T01:27:38Z 3 cell(s) at most: P-r100t80-rep1, P-r100t80-rep2, P-r100t80-rep3
+2026-10-25T01:27:38Z warmup=120s measured=900s in 3 slice(s) settle=60s -> 20.8 min/cell, at most 1.0 h; ladders stop early, so fewer
+2026-10-25T01:27:38Z c9g-4-P-r100t80-rep1 start  hushar/features s4x16 mb8 spin0 64thr/64cpu 100rows x 80tps = 8000 rows/s
+2026-10-25T01:44:53Z c9g-4-P-r100t80-rep1 done   p50=15.32 p95=16.02 achieved=80.0/80 shed=0 srvcpu=49.3 clicpu=0.2 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-25T01:45:54Z c9g-4-P-r100t80-rep2 start  hushar/features s4x16 mb8 spin0 64thr/64cpu 100rows x 80tps = 8000 rows/s
+2026-10-25T02:03:09Z c9g-4-P-r100t80-rep2 done   p50=15.32 p95=16.03 achieved=80.0/80 shed=0 srvcpu=49.4 clicpu=0.2 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-25T02:04:10Z c9g-4-P-r100t80-rep3 start  hushar/features s4x16 mb8 spin0 64thr/64cpu 100rows x 80tps = 8000 rows/s
+2026-10-25T02:21:25Z c9g-4-P-r100t80-rep3 done   p50=15.47 p95=16.1 achieved=80.0/80 shed=0 srvcpu=49.3 clicpu=0.2 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-25T02:22:26Z host=c9g-4 SWEEP COMPLETE
+ALL DONE rc=0 2026-10-25T02:22:26Z

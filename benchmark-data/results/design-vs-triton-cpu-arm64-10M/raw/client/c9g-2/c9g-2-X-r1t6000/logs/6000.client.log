@@ -1,0 +1,26 @@
+hushar benchmark [cell @ 6000 req/s]
+  server    : http://172.31.44.99:8279
+  model     : bench-vectorized-tensor on cpu
+  features  : 1 per row
+  asking    : whichever the server's split chooses
+  offering  : 6000 req/s x 1 row(s), 24000 in flight (4s of latency), 120s warmup + 900s measured, reported in 3 slices
+  payload   : 2801 bytes per request, 2801.0 bytes per row, 1 feature(s)
+  warmup done, measuring
+
+  bench-vectorized-tensor on cpu
+  ---------------------------------------------
+  achieved      :    6000.0 req/s   (6000.0 rows/s)
+  offered       :      6000 req/s
+  measured      :   5400006 requests  (of 6120000 that succeeded overall)
+  latency  p50  :      1.07 ms
+           p95  :      2.01 ms
+           p99  :      4.39 ms
+           max  :     36.50 ms
+           mean :      1.20 ms
+  failed        :         0
+  shed          :         0  (offered but never sent: 24000 in flight was the cap)
+
+  reported as 3 slice(s) of 300s, under one continuous 900s load:
+  slice 1/3 : n=1800006 achieved=6000.02 p50=1.08 p95=1.97 p99=3.67 shed=0 failed=0
+  slice 2/3 : n=1799994 achieved=5999.98 p50=1.08 p95=1.97 p99=3.69 shed=0 failed=0
+  slice 3/3 : n=1800006 achieved=6000.02 p50=1.07 p95=2.09 p99=5.69 shed=0 failed=0

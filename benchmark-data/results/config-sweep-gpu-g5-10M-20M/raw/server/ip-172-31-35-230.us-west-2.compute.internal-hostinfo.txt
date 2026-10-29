@@ -1,0 +1,30 @@
+=== host ===================================================
+role                 server
+hostname             ip-172-31-35-230.us-west-2.compute.internal
+instance type        g5.2xlarge
+availability zone    us-west-2a
+private ipv4         172.31.35.230
+kernel               Linux 6.12.111-136.204.amzn2023.x86_64
+os                   Amazon Linux 2023.12.20261021
+
+=== cpu ====================================================
+model                AMD EPYC 7R32
+architecture         x86_64
+physical cores       4
+threads per core     2
+vcpus (nproc)        8
+simd                 avx2
+numa nodes           1
+  node0 cpus           0-7
+memory               31 GiB
+
+=== nvidia gpu =============================================
+  NVIDIA A10G, 595.112.07, 23028 MiB
+
+=== software ===============================================
+provider             tensorrt
+ORT_DYLIB_PATH       /root/ort-gpu-1.28.3/lib/libonnxruntime.so
+NRT_DYLIB_PATH       unknown
+ort version          1.28.3
+rustc                rustc 1.99.1 (58cf8f9c3 2026-10-13)
+bundle               ffba569-dirty

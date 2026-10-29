@@ -1,0 +1,20 @@
+hushar benchmark [cell @ 200 req/s]
+  server    : http://172.31.46.43:8279
+  model     : bench-vectorized on cpu
+  features  : 210 per row
+  asking    : whichever the server's split chooses
+  offering  : 200 req/s x 10 row(s), 800 in flight (4s of latency), 120s warmup + 300s measured
+  warmup done, measuring
+
+  bench-vectorized on cpu
+  ---------------------------------------------
+  achieved      :     200.0 req/s   (2000.0 rows/s)
+  offered       :       200 req/s
+  measured      :     60001 requests  (of 84000 that succeeded overall)
+  latency  p50  :      2.27 ms
+           p95  :      2.47 ms
+           p99  :      2.52 ms
+           max  :      5.33 ms
+           mean :      2.29 ms
+  failed        :         0
+  shed          :         0  (offered but never sent: 800 in flight was the cap)

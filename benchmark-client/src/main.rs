@@ -9,10 +9,6 @@
 //! Features are generated from the model configuration the server was started with, so
 //! the values sent match the feature names and transformations the server expects.
 //!
-//! A configuration that declares named `model_inputs` feeds them verbatim and so names
-//! no transformation to generate from. `--feature-spec` supplies the values for those:
-//! a range, a width, or a word list per feature.
-//!
 //! ```bash
 //! cargo run --release -p benchmark-client -- \
 //!   --server http://127.0.0.1:8279 --tps 500 --duration-secs 30 \
@@ -62,6 +58,15 @@ struct Args {
     #[arg(long, env = "BENCH_WARMUP_SECS", default_value_t = 10)]
     warmup_secs: u64,
 
+    /// Report the measured window as this many equal consecutive slices as well as whole.
+    ///
+    /// The load is continuous either way: only the reporting is divided. A long window
+    /// reported as one number cannot tell a configuration that serves its rate from one
+    /// that serves it for five minutes and then falls behind, because both produce the
+    /// same aggregate once the shortfall is averaged over the window.
+    #[arg(long, env = "BENCH_SEGMENTS", default_value_t = 1)]
+    segments: usize,
+
     /// Rows in one request.
     #[arg(long, env = "BENCH_ROWS", default_value_t = 100)]
     rows: usize,
@@ -84,14 +89,6 @@ struct Args {
     /// The model configuration the server was started with.
     #[arg(long, env = "BENCH_MODEL_CONFIG")]
     model_config: PathBuf,
-
-    /// What to send for each feature, for a model that does its own featurization.
-    ///
-    /// Required exactly when the model configuration declares named `model_inputs`,
-    /// which are fed verbatim and so name no transformation. Ignored otherwise, where
-    /// the configuration is the better authority.
-    #[arg(long, env = "BENCH_FEATURE_SPEC")]
-    feature_spec: Option<PathBuf>,
 
     /// Send results to CloudWatch under this namespace as well as stdout.
     #[arg(long, env = "BENCH_CLOUDWATCH_NAMESPACE")]
@@ -156,26 +153,16 @@ impl Generator {
 /// wide, and a standardization spans three deviations either side of its mean so the
 /// scaled value lands in the range the model was trained to see.
 ///
-/// # Arguments
-///
-/// * `config` - the model configuration the server was started with
-/// * `feature_spec` - what to send per feature, read only when the configuration
-///   declares named `model_inputs` and so transforms nothing
-///
 /// # Errors
 ///
-/// Returns an error when the configuration has no `vectorization_config`, when a named
-/// feature has no transformation or an unknown one, or when the configuration declares
-/// `model_inputs` and no `feature_spec` was given.
-fn generators(
-    config: &serde_json::Value,
-    feature_spec: Option<&serde_json::Value>,
-) -> Result<Vec<(String, Generator)>, String> {
+/// Returns an error when the configuration has no `vectorization_config` or no
+/// `feature_order`, or when a named feature has no transformation or an unknown one.
+fn generators(config: &serde_json::Value) -> Result<Vec<(String, Generator)>, String> {
     let Some(vectorization) = config.get("vectorization_config") else {
         return Err(
             "the model configuration has no \"vectorization_config\", which hushar \
-             requires -- it would refuse to start on this file. Declare \"model_inputs\" \
-             to feed one input per feature, or \"feature_order\" to concatenate them."
+             requires -- it would refuse to start on this file. Declare \
+             \"feature_order\" to name the features concatenated into the model's input."
                 .to_owned(),
         );
     };
@@ -198,11 +185,12 @@ fn generators(
             .and_then(|t| t.as_str())
             .ok_or_else(|| format!("transformation for {name:?} has no type"))?;
         Ok(match kind {
-            "embedding" => Generator::Choice(
+            // Both spellings, matching the service's own alias for the former name.
+            "embedding_lookup" | "embedding" => Generator::Choice(
                 spec.get("embeddings")
                     .and_then(|e| e.as_object())
                     .map(|e| e.keys().cloned().collect())
-                    .ok_or_else(|| format!("embedding {name:?} has no table"))?,
+                    .ok_or_else(|| format!("embedding lookup {name:?} has no table"))?,
             ),
             "one_hot_encoding" => Generator::Choice(
                 spec.get("categories")
@@ -247,98 +235,17 @@ fn generators(
         })
     };
 
-    if let Some(order) = vectorization
+    let order = vectorization
         .get("feature_order")
         .and_then(|o| o.as_array())
-    {
-        return order
-            .iter()
-            .filter_map(|v| v.as_str())
-            .map(|name| from_transformation(name).map(|g| (name.to_owned(), g)))
-            .collect();
-    }
-
-    let inputs = vectorization
-        .get("model_inputs")
-        .and_then(|i| i.as_object())
-        .ok_or("the configuration declares neither feature_order nor model_inputs")?;
-    match feature_spec {
-        Some(spec) => from_feature_spec(spec),
-        None => Err(format!(
-            "the model configuration declares {} named inputs, which are fed verbatim, \
-             so it says nothing about what values to send. Pass --feature-spec with the \
-             file written beside it, such as \
-             benchmark-data/generated/bench_named_feature_spec.json",
-            inputs.len()
-        )),
-    }
-}
-
-/// Reads a feature specification into one generator per feature.
-///
-/// One entry per feature, and each says only what a generator needs:
-///
-/// ```json
-/// {
-///   "mm32_price": { "kind": "float",  "low": 0.0, "high": 10000.0 },
-///   "sd64_income": { "kind": "double", "low": -30000.0, "high": 180000.0 },
-///   "id_vector":  { "kind": "float_array", "width": 8 },
-///   "oh_color":   { "kind": "choice", "words": ["oh_color_c_0000"] }
-/// }
-/// ```
-///
-/// `float` against `double` is not a precision preference: it is which protobuf field
-/// the value travels in, and an FP64 model input takes a double and refuses a float.
-///
-/// # Errors
-///
-/// Returns an error when the specification is not a JSON object, or when an entry has
-/// no `kind`, an unknown `kind`, or is missing a bound, a `width`, or a non-empty
-/// `words` list.
-fn from_feature_spec(spec: &serde_json::Value) -> Result<Vec<(String, Generator)>, String> {
-    let features = spec
-        .as_object()
-        .ok_or("the feature specification is not a JSON object of feature -> spec")?;
-
-    features
+        .ok_or(
+            "the model configuration declares no \"feature_order\", so nothing says \
+             which features to send",
+        )?;
+    order
         .iter()
-        .map(|(name, entry)| {
-            let kind = entry
-                .get("kind")
-                .and_then(|k| k.as_str())
-                .ok_or_else(|| format!("feature {name:?} has no kind"))?;
-            let bound = |key: &str| {
-                entry
-                    .get(key)
-                    .and_then(|v| v.as_f64())
-                    .ok_or_else(|| format!("feature {name:?} is {kind} but has no {key}"))
-            };
-            let generator = match kind {
-                "float" => Generator::Float(bound("low")? as f32, bound("high")? as f32),
-                "double" => Generator::Double(bound("low")?, bound("high")?),
-                "float_array" => Generator::FloatVector(
-                    entry
-                        .get("width")
-                        .and_then(serde_json::Value::as_u64)
-                        .ok_or_else(|| format!("feature {name:?} is an array with no width"))?
-                        as usize,
-                ),
-                "choice" => Generator::Choice(
-                    entry
-                        .get("words")
-                        .and_then(|w| w.as_array())
-                        .map(|w| {
-                            w.iter()
-                                .filter_map(|v| v.as_str().map(str::to_owned))
-                                .collect::<Vec<_>>()
-                        })
-                        .filter(|w| !w.is_empty())
-                        .ok_or_else(|| format!("feature {name:?} is a choice with no words"))?,
-                ),
-                other => return Err(format!("unknown kind {other:?} for feature {name:?}")),
-            };
-            Ok((name.clone(), generator))
-        })
+        .filter_map(|v| v.as_str())
+        .map(|name| from_transformation(name).map(|g| (name.to_owned(), g)))
         .collect()
 }
 
@@ -367,6 +274,11 @@ fn request(
         row_ids: (0..rows).map(|row| format!("row-{row}")).collect(),
         features: proto_columns::encode(features).expect("every generator covers the same rows"),
     }
+}
+
+/// The model name to put on a request, which is empty when the server is to choose.
+fn requested_model_name(args: &Args) -> String {
+    args.model_id.clone().unwrap_or_default()
 }
 
 /// Latency percentiles over the measured window.
@@ -402,6 +314,29 @@ impl Percentiles {
     }
 }
 
+/// One equal slice of the measured window, as its own result.
+///
+/// A slice carries everything needed to say whether the rate was held during it, so a
+/// reader can see a configuration fall behind part-way through a long window instead of
+/// seeing the shortfall averaged away.
+#[derive(Debug)]
+struct Slice {
+    seconds: f64,
+    percentiles: Option<Percentiles>,
+    served: u64,
+    shed: u64,
+    failed: u64,
+}
+
+/// What the run did apart from latency: the counts, and the cap that shaped them.
+#[derive(Debug)]
+struct Tally {
+    succeeded: u64,
+    failed: u64,
+    shed: u64,
+    concurrency: usize,
+}
+
 /// Offers the configured rate for the warmup and then the measured window, and reports.
 ///
 /// The generator is open loop: a request that finds no permit free is counted as shed
@@ -419,15 +354,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&args.model_config)?)
             .map_err(|e| format!("{}: {e}", args.model_config.display()))?;
-    let feature_spec: Option<serde_json::Value> = match &args.feature_spec {
-        Some(path) => Some(
-            serde_json::from_str(&std::fs::read_to_string(path)?)
-                .map_err(|e| format!("{}: {e}", path.display()))?,
-        ),
-        None => None,
-    };
-    let generators =
-        Arc::new(generators(&config, feature_spec.as_ref()).map_err(|e| e.to_string())?);
+    let generators = Arc::new(generators(&config).map_err(|e| e.to_string())?);
 
     let model_id = config
         .get("model_id")
@@ -436,6 +363,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = config
         .get("execution_provider")
         .and_then(|v| v.as_str())
+        .or_else(|| {
+            config
+                .get("backend")
+                .and_then(|backend| backend.get("type"))
+                .and_then(|value| value.as_str())
+        })
         .unwrap_or("?");
     println!(
         "hushar benchmark{}",
@@ -461,20 +394,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "4s of latency"
     };
     println!(
-        "  offering  : {} req/s x {} row(s), {} in flight ({}), {}s warmup + {}s measured",
-        args.tps, args.rows, concurrency, sizing, args.warmup_secs, args.duration_secs
+        "  offering  : {} req/s x {} row(s), {} in flight ({}), {}s warmup + {}s measured{}",
+        args.tps,
+        args.rows,
+        concurrency,
+        sizing,
+        args.warmup_secs,
+        args.duration_secs,
+        if args.segments > 1 {
+            format!(", reported in {} slices", args.segments)
+        } else {
+            String::new()
+        }
     );
 
     let client = HusharClient::connect(args.server.clone()).await?;
-    let requested_model: Arc<str> = Arc::from(args.model_id.clone().unwrap_or_default());
+    // One sample request, measured rather than estimated. What a design asks of the caller
+    // includes how many bytes it puts on the wire, and the two contracts differ: 210 named
+    // features are smaller than the 690-float vector they concatenate into, because most
+    // of them are one scalar each and the width only appears after the transformations.
+    // Printed once, from a real encoded request, so a comparison between contracts quotes
+    // a measurement.
+    {
+        use prost::Message;
+        let sample = request(0, args.rows, &generators, &requested_model_name(&args));
+        println!(
+            "  payload   : {} bytes per request, {:.1} bytes per row, {} feature(s)",
+            sample.encoded_len(),
+            sample.encoded_len() as f64 / args.rows as f64,
+            sample.features.len()
+        );
+    }
+    let requested_model: Arc<str> = Arc::from(requested_model_name(&args));
     let permits = Arc::new(Semaphore::new(concurrency));
-    let latencies = Arc::new(std::sync::Mutex::new(Vec::<(String, f64)>::new()));
+    let latencies = Arc::new(std::sync::Mutex::new(Vec::<(String, f64, f64)>::new()));
     let (sent, failed, shed, wrong_rows) = (
         Arc::new(AtomicU64::new(0)),
         Arc::new(AtomicU64::new(0)),
         Arc::new(AtomicU64::new(0)),
         Arc::new(AtomicU64::new(0)),
     );
+    // Per-slice tallies of what did NOT get served, because neither a shed nor a failed
+    // request leaves a latency sample to be sliced afterwards. Only the measured window
+    // is bucketed: warmup shedding is counted in the totals and says nothing about the
+    // rate the server holds.
+    let slices = args.segments.max(1);
+    let slice_secs = args.duration_secs as f64 / slices as f64;
+    let shed_by_slice = Arc::new(
+        (0..slices)
+            .map(|_| AtomicU64::new(0))
+            .collect::<Vec<AtomicU64>>(),
+    );
+    let failed_by_slice = Arc::new(
+        (0..slices)
+            .map(|_| AtomicU64::new(0))
+            .collect::<Vec<AtomicU64>>(),
+    );
+    let slice_of = move |offset: f64| -> usize {
+        if slice_secs <= 0.0 {
+            return 0;
+        }
+        ((offset / slice_secs) as usize).min(slices - 1)
+    };
 
     let mut ticker = tokio::time::interval(Duration::from_millis(1));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
@@ -497,8 +478,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while credit >= 1.0 {
             credit -= 1.0;
             id += 1;
+            let since_warmup = start.elapsed().as_secs_f64() - warmup.as_secs_f64();
             let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
                 shed.fetch_add(1, Ordering::Relaxed);
+                if since_warmup >= 0.0 {
+                    shed_by_slice[slice_of(since_warmup)].fetch_add(1, Ordering::Relaxed);
+                }
                 continue;
             };
             let (mut client, generators) = (client.clone(), Arc::clone(&generators));
@@ -509,6 +494,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Arc::clone(&failed),
                 Arc::clone(&wrong_rows),
             );
+            let failed_by_slice = Arc::clone(&failed_by_slice);
             let rows_per_request = args.rows;
             let measuring_from = start + warmup;
             tokio::spawn(async move {
@@ -516,25 +502,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let began = Instant::now();
                 let outcome = client.inference_service(payload).await;
                 let elapsed = began.elapsed().as_secs_f64() * 1000.0;
+                let offset = began
+                    .checked_duration_since(measuring_from)
+                    .map(|d| d.as_secs_f64());
                 match outcome {
                     Err(_) => {
                         failed.fetch_add(1, Ordering::Relaxed);
+                        if let Some(offset) = offset {
+                            failed_by_slice[slice_of(offset)].fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                     Ok(response) => {
                         let response = response.into_inner();
                         if response.row_ids.len() != rows_per_request {
                             failed.fetch_add(1, Ordering::Relaxed);
                             wrong_rows.fetch_add(1, Ordering::Relaxed);
+                            if let Some(offset) = offset {
+                                failed_by_slice[slice_of(offset)].fetch_add(1, Ordering::Relaxed);
+                            }
                             drop(permit);
                             return;
                         }
                         sent.fetch_add(1, Ordering::Relaxed);
-                        if began >= measuring_from {
+                        if let Some(offset) = offset {
                             let served_by = response.model_id;
                             latencies
                                 .lock()
                                 .expect("latencies")
-                                .push((served_by, elapsed));
+                                .push((served_by, elapsed, offset));
                         }
                     }
                 }
@@ -547,23 +542,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let served = std::mem::take(&mut *latencies.lock().expect("latencies"));
     let mut per_arm: std::collections::BTreeMap<String, Vec<f64>> = Default::default();
-    for (arm, elapsed) in &served {
+    for (arm, elapsed, _) in &served {
         per_arm.entry(arm.clone()).or_default().push(*elapsed);
     }
-    let mut measured: Vec<f64> = served.iter().map(|(_, elapsed)| *elapsed).collect();
-    let counts = (
-        sent.load(Ordering::Relaxed),
-        failed.load(Ordering::Relaxed),
-        shed.load(Ordering::Relaxed),
-    );
+    // One slice's latencies, in the slice its request STARTED in. Started, not finished,
+    // so a request is attributed to the load that caused it rather than to the slice its
+    // backlog happened to spill into.
+    let mut by_slice: Vec<Vec<f64>> = vec![Vec::new(); slices];
+    for (_, elapsed, offset) in &served {
+        by_slice[slice_of(*offset)].push(*elapsed);
+    }
+    let slice_rows: Vec<Slice> = by_slice
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut samples)| Slice {
+            seconds: slice_secs,
+            percentiles: Percentiles::of(&mut samples),
+            served: samples.len() as u64,
+            shed: shed_by_slice[i].load(Ordering::Relaxed),
+            failed: failed_by_slice[i].load(Ordering::Relaxed),
+        })
+        .collect();
+    let mut measured: Vec<f64> = served.iter().map(|(_, elapsed, _)| *elapsed).collect();
+    let tally = Tally {
+        succeeded: sent.load(Ordering::Relaxed),
+        failed: failed.load(Ordering::Relaxed),
+        shed: shed.load(Ordering::Relaxed),
+        concurrency,
+    };
     report(
         &args,
         &mut measured,
         &mut per_arm,
-        counts,
+        &slice_rows,
+        &tally,
         model_id,
         provider,
-        concurrency,
     )
     .await
 }
@@ -580,12 +594,17 @@ async fn report(
     args: &Args,
     measured: &mut [f64],
     per_arm: &mut std::collections::BTreeMap<String, Vec<f64>>,
-    counts: (u64, u64, u64),
+    slices: &[Slice],
+    tally: &Tally,
     model_id: &str,
     provider: &str,
-    concurrency: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (succeeded, failed, shed) = counts;
+    let &Tally {
+        succeeded,
+        failed,
+        shed,
+        concurrency,
+    } = tally;
     let offered = u64::from(args.tps) * (args.warmup_secs + args.duration_secs);
     let Some(p) = Percentiles::of(measured) else {
         println!("\nno successful requests: {failed} failed, {shed} shed");
@@ -636,6 +655,44 @@ async fn report(
         "  shed          : {shed:>9}  (offered but never sent: {} in flight was the cap)",
         concurrency
     );
+    // One line per slice, in a form a driver can parse without reading the table above.
+    // Printed after the whole-window block so a tool taking the FIRST match of a field
+    // still gets the whole window, which is what every existing caller expects.
+    if slices.len() > 1 {
+        println!();
+        println!(
+            "  reported as {} slice(s) of {:.0}s, under one continuous {}s load:",
+            slices.len(),
+            slices[0].seconds,
+            args.duration_secs
+        );
+        for (i, slice) in slices.iter().enumerate() {
+            let rate = slice.served as f64 / slice.seconds;
+            match &slice.percentiles {
+                Some(q) => println!(
+                    "  slice {}/{} : n={} achieved={:.2} p50={:.2} p95={:.2} p99={:.2} \
+                     shed={} failed={}",
+                    i + 1,
+                    slices.len(),
+                    slice.served,
+                    rate,
+                    q.p50,
+                    q.p95,
+                    q.p99,
+                    slice.shed,
+                    slice.failed,
+                ),
+                None => println!(
+                    "  slice {}/{} : n=0 achieved=0.00 p50=nan p95=nan p99=nan \
+                     shed={} failed={}",
+                    i + 1,
+                    slices.len(),
+                    slice.shed,
+                    slice.failed,
+                ),
+            }
+        }
+    }
     if shed > offered / 100 {
         println!(
             "\n  NOTE: {:.0}% of the offered rate was shed, so {} req/s is above what this\n  \

@@ -1,0 +1,43 @@
+{
+  "size": "20m",
+  "run": "config-sweep-gpu-g5-10M-20M",
+  "rev": "ffba569-dirty",
+  "host": "g5-1",
+  "engine_cache": "/root/trt-cache/20m",
+  "passes": [
+    {
+      "pass_": "first",
+      "seconds": 25.8,
+      "rc": 0,
+      "result": {
+        "offered": 2,
+        "achieved": 2.0,
+        "p50": 3.51,
+        "p95": 3.84,
+        "p99": 4.23,
+        "shed": 0,
+        "failed": 0
+      },
+      "cache_listing": "total 73012\n-rw-r--r--. 1 root root 74760148 Oct 25 23:58 TensorrtExecutionProvider_TRTKernel_graph_main_graph_9440120622150683309_0_0_sm86.engine\n-rw-r--r--. 1 root root       24 Oct 25 23:58 TensorrtExecutionProvider_TRTKernel_graph_main_graph_9440120622150683309_0_0_sm86.profile"
+    },
+    {
+      "pass_": "cached",
+      "seconds": 22.1,
+      "rc": 0,
+      "result": {
+        "offered": 2,
+        "achieved": 2.0,
+        "p50": 3.52,
+        "p95": 3.8,
+        "p99": 3.86,
+        "shed": 0,
+        "failed": 0
+      },
+      "cache_listing": "total 73012\n-rw-r--r--. 1 root root 74760148 Oct 25 23:58 TensorrtExecutionProvider_TRTKernel_graph_main_graph_9440120622150683309_0_0_sm86.engine\n-rw-r--r--. 1 root root       24 Oct 25 23:58 TensorrtExecutionProvider_TRTKernel_graph_main_graph_9440120622150683309_0_0_sm86.profile"
+    }
+  ],
+  "build_seconds": 25.8,
+  "cached_seconds": 22.1,
+  "speedup": 1.2,
+  "note": "build_seconds is a 20 s trickle against a cold cache, so it carries the TensorRT engine build; cached_seconds is the same trickle against a FRESH server that loaded the cache. The gap is the cost every cell would otherwise have paid inside its warm-up."
+}

@@ -9,12 +9,11 @@ use hushar::hushar_proto::{
 use inference::InferenceBackend;
 use inference::input_builder::RequestColumns;
 use inference::scoring::{FeatureLogging, to_score_type};
-use io::{BlobStores, DataDestination, DataSink, MetricsSink, Sampler};
+use io::{BlobStores, DataSink, Location, MetricsSink, Sampler};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tonic::{Request, Response, Status, transport::Server};
 
-pub(crate) mod affinity;
 pub(crate) mod cli;
 pub(crate) mod config;
 pub(crate) mod inference;
@@ -29,73 +28,20 @@ pub(crate) mod io;
 ///
 /// * `model_id` - from the model's own configuration; recorded on every inference log
 ///   batch and every metric, and returned in the response
-/// * `replicas` - the engine, one entry per session, every entry the same graph. One
-///   entry is the ordinary case; several give concurrent requests independent intra-op
-///   pools
+/// * `sessions` - interchangeable backend replicas. For ONNX Runtime each owns its own
+///   thread pool; for Neuron each is a separate model load on its configured core range.
+///   A request leases one for as long as it scores
 /// * `input_builder` - how a feature payload becomes this model's inputs
 /// * `mini_batch` - how a request's rows are cut, when the configuration says to; the
 ///   batches are scored at the same time. `None` runs each request as a single batch
+/// * `backend` - backend-specific settings used to describe the loaded execution plan
 #[derive(Debug)]
 pub(crate) struct ServableModel {
     model_id: String,
-    replicas: Vec<Arc<dyn InferenceBackend>>,
+    sessions: inference::SessionPool<Arc<dyn InferenceBackend>>,
     input_builder: Arc<inference::input_builder::InputBuilder>,
     mini_batch: Option<inference::scoring::MiniBatch>,
-}
-
-impl ServableModel {
-    /// The session this thread uses, and the cores it belongs on.
-    ///
-    /// Chosen per thread rather than per request: a thread keeps its replica for life, so
-    /// it is pinned once. Slice `i` is shared by replica `i` of every model, so a thread
-    /// that serves the control and then the candidate stays on the same cores.
-    fn replica_for_this_thread(
-        &self,
-        slices: &[Arc<Vec<usize>>],
-    ) -> (Arc<dyn InferenceBackend>, Arc<Vec<usize>>) {
-        let (index, cores) = replica_slot(self.replicas.len(), slices);
-        (Arc::clone(&self.replicas[index]), cores)
-    }
-}
-
-/// The replica index this thread owns, and the cores that replica's pool is pinned to.
-///
-/// The two always agree: the session's pool is pinned to slice `i`, so a caller running
-/// replica `i` must be pinned to slice `i` too. An index with no matching slice yields an
-/// empty core list, meaning placement is left to the kernel.
-fn replica_slot(replicas: usize, slices: &[Arc<Vec<usize>>]) -> (usize, Arc<Vec<usize>>) {
-    let index = if replicas <= 1 {
-        0
-    } else {
-        this_thread_replica(replicas)
-    };
-    let cores = slices
-        .get(index)
-        .cloned()
-        .unwrap_or_else(|| Arc::new(Vec::new()));
-    (index, cores)
-}
-
-/// A stable replica index for the calling thread, assigned on first use.
-///
-/// Handed out round-robin as threads arrive, so tokio's blocking pool spreads itself over
-/// the replicas. The index stays the same for the life of the thread, and is reduced
-/// modulo `replicas` so one assignment serves every model in a deployment.
-fn this_thread_replica(replicas: usize) -> usize {
-    use std::cell::Cell;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    thread_local! {
-        static MINE: Cell<Option<usize>> = const { Cell::new(None) };
-    }
-    match MINE.get() {
-        Some(index) => index % replicas.max(1),
-        None => {
-            let index = NEXT.fetch_add(1, Ordering::Relaxed) % replicas.max(1);
-            MINE.set(Some(index));
-            index
-        }
-    }
+    backend: config::BackendConfig,
 }
 
 /// Everything a request handler needs, built once at startup.
@@ -118,9 +64,6 @@ pub(crate) struct HusharService {
     metrics_sink: Arc<dyn MetricsSink>,
     data_sink: Arc<dyn DataSink>,
     sampler: Sampler,
-    /// Logical CPUs each replica's session may run on, one entry per replica. A single
-    /// entry is the ordinary case; empty inside an entry leaves placement to the kernel.
-    core_slices: Arc<CoreSlices>,
 }
 
 impl HusharService {
@@ -167,14 +110,14 @@ impl Hushar for HusharService {
     /// Scores one batch of feature rows.
     ///
     /// Inference is CPU-bound and can run for milliseconds, so it runs on the blocking
-    /// pool rather than on the async worker that accepted the request. The replica and
-    /// its core affinity are chosen on the blocking thread itself, because the thread
-    /// calling into a session must sit on the same core slice as that session's intra-op
-    /// pool.
+    /// pool rather than on the async worker that accepted the request. There it leases one
+    /// of the model's sessions for exactly as long as it scores: the blocking pool is as
+    /// wide as there are sessions, so the lease never waits, and a session is never shared
+    /// between two requests however the pool's threads come and go.
     ///
     /// Neither sink call waits on anything: each appends to a buffer and returns, and the
     /// request that fills a buffer hands the whole batch to a spawned task, so no request
-    /// waits on S3, CloudWatch or Kinesis. See
+    /// waits on S3, CloudWatch or the local filesystem. See
     /// [`io::accumulator`](crate::io::accumulator). The logged scores are the same
     /// values, in the same precision, that the response carries.
     ///
@@ -207,12 +150,10 @@ impl Hushar for HusharService {
             FeatureLogging::Skip
         };
 
-        let core_slices = Arc::clone(&self.core_slices);
         let scored = tokio::task::spawn_blocking(move || {
-            let (backend, compute_cores) = model.replica_for_this_thread(&core_slices);
-            pin_compute_thread(&compute_cores);
+            let session = model.sessions.acquire();
             let scored = inference::scoring::score_features(
-                backend.as_ref(),
+                session.as_ref(),
                 &columns,
                 &input_builder,
                 mini_batch,
@@ -290,30 +231,12 @@ fn describe_specs(specs: &[crate::inference::batch::IoSpec]) -> String {
 
 /// ONNX Runtime's string-keyed session settings, from the threading configuration.
 ///
-/// An empty list leaves every ONNX Runtime default in place. Affinity is emitted only
-/// when there is an extra intra-op thread to place — at the default of one thread the
-/// calling thread is the whole pool, and it is pinned by [`pin_compute_thread`] instead.
+/// An empty list leaves every ONNX Runtime default in place. The spinning keys take `"1"`
+/// or `"0"` rather than a boolean, and both the intra-op and inter-op pools are set
+/// together. Whatever `session_config` names follows, verbatim and in key order; the
+/// configuration has already refused an entry that would set spinning a second time.
 fn session_options(threading: &config::ThreadingConfig) -> Vec<(String, String)> {
-    session_options_for(threading, &threading.compute_cores())
-}
-
-/// The same, for one replica's slice of the cores.
-///
-/// The spinning keys take `"1"` or `"0"` rather than a boolean, and both the intra-op and
-/// inter-op pools are set together.
-fn session_options_for(
-    threading: &config::ThreadingConfig,
-    cores: &[usize],
-) -> Vec<(String, String)> {
     let mut options = Vec::new();
-    // Keyed to the intra-op count on purpose, not to whichever pool carries the width:
-    // ONNX Runtime validates this list against `intra_op_num_threads` and has no affinity
-    // setting for the inter-op pool. Under inter-op the count is 1, so no entries are
-    // needed and nothing is emitted -- that pool is confined by the mask of the thread that
-    // built the session instead. See `io::load_onnx_sessions`.
-    if let Some(value) = affinity::ort_affinity(cores, threading.intra_op_threads) {
-        options.push(("session.intra_op_thread_affinities".to_owned(), value));
-    }
     if let Some(spinning) = threading.allow_spinning {
         let value = if spinning { "1" } else { "0" };
         options.push((
@@ -325,75 +248,26 @@ fn session_options_for(
             value.to_owned(),
         ));
     }
+    options.extend(
+        threading
+            .session_config
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
     options
 }
 
-/// The logical CPUs each replica's pool may run on, one entry per replica.
-type CoreSlices = Vec<Arc<Vec<usize>>>;
-
-/// ONNX Runtime's string-keyed session settings, one set per replica.
+/// ONNX Runtime's string-keyed session settings, one set per session.
 type ReplicaOptions = Vec<Vec<(String, String)>>;
 
-/// How the cores are divided between replicas, and the session options that follow.
+/// One set of session options per session a model is loaded into.
 ///
-/// One slice per replica, so each session's intra-op pool has cores of its own and two
-/// replicas cannot contend. Slice `i` is shared by replica `i` of *every* model, since a
-/// thread serves one model at a time.
-///
-/// With one replica the result is a single slice of whatever `compute_cores` names, empty
-/// included. With several replicas and no `compute_cores`, the whole machine is divided.
-///
-/// # Arguments
-///
-/// * `threading` - the threading configuration, which supplies the replica count and any
-///   configured `compute_cores`
-/// * `cores` - logical CPUs on this host, used only when no `compute_cores` is configured
-fn replica_placement(
-    threading: &config::ThreadingConfig,
-    cores: usize,
-) -> (CoreSlices, ReplicaOptions) {
-    let replicas = threading.sessions_per_model();
-    if replicas == 1 {
-        return (
-            vec![Arc::new(threading.compute_cores())],
-            vec![session_options(threading)],
-        );
-    }
-    let configured = threading.compute_cores();
-    let pool = if configured.is_empty() {
-        (0..cores).collect()
-    } else {
-        configured
-    };
-    let slices = affinity::partition(&pool, replicas);
-    let options = slices
-        .iter()
-        .map(|slice| session_options_for(threading, slice))
-        .collect();
-    (slices.into_iter().map(Arc::new).collect(), options)
-}
-
-/// Pins the thread running an inference to the compute cores, once per thread.
-///
-/// Call this on the thread that will run the inference, before it touches the model:
-/// tokio's `on_thread_start` fires for both pools and cannot tell them apart, so a
-/// blocking thread pinned to the async cores at startup is re-pinned here.
-///
-/// A no-op when `cores` is empty or the thread is already pinned, so the cost is one
-/// syscall per thread rather than one per request. A failure is reported to stderr and
-/// then tolerated: the thread runs unpinned.
-fn pin_compute_thread(cores: &[usize]) {
-    use std::cell::Cell;
-    thread_local! {
-        static PINNED: Cell<bool> = const { Cell::new(false) };
-    }
-    if cores.is_empty() || PINNED.get() {
-        return;
-    }
-    PINNED.set(true);
-    if let Err(e) = affinity::pin_current_thread(cores) {
-        eprintln!("hushar: could not pin an inference thread, continuing unpinned: {e}");
-    }
+/// Every set is identical: sessions differ in that each owns its own intra-op pool, not in
+/// how they are configured. The list still has one entry per session because
+/// [`io::load_onnx_sessions`] builds one session per entry, so its length is how the
+/// session count reaches the loader.
+fn replica_options(threading: &config::ThreadingConfig) -> ReplicaOptions {
+    vec![session_options(threading); threading.sessions_per_model()]
 }
 
 /// Reads one model's configuration, loads it, and checks the two agree.
@@ -411,13 +285,9 @@ fn pin_compute_thread(cores: &[usize]) {
 /// * `config_path` - URI of the model configuration
 /// * `role` - names this arm in failures and in the banner, for example "model" or
 ///   "candidate model"
-/// * `parallelism` - which ONNX Runtime thread pool carries a session's width, and how
-///   wide. Comes from the service configuration, so both arms of a roll-out share it
-/// * `session_options` - one set of ONNX Runtime session settings per replica; the model
-///   is loaded once per entry
-/// * `core_slices` - the cores each replica may use, aligned with `session_options`. Each
-///   session is built on a thread pinned to its own entry, which is what confines an
-///   inter-op pool
+/// * `threading` - common replica count plus ONNX Runtime's pool settings
+/// * `neuron_runtime` - the process-wide runtime, initialized on the first Neuron model
+///   and reused by every later one
 ///
 /// # Panics
 ///
@@ -428,9 +298,8 @@ async fn load_model(
     stores: &BlobStores,
     config_path: &str,
     role: &str,
-    parallelism: config::Parallelism,
-    session_options: &[Vec<(String, String)>],
-    core_slices: &[Arc<Vec<usize>>],
+    threading: &config::ThreadingConfig,
+    neuron_runtime: &mut Option<Arc<libnrt_rs::Runtime>>,
 ) -> ServableModel {
     let (config_location, config_store) = stores
         .resolve(config_path)
@@ -456,24 +325,34 @@ async fn load_model(
         .resolve(&model_config.model_path)
         .await
         .unwrap_or_else(|e| panic!("cannot reach {role} {}: {e}", model_config.model_path));
-    let replicas = io::load_onnx_sessions(
-        &model_store
-            .get(&model_location)
-            .await
-            .unwrap_or_else(|e| panic!("cannot read {role} {}: {e}", model_config.model_path)),
-        &model_config.execution_provider,
-        parallelism,
-        session_options,
-        mini_batch,
-        core_slices,
-    )
+    let model_bytes = model_store
+        .get(&model_location)
+        .await
+        .unwrap_or_else(|e| panic!("cannot read {role} {}: {e}", model_config.model_path));
+    let sessions = match &model_config.backend {
+        config::BackendConfig::OnnxRuntime(backend) => io::load_onnx_sessions(
+            &model_bytes,
+            &backend.execution_provider,
+            threading.parallelism(),
+            &replica_options(threading),
+            mini_batch,
+        ),
+        config::BackendConfig::Neuron(backend) => io::load_neuron_replicas(
+            &model_bytes,
+            backend,
+            threading.sessions_per_model(),
+            mini_batch,
+            neuron_runtime,
+        ),
+    }
     .unwrap_or_else(|e| {
         panic!(
-            "could not load {role} {} on execution provider {:?}: {e}",
-            model_config.model_path, model_config.execution_provider
+            "could not load {role} {} with {}: {e}",
+            model_config.model_path,
+            model_config.backend.name()
         )
     });
-    let backend = Arc::clone(&replicas[0]);
+    let backend = Arc::clone(&sessions[0]);
 
     let input_builder = inference::input_builder::InputBuilder::resolve(
         model_config.vectorization_config,
@@ -510,9 +389,10 @@ async fn load_model(
 
     ServableModel {
         model_id,
-        replicas,
+        sessions: inference::SessionPool::new(sessions),
         input_builder: Arc::new(input_builder),
         mini_batch,
+        backend: model_config.backend,
     }
 }
 
@@ -538,41 +418,27 @@ async fn build_metrics_sink(config: &config::MetricsConfig) -> Arc<dyn MetricsSi
     }
 }
 
-/// Chooses where inference logs go, from the destination URI.
-///
-/// `kinesis://stream` selects the stream; anything else is a blob-store prefix.
+/// Builds the inference-log sink for a blob-store prefix.
 ///
 /// # Panics
 ///
-/// Panics if a blob-store destination cannot be reached.
+/// Panics if the destination cannot be reached.
 async fn build_data_sink(
     config: &config::InferenceLogConfig,
-    destination: &DataDestination,
+    location: &Location,
     stores: &BlobStores,
 ) -> Arc<dyn DataSink> {
-    match destination {
-        DataDestination::Blob(location) => {
-            let store = stores
-                .open(location)
-                .await
-                .unwrap_or_else(|e| panic!("cannot reach {}: {e}", location.uri()));
-            Arc::new(io::data_sink::BlobDataSink::new(
-                store,
-                location.clone(),
-                config.batch_size,
-                config.max_sends_in_flight,
-            ))
-        }
-        DataDestination::Kinesis { stream } => {
-            let aws = aws_config::load_from_env().await;
-            Arc::new(io::data_sink::KinesisDataSink::new(
-                Arc::new(aws_sdk_kinesis::Client::new(&aws)),
-                stream,
-                config.batch_size,
-                config.max_sends_in_flight,
-            ))
-        }
-    }
+    let store = stores
+        .open(location)
+        .await
+        .unwrap_or_else(|e| panic!("cannot reach {}: {e}", location.uri()));
+    Arc::new(io::data_sink::BlobDataSink::new(
+        store,
+        location.clone(),
+        config.prefix_shards,
+        config.batch_size,
+        config.max_sends_in_flight,
+    ))
 }
 
 /// How long shutdown waits for both sinks to drain.
@@ -663,7 +529,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .enable_all()
         .build()?;
 
-    let (service_config, control, candidate, split, metrics_sink, data_sink, sampler, core_slices) =
+    let (service_config, control, candidate, split, metrics_sink, data_sink, sampler) =
         config_runtime.block_on(async {
             let config_store = stores
                 .open(&config_location)
@@ -681,7 +547,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     )
                 });
 
-            let log_destination = DataDestination::parse(&service_config.inference_log.uri)
+            let log_location = Location::parse(&service_config.inference_log.uri)
                 .unwrap_or_else(|e| {
                     panic!(
                         "\"inference_log.uri\" {:?} is not a destination: {e}",
@@ -689,16 +555,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     )
                 });
 
-            let parallelism = service_config.threading.parallelism();
-            let (core_slices, session_options) =
-                replica_placement(&service_config.threading, num_cpus);
+            let mut neuron_runtime = None;
             let control = load_model(
                 &stores,
                 &service_config.model_config_path,
                 "model",
-                parallelism,
-                &session_options,
-                &core_slices,
+                &service_config.threading,
+                &mut neuron_runtime,
             )
             .await;
             let candidate = match &service_config.candidate_model {
@@ -707,9 +570,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         &stores,
                         &spec.config_path,
                         "candidate model",
-                        parallelism,
-                        &session_options,
-                        &core_slices,
+                        &service_config.threading,
+                        &mut neuron_runtime,
                     )
                     .await;
                     assert_ne!(
@@ -739,7 +601,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             let metrics_sink = build_metrics_sink(&service_config.metrics).await;
             let data_sink =
-                build_data_sink(&service_config.inference_log, &log_destination, &stores).await;
+                build_data_sink(&service_config.inference_log, &log_location, &stores).await;
             let sampler = Sampler::new(service_config.inference_log.sample_rate);
 
             println!(
@@ -749,9 +611,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 service_config.metrics.max_sends_in_flight,
             );
             println!(
-                "hushar: inference logs -> {} [{}, every {} batches, {} in flight, logging {}]",
-                log_destination.uri(),
+                "hushar: inference logs -> {} [{}, {} prefix shard(s), every {} batches, {} in flight, logging {}]",
+                log_location.uri(),
                 data_sink.backend(),
+                service_config.inference_log.prefix_shards,
                 data_sink.batch_size(),
                 service_config.inference_log.max_sends_in_flight,
                 sampler.describe(),
@@ -765,27 +628,24 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 metrics_sink,
                 data_sink,
                 sampler,
-                core_slices,
             )
         });
 
     config_runtime.shutdown_background();
 
     let worker_threads = service_config.threading.worker_threads(num_cpus);
-    let inference_concurrency = service_config.threading.inference_concurrency(num_cpus);
-    let worker_cores = service_config.threading.worker_cores();
-    let hook_cores = worker_cores.clone();
+    // The blocking pool is the backend replica count, so a request that reaches it always
+    // finds an idle ORT session or Neuron model replica to lease.
+    //
+    // NOTE that tokio uses this pool for its own blocking work as well -- notably DNS
+    // resolution behind the metric and log sinks -- so with one replica a lookup queues
+    // behind an inference. The sinks retry and are off the request path, so a delayed
+    // lookup costs a late batch rather than a failed request.
+    let blocking_threads = service_config.threading.sessions_per_model();
     let server_runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads)
-        .max_blocking_threads(inference_concurrency)
+        .max_blocking_threads(blocking_threads)
         .thread_name("hushar-server-worker")
-        .on_thread_start(move || {
-            if !hook_cores.is_empty()
-                && let Err(e) = affinity::pin_current_thread(&hook_cores)
-            {
-                eprintln!("hushar: could not pin a runtime thread: {e}");
-            }
-        })
         .enable_all()
         .build()?;
 
@@ -794,23 +654,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .as_ref()
             .is_some_and(|model| model.mini_batch.is_some());
     if splits_requests {
-        let fan_out_cores = service_config.threading.compute_cores();
-        let fan_out_threads = if fan_out_cores.is_empty() {
-            num_cpus
-        } else {
-            fan_out_cores.len()
-        };
-        let pin_fan_out = fan_out_cores.clone();
         let fan_out_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(fan_out_threads)
+            .num_threads(num_cpus)
             .thread_name(|i| format!("hushar-fanout-{i}"))
-            .start_handler(move |_| {
-                if !pin_fan_out.is_empty()
-                    && let Err(e) = affinity::pin_current_thread(&pin_fan_out)
-                {
-                    eprintln!("hushar: could not pin a mini-batch thread: {e}");
-                }
-            })
             .build()?;
         if inference::scoring::init_fan_out(fan_out_pool).is_err() {
             return Err("the mini-batch pool was installed twice".into());
@@ -818,135 +664,168 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let models = 1 + usize::from(candidate.is_some());
-    let replicas = service_config.threading.sessions_per_model();
-    let sessions = models * replicas;
-    let compute_threads = service_config.threading.compute_threads(num_cpus, sessions);
+    let replicas = control.sessions.total();
+    let loaded_models: Vec<&ServableModel> = std::iter::once(control.as_ref())
+        .chain(candidate.iter().map(AsRef::as_ref))
+        .collect();
+    let ort_models = loaded_models
+        .iter()
+        .filter(|model| matches!(model.backend, config::BackendConfig::OnnxRuntime(_)))
+        .count();
+    let neuron_models = models - ort_models;
     let parallelism = service_config.threading.parallelism();
-    println!(
-        "hushar: threads -> {worker_threads} async, {inference_concurrency} inference x \
-         {} {} x {sessions} session(s) = {compute_threads} compute on {num_cpus} core(s)",
-        parallelism.width(),
-        parallelism.pool_name(),
-    );
-    if parallelism.is_parallel() {
-        // Worth stating plainly, because both halves are invisible otherwise and both
-        // change what the numbers above mean.
+
+    if ort_models > 0 {
+        let sessions = replicas * ort_models;
+        let compute_threads = service_config.threading.compute_threads(sessions);
         println!(
-            "  exec   : operators run concurrently, so this pool needs a graph with \
-             independent branches to be worth anything -- a chain of blocks has none, and \
-             attention heads are a dimension inside one operator, not branches"
-        );
-        println!(
-            "  exec   : memory pattern optimisation is off, which ONNX Runtime only offers \
-             under sequential execution"
-        );
-    }
-    let connection_concurrency = service_config.threading.connection_concurrency;
-    println!("  admit  : {connection_concurrency} in flight per connection");
-    if replicas > 1 {
-        let placed = core_slices
-            .iter()
-            .map(|slice| affinity::describe(slice))
-            .collect::<Vec<_>>()
-            .join(" | ");
-        let shared = if models > 1 {
-            format!(" over {replicas} slice(s) shared by all {models} model(s)")
-        } else {
-            String::new()
-        };
-        println!(
-            "  pool   : {replicas} session(s) per model{shared}, one {} pool each on \
-             core(s) {placed}",
+            "hushar: threads -> {worker_threads} async, {replicas} concurrent inference(s) x \
+             {} {} x {sessions} ONNX Runtime session(s) = {compute_threads} compute on {num_cpus} core(s)",
+            parallelism.width(),
             parallelism.pool_name(),
         );
         if parallelism.is_parallel() {
-            // The distinction matters to anyone reading a benchmark: an intra-op pool is
-            // pinned thread to core, an inter-op pool is only held inside the slice by the
-            // mask it inherited when the session was built.
             println!(
-                "  pool   : bounded to those cores, not pinned to them -- ONNX Runtime \
-                 pins intra-op threads individually and offers nothing for inter-op, so \
-                 these inherit the slice and may migrate inside it"
+                "  exec   : operators run concurrently, so this pool needs a graph with \
+                 independent branches to be worth anything -- a chain of blocks has none, and \
+                 attention heads are a dimension inside one operator, not branches"
+            );
+            println!(
+                "  exec   : memory pattern optimisation is off, which ONNX Runtime only offers \
+                 under sequential execution"
             );
         }
-        let (per_slice, width) = service_config.threading.slice_pressure(num_cpus, models);
-        if width > 0 && per_slice > width {
-            let in_flight = inference_concurrency.div_ceil(replicas.max(1));
-            let verdict = if in_flight > 1 {
-                format!(
-                    "{in_flight} request(s) per slice, so the pools contend -- costs latency at saturation"
-                )
-            } else {
-                "1 request per slice, so only one pool is busy at a time -- nominal, not paid"
-                    .to_owned()
+        if compute_threads > num_cpus {
+            println!(
+                "  note   : {compute_threads} compute threads on {num_cpus} core(s) is \
+                 oversubscribed; lower \"threading.sessions_per_model\" or \
+                 \"threading.intra_op_threads\" -- their product is the budget"
+            );
+        } else if compute_threads * 2 <= num_cpus {
+            println!(
+                "  note   : {compute_threads} compute threads leaves {} of {num_cpus} core(s) \
+                 unusable; raise \"threading.sessions_per_model\" for throughput, or \
+                 \"threading.intra_op_threads\" to spend the cores on one request's latency",
+                num_cpus - compute_threads,
+            );
+        }
+        if let Some(spinning) = service_config.threading.allow_spinning {
+            println!(
+                "  spin   : idle intra-op and inter-op threads {}",
+                if spinning { "spin" } else { "sleep" },
+            );
+        }
+        if !service_config.threading.session_config.is_empty() {
+            let sent: Vec<String> = service_config
+                .threading
+                .session_config
+                .iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect();
+            println!("  config : {}", sent.join(", "));
+        }
+        let stops_when_idle = service_config
+            .threading
+            .session_config
+            .get("session.force_spinning_stop")
+            .is_some_and(|value| value == "1");
+        if replicas > 1 && service_config.threading.allow_spinning == Some(true) && !stops_when_idle
+        {
+            println!(
+                "  note   : {sessions} spinning pools on {num_cpus} core(s) means an idle pool \
+                 keeps burning time the busy ones need; add \"session.force_spinning_stop\": \
+                 \"1\" to \"threading.session_config\" so a pool stops spinning when its Run() \
+                 returns, or set \"allow_spinning\": false"
+            );
+        }
+    }
+
+    if neuron_models > 0 {
+        if ort_models == 0 {
+            println!(
+                "hushar: threads -> {worker_threads} async, {replicas} concurrent inference(s), \
+                 Neuron execution is device-managed on {num_cpus} host core(s)"
+            );
+        }
+        for model in &loaded_models {
+            let config::BackendConfig::Neuron(backend) = &model.backend else {
+                continue;
             };
+            let per_core = backend.replicas_per_neuron_core.max(1);
+            let ranges = replicas.div_ceil(per_core);
+            let occupied = ranges * backend.neuron_cores_per_replica as usize;
+            let last = backend.start_neuron_core as usize + occupied - 1;
             println!(
-                "  note   : {per_slice} {} thread(s) per slice on {width} core(s), \
-                 {:.1}x. {verdict}",
-                parallelism.pool_name(),
-                per_slice as f64 / width as f64,
+                "hushar: Neuron -> model {}, {replicas} replica(s) on NeuronCore {}-{last}, \
+                 {} core(s) and {} execution context(s) per replica",
+                model.model_id,
+                backend.start_neuron_core,
+                backend.neuron_cores_per_replica,
+                backend.execution_contexts_per_replica,
             );
-        }
-        if service_config.threading.allow_spinning == Some(true) {
-            println!(
-                "  note   : {sessions} spinning pools with {inference_concurrency} \
-                 inference(s) in flight means most of them burn cores waiting; \
-                 \"allow_spinning\": false is usually right with several sessions"
-            );
-        }
-    }
-    if compute_threads > num_cpus {
-        println!(
-            "  note   : {compute_threads} compute threads on {num_cpus} core(s) is \
-             oversubscribed; lower \"threading.inference_concurrency\" if latency matters \
-             more than requests per second"
-        );
-    } else if compute_threads * 2 <= num_cpus {
-        println!(
-            "  note   : {compute_threads} compute threads leaves {} of {num_cpus} core(s) \
-             unusable; raise \"threading.inference_concurrency\" for throughput, or \
-             \"threading.intra_op_threads\" to spend the cores on one request's latency",
-            num_cpus - compute_threads,
-        );
-    }
-    if let Some(spinning) = service_config.threading.allow_spinning {
-        println!(
-            "  spin   : idle intra-op and inter-op threads {}",
-            if spinning { "spin" } else { "sleep" },
-        );
-    }
-    let worker_placement = service_config.threading.worker_cores();
-    let compute_placement = service_config.threading.compute_cores();
-    if !worker_placement.is_empty() || !compute_placement.is_empty() {
-        let show = |cores: &[usize]| {
-            if cores.is_empty() {
-                "anywhere".to_owned()
-            } else {
-                format!("core(s) {}", affinity::describe(cores))
+            if backend.neuron_cores_per_replica > 1 {
+                println!(
+                    "  cores  : each logical replica loads one complete NEFF copy per core; \
+                     its contexts spread across those copies (data parallel, not model sharding)"
+                );
             }
-        };
-        println!(
-            "  cores  : async on {}, compute on {}{}",
-            show(&worker_placement),
-            show(&compute_placement),
-            if affinity::SUPPORTED {
-                ""
-            } else {
-                " -- NOT APPLIED, this target has no thread affinity"
+            if per_core > 1 {
+                println!(
+                    "  share  : {per_core} replicas per core, so a core serves up to {per_core} \
+                     requests at once; it still executes one at a time, and each replica \
+                     holds its own copy of the weights"
+                );
             }
-        );
-        let overlap: Vec<usize> = compute_placement
-            .iter()
-            .copied()
-            .filter(|core| worker_placement.contains(core))
-            .collect();
-        if !overlap.is_empty() {
-            println!(
-                "  note   : the two pools share core(s) {}, so connection handling can \
-                 preempt an inference; make the lists disjoint to prevent that",
-                affinity::describe(&overlap)
-            );
+            if let Some(batch) = model.mini_batch {
+                let contexts = backend.execution_contexts_per_replica;
+                println!(
+                    "  ctx    : a request of N rows is ceil(N / {size}) execution(s) of {size} \
+                     rows on the one replica it leases; {contexts} can be in flight at once and \
+                     any further one waits for a context",
+                    size = batch.size,
+                );
+                println!(
+                    "  note   : a replica serves one request at a time, so \
+                     \"backend.execution_contexts_per_replica\" is worth exactly the executions \
+                     one request produces -- fewer serialize the request, more stay idle"
+                );
+            }
         }
+        println!(
+            "  config : intra_op_threads, inter_op_threads, allow_spinning and session_config \
+             apply only to ONNX Runtime"
+        );
+    }
+
+    let connection_concurrency = service_config.threading.connection_concurrency;
+    println!("  admit  : {connection_concurrency} in flight per connection");
+    if neuron_models == 0 {
+        println!(
+            "  pool   : {replicas} blocking thread(s) for {replicas} session(s) per model, each \
+             session with its own {} pool; a request leases an idle session while it scores{}",
+            parallelism.pool_name(),
+            if models > 1 {
+                format!(" -- from whichever of the {models} models it was routed to")
+            } else {
+                String::new()
+            },
+        );
+    } else {
+        println!(
+            "  pool   : {replicas} blocking thread(s) per request lane; a request leases one \
+             backend replica while it scores{}",
+            if models > 1 {
+                format!(" -- from whichever of the {models} models it was routed to")
+            } else {
+                String::new()
+            },
+        );
+    }
+    if replicas == 1 {
+        println!(
+            "  note   : one replica means one request at a time; raise \
+             \"threading.sessions_per_model\" for concurrency, at one model load each"
+        );
     }
 
     let port = args.port.unwrap_or(service_config.port_number);
@@ -956,7 +835,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("hushar: listening on {server_addr}");
     let stream_limit = u32::from(connection_concurrency);
     let connection_concurrency = usize::from(connection_concurrency);
-    let core_slices = Arc::new(core_slices);
     let hushar_service = HusharService {
         control,
         candidate,
@@ -964,7 +842,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         metrics_sink: Arc::clone(&metrics_sink),
         data_sink: Arc::clone(&data_sink),
         sampler,
-        core_slices: Arc::clone(&core_slices),
     };
     let served = server_runtime.block_on(async {
         Server::builder()
@@ -1004,114 +881,61 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 mod tests {
     use super::*;
 
-    /// Asserts the replica index and the cores come from the same slice, and stay stable
-    /// for the calling thread.
+    /// Asserts one session per model yields one set of options, and that a thread always
+    /// takes index 0 because there is nothing to spread over.
     #[test]
-    fn the_replica_and_its_cores_come_from_one_index() {
-        let slices: Vec<Arc<Vec<usize>>> = (0..4)
-            .map(|i| Arc::new((i * 8..i * 8 + 8).collect::<Vec<usize>>()))
-            .collect();
-
-        let (index, cores) = replica_slot(4, &slices);
-        assert_eq!(*cores, *slices[index], "cores belong to the chosen replica");
-
-        for _ in 0..4 {
-            let (again, same) = replica_slot(4, &slices);
-            assert_eq!(again, index);
-            assert_eq!(*same, *cores);
-        }
-    }
-
-    /// Asserts a single replica always takes slice 0 and consumes no round-robin slot.
-    #[test]
-    fn a_single_replica_always_takes_the_first_slice() {
-        let slices = vec![Arc::new(vec![0, 1, 2, 3])];
-        for _ in 0..4 {
-            let (index, cores) = replica_slot(1, &slices);
-            assert_eq!(index, 0);
-            assert_eq!(*cores, vec![0, 1, 2, 3]);
-        }
-    }
-
-    /// Asserts fewer slices than replicas yields an empty core list rather than a panic.
-    #[test]
-    fn a_missing_slice_places_the_replica_anywhere() {
-        let (_, cores) = replica_slot(8, &[]);
-        assert!(cores.is_empty());
-    }
-
-    /// Asserts one session produces one slice of the configured cores and no session
-    /// options.
-    #[test]
-    fn a_single_session_is_placed_exactly_as_before() {
+    fn a_single_session_needs_no_choice() {
         let threading = config::ThreadingConfig {
             intra_op_threads: 8,
             ..config::ThreadingConfig::default()
         };
-        let (slices, options) = replica_placement(&threading, 64);
-        assert_eq!(slices.len(), 1);
-        assert!(
-            slices[0].is_empty(),
-            "no cores were configured, so none are chosen"
-        );
-        assert_eq!(options.len(), 1);
+        let options = replica_options(&threading);
+        assert_eq!(options.len(), 1, "one session, one set of options");
         assert!(
             options[0].is_empty(),
-            "nothing to say about placement or spinning"
+            "nothing to say: intra_op_threads is passed separately, not as an option"
         );
+        let pool = inference::SessionPool::new(vec![7u8]);
+        for _ in 0..4 {
+            assert_eq!(
+                *pool.acquire(),
+                7,
+                "the one session serves every request in turn"
+            );
+        }
     }
 
-    /// Asserts several sessions with no `compute_cores` divide the whole machine, one
-    /// affinity per slice.
+    /// Asserts the session count decides how many option sets the loader is given, since
+    /// that length is how the count reaches it.
     #[test]
-    fn several_sessions_divide_the_whole_machine_by_default() {
-        let threading = config::ThreadingConfig {
-            intra_op_threads: 4,
-            sessions_per_model: 4,
-            ..config::ThreadingConfig::default()
-        };
-        let (slices, options) = replica_placement(&threading, 16);
-        assert_eq!(slices.len(), 4);
-        assert_eq!(*slices[0], vec![0, 1, 2, 3]);
-        assert_eq!(*slices[3], vec![12, 13, 14, 15]);
-
-        let affinity = |o: &Vec<(String, String)>| {
-            o.iter()
-                .find(|(k, _)| k == "session.intra_op_thread_affinities")
-                .map(|(_, v)| v.clone())
-                .expect("an affinity entry")
-        };
-        assert_eq!(affinity(&options[0]), "2;3;4");
-        assert_eq!(affinity(&options[3]), "14;15;16");
+    fn the_session_count_is_the_number_of_option_sets() {
+        for sessions in [1usize, 2, 4, 8] {
+            let threading = config::ThreadingConfig {
+                sessions_per_model: sessions,
+                ..config::ThreadingConfig::default()
+            };
+            assert_eq!(
+                replica_options(&threading).len(),
+                sessions,
+                "{sessions} session(s) means {sessions} set(s) of options"
+            );
+        }
     }
 
-    /// Asserts a configured `compute_cores` is divided between sessions rather than
-    /// ignored.
+    /// Asserts every session is configured identically: they differ by owning separate
+    /// pools, not by their settings.
     #[test]
-    fn several_sessions_divide_the_configured_cores() {
-        let threading = config::ThreadingConfig {
-            intra_op_threads: 2,
-            sessions_per_model: 2,
-            compute_cores: Some("8-11".to_owned()),
-            ..config::ThreadingConfig::default()
-        };
-        let (slices, _) = replica_placement(&threading, 64);
-        assert_eq!(*slices[0], vec![8, 9]);
-        assert_eq!(*slices[1], vec![10, 11]);
-    }
-
-    /// Asserts the spinning setting is written into every replica's session options.
-    #[test]
-    fn spinning_reaches_every_session() {
+    fn every_session_is_configured_the_same_way() {
         let threading = config::ThreadingConfig {
             intra_op_threads: 4,
             sessions_per_model: 3,
             allow_spinning: Some(false),
             ..config::ThreadingConfig::default()
         };
-        let (_, options) = replica_placement(&threading, 24);
+        let options = replica_options(&threading);
         assert_eq!(options.len(), 3);
         for one in &options {
+            assert_eq!(one, &options[0], "no session is a special case");
             assert!(
                 one.contains(&("session.intra_op.allow_spinning".to_owned(), "0".to_owned())),
                 "every session is told, got {one:?}"
@@ -1119,26 +943,31 @@ mod tests {
         }
     }
 
-    /// Asserts a thread keeps one replica index, and fresh threads take the next one in
-    /// turn.
+    /// Asserts concurrent requests on a model each lease a different session, and that a
+    /// request arriving after any number of threads have come and gone still gets the idle
+    /// one -- the case the per-thread counter this replaced got wrong.
     #[test]
-    fn a_thread_keeps_the_replica_it_was_given() {
-        let mine = this_thread_replica(4);
-        for _ in 0..5 {
-            assert_eq!(this_thread_replica(4), mine, "stable within a thread");
+    fn concurrent_requests_lease_distinct_sessions_whatever_the_thread_history() {
+        let pool = Arc::new(inference::SessionPool::new(vec![0usize, 1, 2, 3]));
+        for _ in 0..8 {
+            let pool = Arc::clone(&pool);
+            std::thread::spawn(move || drop(pool.acquire()))
+                .join()
+                .unwrap();
         }
-
-        let seen: Vec<usize> = (0..8)
-            .map(|_| {
-                std::thread::spawn(|| this_thread_replica(4))
-                    .join()
-                    .unwrap()
-            })
-            .collect();
-        let mut distinct = seen.clone();
-        distinct.sort_unstable();
-        distinct.dedup();
-        assert_eq!(distinct.len(), 4, "all four replicas used, got {seen:?}");
+        let held: Vec<_> = (0..3).map(|_| pool.acquire()).collect();
+        let busy: Vec<usize> = held.iter().map(|lease| **lease).collect();
+        let late = {
+            let pool = Arc::clone(&pool);
+            std::thread::spawn(move || *pool.acquire()).join().unwrap()
+        };
+        assert!(
+            !busy.contains(&late),
+            "a late request must take the idle session, not one in use: got {late} with \
+             {busy:?} busy"
+        );
+        drop(held);
+        assert_eq!(pool.idle(), 4, "every lease was returned");
     }
 
     /// Asserts a default threading configuration emits no session options at all.
@@ -1151,33 +980,17 @@ mod tests {
         );
     }
 
-    /// Asserts `compute_cores` with `intra_op_threads` of 1 emits no affinity entry,
-    /// since the calling thread is the whole pool.
+    /// Asserts a wide intra-op pool still emits no session options: the width is passed
+    /// to ONNX Runtime directly, and there is no longer a placement string to derive.
     #[test]
-    fn cores_alone_do_not_produce_an_affinity_entry() {
+    fn a_wide_pool_needs_no_session_option() {
         let json = r#"{"model_config_path": "/m.json",
-                       "threading": {"intra_op_threads": 1, "compute_cores": "2-9"},
+                       "threading": {"intra_op_threads": 8},
                        "inference_log": {"uri": "/logs"}}"#;
         let config = config::HusharServiceConfig::from_json(json).expect("valid");
-        assert!(session_options(&config.threading).is_empty());
-    }
-
-    /// Asserts one affinity entry is emitted, carrying one core per intra-op thread other
-    /// than the caller.
-    #[test]
-    fn an_affinity_entry_is_emitted_for_the_extra_threads() {
-        let json = r#"{"model_config_path": "/m.json",
-                       "threading": {"intra_op_threads": 8, "compute_cores": "2-9"},
-                       "inference_log": {"uri": "/logs"}}"#;
-        let config = config::HusharServiceConfig::from_json(json).expect("valid");
-        let options = session_options(&config.threading);
-        assert_eq!(options.len(), 1, "affinity only: {options:?}");
-        assert_eq!(options[0].0, "session.intra_op_thread_affinities");
-        assert_eq!(
-            options[0].1.split(';').count(),
-            7,
-            "8 threads leave 7 to place: {:?}",
-            options[0].1
+        assert!(
+            session_options(&config.threading).is_empty(),
+            "only spinning is expressed as an option now"
         );
     }
 
@@ -1202,6 +1015,39 @@ mod tests {
             );
             assert!(options.iter().all(|(_, v)| v == expected));
         }
+    }
+
+    /// Asserts extra session settings follow the spinning keys, verbatim and in key order,
+    /// and reach every session's option set.
+    #[test]
+    fn session_config_entries_follow_spinning_in_key_order_on_every_session() {
+        let json = r#"{"model_config_path": "/m.json",
+                       "threading": {"allow_spinning": true, "sessions_per_model": 3,
+                                     "session_config": {
+                                         "session.intra_op.spin_duration_us": "500",
+                                         "session.force_spinning_stop": "1"}},
+                       "inference_log": {"uri": "/logs"}}"#;
+        let config = config::HusharServiceConfig::from_json(json).expect("valid");
+        let options = session_options(&config.threading);
+        let as_pairs: Vec<(&str, &str)> = options
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            as_pairs,
+            vec![
+                ("session.intra_op.allow_spinning", "1"),
+                ("session.inter_op.allow_spinning", "1"),
+                ("session.force_spinning_stop", "1"),
+                ("session.intra_op.spin_duration_us", "500"),
+            ]
+        );
+        let replicas = replica_options(&config.threading);
+        assert_eq!(replicas.len(), 3, "one option set per session");
+        assert!(
+            replicas.iter().all(|set| *set == options),
+            "every session is configured identically"
+        );
     }
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;

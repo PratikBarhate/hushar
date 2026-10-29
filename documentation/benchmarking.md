@@ -42,34 +42,70 @@ Open the server's port — 8279 by default — to the client's security group.
 ```bash
 cd hushar-bench-<sha>
 scripts/benchmark/bootstrap.sh --role server --provider cpu
-scripts/benchmark/bootstrap.sh --role client          # no engine on the client
+scripts/benchmark/bootstrap.sh --role server --provider neuron  # on a Neuron DLAMI
+scripts/benchmark/bootstrap.sh --role client                    # no engine on the client
 ```
 
 The server host needs credentials that allow `cloudwatch:PutMetricData` — an instance role
 is easiest — or the server-side percentiles cannot be collected. Nothing else to install:
 the CPU and memory sampler reads `/proc`.
 
-| `--provider` | Library |
+| `--provider` | Runtime |
 |---|---|
 | `cpu` *(default)* | `onnxruntime-linux-{x64,aarch64}` |
 | `tensorrt` | `onnxruntime-linux-x64-gpu_cuda12` |
-| `xnnpack`, `openvino` | none published — `scripts/benchmark/build_ort.sh <provider>` first, then pass `ORT_DYLIB_PATH` and `LD_LIBRARY_PATH` |
+| `xnnpack`, `openvino` | build with `scripts/benchmark/build_ort.sh`, then set `ORT_DYLIB_PATH` and `LD_LIBRARY_PATH` |
+| `neuron` | `libnrt.so.1` and the Neuron driver supplied by a Neuron DLAMI |
 
-`--provider` is also a **Cargo feature**. A server built without it refuses the
-configuration at startup even when the library has the provider compiled in.
+For ONNX Runtime, `--provider` is also a Cargo feature. Neuron is a separate engine and is
+compiled into the default hushar binary; runtime availability is checked when a NEFF loads.
+
+### Compile a Neuron model
+
+Neuron does not compile ONNX directly. On a Neuron 2.31 PyTorch DLAMI, rebuild the same
+seeded vectorized benchmark architecture and retain the NEFF from `torch_neuronx.trace`:
+
+```bash
+source /opt/aws_neuronx_venv_pytorch_2_9/bin/activate
+python scripts/benchmark/compile_neuron.py --params 10M --batch-size 50
+python scripts/benchmark/compile_neuron.py --params 50M --batch-size 100
+```
+
+A NEFF has a fixed leading dimension. Compile each batch size the run needs and keep the
+written metadata JSON with the result; it records the hash, versions, shape, parameter
+count, and compiled-versus-PyTorch error.
 
 ## 4 · Run
 
 ```bash
 # server host — starts once, serves the whole sweep
-MODEL=raw-ab PROVIDER=cpu WORKER_THREADS=24 INFERENCE_CONCURRENCY=8 THREADS=21 \
+MODEL=transformer-ab PROVIDER=cpu WORKER_THREADS=24 SESSIONS=8 THREADS=21 \
+  CW_NAMESPACE=HusharBench \
+  scripts/benchmark/run_server.sh start
+
+# Neuron — two one-core replicas on trn1.2xlarge, fixed batch 50
+MODEL=transformer PROVIDER=neuron SESSIONS=2 WORKER_THREADS=4 \
+  MODEL_CONFIG=benchmark-data/generated/bench_model_neuron_10m_b50_config.json \
+  NEFF_PATH=benchmark-data/generated/bench_model_neuron_10m_b50.neff \
+  MINI_BATCH_SIZE=50 MINI_BATCH_FIXED=1 NEURON_EXECUTION_CONTEXTS=1 \
   CW_NAMESPACE=HusharBench \
   scripts/benchmark/run_server.sh start
 ```
 
-Read the banner: it names the provider **actually registered**, the thread counts, and the
-admission limit. Those lines are the report's `Provider` and `Parallelisation` columns, so
-keep them.
+Every arm takes one concatenated FP32 input the service builds, so every arm runs on any
+provider — a device provider and an accelerator included. That is what makes the GPU and
+Neuron sweeps comparable with the CPU ones: the model signature does not change with the
+hardware.
+
+Read the banner: it names the provider **actually registered** or the libnrt version and
+NeuronCore range, plus the concurrency and admission limit. Those lines are the report's
+`Provider` and `Parallelisation` columns, so keep them.
+
+For Neuron, `SESSIONS` means model replicas rather than ORT sessions. On a two-core
+`trn1.2xlarge`, `SESSIONS=2` with one core per replica occupies both cores.
+`NEURON_EXECUTION_CONTEXTS` controls concurrent tensor sets inside each replica and matters
+when one request is split into several NEFF-sized pieces. `THREADS`, `INTER_THREADS`,
+`ALLOW_SPINNING`, and `ORT_SESSION_CONFIG` are ORT-only.
 
 `CW_NAMESPACE` is what makes the report's **server-side** percentiles possible: timings go
 to CloudWatch as one data point per scored batch, and CloudWatch holds the distribution.
@@ -81,8 +117,8 @@ than competing with it. The banner reports spinning whenever it is configured, s
 can say which was measured:
 
 ```bash
-MODEL=raw-ab PROVIDER='openvino:CPU:threads=21:streams=1' \
-  WORKER_THREADS=24 INFERENCE_CONCURRENCY=8 THREADS=1 ALLOW_SPINNING=0 \
+MODEL=transformer-ab PROVIDER='openvino:CPU:threads=21:streams=1' \
+  WORKER_THREADS=24 SESSIONS=8 THREADS=1 ALLOW_SPINNING=0 \
   LABEL=c8i-openvino \
   CW_NAMESPACE=HusharBench \
   LOG_URI=s3://my-bucket/inference-logs \
@@ -98,15 +134,21 @@ actually uses and the results outlive the instance.
 scripts/benchmark/sample_host.sh start
 ```
 
+The sampler's CPU figure is the scheduler's own run-time counter (`/proc/schedstat`), not
+the tick-based `/proc/stat` columns: on a tickless kernel a busy CPU whose tick has stopped
+can be accounted as idle for a whole window, which is how several cells in the 16xlarge runs
+read under 0.1 % CPU while serving their full rate. Each sample also carries the `/proc/stat`
+figure as a sixth column, so the two can be compared over any window; `report` prints both.
+
 ```bash
 # client host
-SERVER=http://10.0.1.23:8279 MODEL=raw TPS="100 200 300" \
+SERVER=http://10.0.1.23:8279 MODEL=transformer TPS="100 200 300" \
   DURATION=45 WARMUP=15 ROWS=100 scripts/benchmark/run_client.sh
 ```
 
-The client is told the **control arm's** model, so a `raw-ab` server is driven with
-`MODEL=raw` — every arm takes the same features. Sweep until something sheds, then stop:
-the last rate with `shed = 0` and `achieved ≈ offered` is the answer.
+The client is told the **control arm's** model, so a `transformer-ab` server is driven
+with `MODEL=transformer` — every arm takes the same features. Sweep until something sheds,
+then stop: the last rate with `shed = 0` and `achieved ≈ offered` is the answer.
 
 Note the wall-clock time the sweep started and ended; §6 needs it to cut the CloudWatch
 window to the measured part.
@@ -130,12 +172,49 @@ aws s3 sync /tmp/hushar-server/         "s3://my-bucket/hushar-bench/$STEM/serve
 
 ## 6 · Record
 
-```bash
-BENCH=<bench-name>        # named for what the run swept; see benchmark-data/TEMPLATE.md
-mkdir -p benchmark-data/results/$BENCH
-cp benchmark-data/TEMPLATE.md \
-   benchmark-data/results/$BENCH/summary.md
+One directory per run under `benchmark-data/results/`, named for what the run swept — a
+multi-host run is not named after one host:
+
+```text
+benchmark-data/results/<bench-name>/
+├── summary.md          # the report, generated from raw/results.json
+└── raw/
+    ├── README.md       # what each file is, and anything deliberately left out
+    ├── results.json    # every cell, enriched; the only input the report reads
+    ├── cells/          # one original JSON record per cell, written the moment it finished
+    ├── server/<host>/  # banners, resolved configurations, per-second host samples
+    ├── client/<host>/  # load-generator output and client host samples
+    ├── driver/         # the exact scripts that ran, lane logs, report generator, verifier
+    ├── model-config.json, model-metadata.json, environment.json, run-status.json
 ```
+
+`results/` carries one round at a time. The first round of benchmarking swept every threading
+permutation on every accelerator and recorded all of it — 69 MB across 6,539 files — which
+left a reader more evidence than insight and went stale the moment the service's own
+numbers moved. Those campaigns are now in `benchmark-data/old-results/`, present on disk
+and untracked, so a figure can still be looked up without the repository carrying a round
+it is no longer making a case with. Record the new round here, one run at a time, and
+**earn each one**: a run belongs in `results/` when its report answers a question a reader
+actually has, not because the cells were collected.
+
+Collect every cell in the session that measured it; a host's `/tmp` does not survive a
+reboot. Keep the same evidence in S3 under a prefix named for the run.
+
+**Write the report for someone reading it for the first time.** Describe a cell by its
+settings — shape, spinning policy, worker threads, load — in the table itself, never by the
+driver's phase letter, which belongs in `raw/README.md` as a decoder for cell IDs. Lead with
+the answer, then the like-for-like comparison, then the diagnostics, then what it means, the
+caveats, and how it was measured. A cell sustains only when achieved TPS is within 2 % of
+offered with nothing shed and nothing failed; print an unsustained cell as `✗ <achieved TPS>`
+and never rank its latency or substitute a lower rate. State the spinning policy each stack
+*actually* ran — Triton's onnxruntime backend ignores the `config.pbtxt` spinning keys — and
+name what CPU and memory measure. Leave one blank line before and after every table.
+
+**Generate and verify, do not hand-edit.** `raw/driver/report.py` writes `summary.md` from
+`results.json` deterministically; `raw/driver/verify.py` re-derives every displayed figure
+from the original cell records and sample logs, checks the settings columns against the
+resolved server configurations, checks the lane logs completed, and fails on any
+disagreement. Both are committed beside the evidence so the report can be regenerated.
 
 A bucket name embeds an AWS account number, so pass it in rather than committing it, and check
 before you commit — an account id travels by paste, inside a path nobody reads twice:
@@ -150,7 +229,7 @@ The accounts in use are checked exactly, which catches an id concatenated into a
 of the repository, because an id committed to teach a scanner about it has still been committed.
 This paragraph is why it is spelt `<account-id>` here too.
 
-Thirteen columns, four sources — the template names every one:
+Four sources feed a report's columns:
 
 ```mermaid
 flowchart LR
@@ -164,7 +243,7 @@ flowchart LR
 ```bash
 # srv p50/p95 — µs in CloudWatch, ms in the report, averaged over the arms
 START=2026-09-10T18:00:00Z END=2026-09-10T18:45:00Z \
-  scripts/benchmark/server_latency.sh HusharBench bench-raw bench-raw-candidate
+  scripts/benchmark/server_latency.sh HusharBench bench-vectorized bench-vectorized-candidate
 
 # CPU % and Mem % — per rate, in seconds from the first sample
 scripts/benchmark/sample_host.sh report 0 45     # the first rate

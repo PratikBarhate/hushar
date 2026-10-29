@@ -1,0 +1,14 @@
+[0;93m2026-10-26 08:48:18.908829024 [W:onnxruntime:hushar, device_discovery.cc:285 GetGpuDevices] Failed to detect devices under "/sys/class/drm/card0": device_discovery.cc:94 ReadFileContents Failed to open file: "/sys/class/drm/card0/device/vendor"[m
+hushar: model g5-hushar-tensor-10m-r100t200-p2 loaded on onnxruntime/TensorRT(device=0, trt_engine_cache_enable=1, trt_engine_cache_path=/root/trt-cache/10m) (runtime 1.28.3)
+  inputs   : features FP32[690]
+  outputs  : scores FP32[5]
+  features : 1 binding(s)
+             features FP32[690] <- [features] transformed and concatenated
+  batch  : rows split into mini batches of 100, scored together, the last is padded up to it
+hushar: metrics -> HusharBench [every 100 batches, 4 in flight]
+hushar: inference logs -> /root/hushar-bench-ffba569-dirty/inference-logs [local filesystem, 16 prefix shard(s), every 5000 batches, 4 in flight, logging no requests]
+hushar: threads -> 4 async, 2 concurrent inference(s) x 1 intra-op x 2 ONNX Runtime session(s) = 2 compute on 8 core(s)
+  note   : 2 compute threads leaves 6 of 8 core(s) unusable; raise "threading.sessions_per_model" for throughput, or "threading.intra_op_threads" to spend the cores on one request's latency
+  admit  : 512 in flight per connection
+  pool   : 2 blocking thread(s) for 2 session(s) per model, each session with its own intra-op pool; a request leases an idle session while it scores
+hushar: listening on 0.0.0.0:8279

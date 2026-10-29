@@ -38,7 +38,7 @@ the reasoning for why it is sound.
 
 | | |
 |---|---|
-| Version | ONNX Runtime v1.29.0, `ORT_API_VERSION` 29 |
+| Version | ONNX Runtime v1.28.0, `ORT_API_VERSION` 28 |
 | Files | `headers/onnxruntime_c_api.h`, `onnxruntime_ep_c_api.h`, `onnxruntime_error_code.h` |
 | Licence | MIT, see `headers/LICENSE.onnxruntime` |
 
@@ -66,15 +66,15 @@ Get a build for your platform from the
 [releases page](https://github.com/microsoft/onnxruntime/releases). Assets are named
 `onnxruntime-<os>-<arch>-<version>` and each carries the library under `lib/`:
 
-| Platform | Asset for 1.29.0 |
+| Platform | Asset for 1.28.0 |
 |---|---|
-| Linux x64 — Intel, AMD | `onnxruntime-linux-x64-1.29.0.tgz` |
-| Linux arm64 — Graviton, Ampere | `onnxruntime-linux-aarch64-1.29.0.tgz` |
-| Windows x64 | `onnxruntime-win-x64-1.29.0.zip` |
-| NVIDIA GPU, CUDA 12 | `onnxruntime-linux-x64-gpu_cuda12-1.29.0.tgz` |
+| Linux x64 — Intel, AMD | `onnxruntime-linux-x64-1.28.0.tgz` |
+| Linux arm64 — Graviton, Ampere | `onnxruntime-linux-aarch64-1.28.0.tgz` |
+| Windows x64 | `onnxruntime-win-x64-1.28.0.zip` |
+| NVIDIA GPU, CUDA 12 | `onnxruntime-linux-x64-gpu_cuda12-1.28.0.tgz` |
 
 ```bash
-export ORT_DYLIB_PATH=$PWD/onnxruntime-linux-x64-1.29.0/lib/libonnxruntime.so
+export ORT_DYLIB_PATH=$PWD/onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so
 ```
 
 Note that `onnxruntime.ai/docs/install` covers the language packages — pip, NuGet, npm —

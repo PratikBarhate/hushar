@@ -1,0 +1,82 @@
+launched 2026-10-24T00:52:53Z for c9g-1
+2026-10-24T00:52:54Z preflight c9g-1: {'type': 'c9g.16xlarge', 'ami': 'ami-025d1d5c1b9b090aa', 'kernel': '6.18.54-121.166.amzn2023.aarch64', 'nproc': '64', 'providers': '0', 'ortso': '1.28.0', 'md5': '5539c97131c896db6c58088d9f9b9ee3', 'tensorcfg': 'yes', 'tensorspec': 'yes', 'onnx': 'yes', 'docker': 'yes'}
+2026-10-24T00:52:54Z preflight c9g-1: both clients report slices
+2026-10-24T00:52:54Z preflight c9g-1: OK, c9g.16xlarge, 64 CPUs, CPU-only runtime, ami ami-025d1d5c1b9b090aa, kernel 6.18.54-121.166.amzn2023.aarch64, model md5 5539c97131c896db6c58088d9f9b9ee3, docker present
+2026-10-24T00:52:54Z host=c9g-1 rev=ffba569-dirty run=design-vs-triton-cpu-arm64-10M phase=head bucket set
+2026-10-24T00:52:54Z pinned hushar: 4x16 mb4 spin0
+2026-10-24T00:52:54Z pinned triton: 4x16 on intra, one call per request
+2026-10-24T00:52:54Z configurations were TUNED by PHASE=tune
+2026-10-24T00:52:54Z   arm H: hushar/features, 12 cell(s)
+2026-10-24T00:52:54Z   arm T: triton/tensor, 12 cell(s)
+2026-10-24T00:52:54Z   arm X: hushar/tensor, 12 cell(s)
+2026-10-24T00:52:54Z 36 cell(s) at most: H-r100t200, T-r100t200, X-r100t200, H-r100t240, T-r100t240, X-r100t240, H-r100t280, T-r100t280, X-r100t280, H-r100t320, T-r100t320, X-r100t320, H-r100t360, T-r100t360, X-r100t360, H-r100t400, T-r100t400, X-r100t400, H-r200t100, T-r200t100, X-r200t100, H-r200t120, T-r200t120, X-r200t120, H-r200t140, T-r200t140, X-r200t140, H-r200t160, T-r200t160, X-r200t160, H-r200t180, T-r200t180, X-r200t180, H-r200t200, T-r200t200, X-r200t200
+2026-10-24T00:52:54Z warmup=120s measured=900s in 3 slice(s) settle=60s -> 20.8 min/cell, at most 12.5 h; ladders stop early, so fewer
+2026-10-24T00:52:54Z c9g-1-H-r100t200 start  hushar/features s4x16 mb4 spin0 64thr/64cpu 100rows x 200tps = 20000 rows/s
+2026-10-24T01:10:09Z c9g-1-H-r100t200 done   p50=5.92 p95=8.31 achieved=200.0/200 shed=0 srvcpu=57.4 clicpu=0.3 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T01:11:10Z c9g-1-T-r100t200 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 100rows x 200tps = 20000 rows/s
+2026-10-24T01:28:26Z c9g-1-T-r100t200 done   p50=12.58 p95=15.33 achieved=200.0/200 shed=0 srvcpu=97.0 clicpu=0.1 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T01:29:27Z c9g-1-X-r100t200 start  hushar/tensor s4x16 mb4 spin0 64thr/64cpu 100rows x 200tps = 20000 rows/s
+2026-10-24T01:46:43Z c9g-1-X-r100t200 done   p50=6.21 p95=8.16 achieved=200.0/200 shed=0 srvcpu=57.3 clicpu=0.5 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T01:47:43Z c9g-1-H-r100t240 start  hushar/features s4x16 mb4 spin0 64thr/64cpu 100rows x 240tps = 24000 rows/s
+2026-10-24T02:04:59Z c9g-1-H-r100t240 done   p50=6.98 p95=10.11 achieved=240.0/240 shed=0 srvcpu=70.0 clicpu=0.4 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T02:06:00Z c9g-1-T-r100t240 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 100rows x 240tps = 24000 rows/s
+2026-10-24T02:23:16Z c9g-1-T-r100t240 done   p50=13.07 p95=18.24 achieved=240.0/240 shed=0 srvcpu=98.1 clicpu=0.1 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T02:24:16Z c9g-1-X-r100t240 start  hushar/tensor s4x16 mb4 spin0 64thr/64cpu 100rows x 240tps = 24000 rows/s
+2026-10-24T02:41:32Z c9g-1-X-r100t240 done   p50=7.23 p95=10.2 achieved=240.0/240 shed=0 srvcpu=69.9 clicpu=0.6 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T02:42:33Z c9g-1-H-r100t280 start  hushar/features s4x16 mb4 spin0 64thr/64cpu 100rows x 280tps = 28000 rows/s
+2026-10-24T02:59:48Z c9g-1-H-r100t280 done   p50=10.68 p95=16.74 achieved=280.0/280 shed=0 srvcpu=84.9 clicpu=0.4 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T03:00:49Z c9g-1-T-r100t280 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 100rows x 280tps = 28000 rows/s
+2026-10-24T03:18:05Z c9g-1-T-r100t280 done   p50=14.36 p95=191.93 achieved=280.0/280 shed=0 srvcpu=99.0 clicpu=0.1 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T03:19:06Z c9g-1-X-r100t280 start  hushar/tensor s4x16 mb4 spin0 64thr/64cpu 100rows x 280tps = 28000 rows/s
+2026-10-24T03:36:21Z c9g-1-X-r100t280 done   p50=11.22 p95=17.77 achieved=280.0/280 shed=0 srvcpu=84.9 clicpu=0.7 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T03:37:21Z c9g-1-H-r100t320 start  hushar/features s4x16 mb4 spin0 64thr/64cpu 100rows x 320tps = 32000 rows/s
+2026-10-24T03:54:41Z c9g-1-H-r100t320 done   p50=4375.03 p95=4405.14 achieved=292.2/320 shed=26935 srvcpu=92.3 clicpu=0.5 failed (0/3 slice(s) held) -- settling 60s
+2026-10-24T03:55:42Z ladder H-r100 STOPS: H-r100t320 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T03:55:42Z c9g-1-T-r100t320 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 100rows x 320tps = 32000 rows/s
+2026-10-24T04:12:59Z c9g-1-T-r100t320 done   p50=4090.47 p95=4297.79 achieved=311.3/320 shed=8341 srvcpu=99.9 clicpu=0.2 failed (0/3 slice(s) held) -- settling 60s
+2026-10-24T04:14:00Z ladder T-r100 STOPS: T-r100t320 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T04:14:00Z c9g-1-X-r100t320 start  hushar/tensor s4x16 mb4 spin0 64thr/64cpu 100rows x 320tps = 32000 rows/s
+2026-10-24T04:31:20Z c9g-1-X-r100t320 done   p50=4357.94 p95=4378.35 achieved=293.4/320 shed=25893 srvcpu=92.2 clicpu=0.7 failed (0/3 slice(s) held) -- settling 60s
+2026-10-24T04:32:20Z ladder X-r100 STOPS: X-r100t320 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T04:32:20Z c9g-1-H-r100t360 SKIPPED: H-r100t320 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T04:32:21Z c9g-1-T-r100t360 SKIPPED: T-r100t320 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T04:32:21Z c9g-1-X-r100t360 SKIPPED: X-r100t320 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T04:32:21Z c9g-1-H-r100t400 SKIPPED: H-r100t320 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T04:32:21Z c9g-1-T-r100t400 SKIPPED: T-r100t320 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T04:32:22Z c9g-1-X-r100t400 SKIPPED: X-r100t320 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T04:32:22Z c9g-1-H-r200t100 start  hushar/features s4x16 mb4 spin0 64thr/64cpu 200rows x 100tps = 20000 rows/s
+2026-10-24T04:49:38Z c9g-1-H-r200t100 done   p50=8.67 p95=10.36 achieved=100.0/100 shed=0 srvcpu=59.3 clicpu=0.3 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T04:50:38Z c9g-1-T-r200t100 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 200rows x 100tps = 20000 rows/s
+2026-10-24T05:07:55Z c9g-1-T-r200t100 done   p50=24.1 p95=31.95 achieved=100.0/100 shed=0 srvcpu=84.3 clicpu=0.1 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T05:08:56Z c9g-1-X-r200t100 start  hushar/tensor s4x16 mb4 spin0 64thr/64cpu 200rows x 100tps = 20000 rows/s
+2026-10-24T05:26:11Z c9g-1-X-r200t100 done   p50=9.23 p95=11.15 achieved=100.0/100 shed=0 srvcpu=58.9 clicpu=0.5 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T05:27:12Z c9g-1-H-r200t120 start  hushar/features s4x16 mb4 spin0 64thr/64cpu 200rows x 120tps = 24000 rows/s
+2026-10-24T05:44:27Z c9g-1-H-r200t120 done   p50=9.03 p95=15.06 achieved=120.0/120 shed=0 srvcpu=70.7 clicpu=0.3 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T05:45:28Z c9g-1-T-r200t120 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 200rows x 120tps = 24000 rows/s
+2026-10-24T06:02:45Z c9g-1-T-r200t120 done   p50=24.19 p95=31.0 achieved=120.0/120 shed=0 srvcpu=97.0 clicpu=0.1 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T06:03:46Z c9g-1-X-r200t120 start  hushar/tensor s4x16 mb4 spin0 64thr/64cpu 200rows x 120tps = 24000 rows/s
+2026-10-24T06:21:01Z c9g-1-X-r200t120 done   p50=9.43 p95=15.49 achieved=120.0/120 shed=0 srvcpu=70.4 clicpu=0.6 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T06:22:02Z c9g-1-H-r200t140 start  hushar/features s4x16 mb4 spin0 64thr/64cpu 200rows x 140tps = 28000 rows/s
+2026-10-24T06:39:17Z c9g-1-H-r200t140 done   p50=13.33 p95=17.38 achieved=140.0/140 shed=0 srvcpu=82.9 clicpu=0.4 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T06:40:18Z c9g-1-T-r200t140 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 200rows x 140tps = 28000 rows/s
+2026-10-24T06:57:35Z c9g-1-T-r200t140 done   p50=24.68 p95=57.71 achieved=140.0/140 shed=0 srvcpu=98.8 clicpu=0.1 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T06:58:36Z c9g-1-X-r200t140 start  hushar/tensor s4x16 mb4 spin0 64thr/64cpu 200rows x 140tps = 28000 rows/s
+2026-10-24T07:15:51Z c9g-1-X-r200t140 done   p50=13.48 p95=17.33 achieved=140.0/140 shed=0 srvcpu=82.5 clicpu=0.7 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T07:16:52Z c9g-1-H-r200t160 start  hushar/features s4x16 mb4 spin0 64thr/64cpu 200rows x 160tps = 32000 rows/s
+2026-10-24T07:34:11Z c9g-1-H-r200t160 done   p50=4109.11 p95=4141.4 achieved=155.4/160 shed=4153 srvcpu=97.8 clicpu=0.4 failed (0/3 slice(s) held) -- settling 60s
+2026-10-24T07:35:12Z ladder H-r200 STOPS: H-r200t160 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T07:35:12Z c9g-1-T-r200t160 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 200rows x 160tps = 32000 rows/s
+2026-10-24T07:52:29Z c9g-1-T-r200t160 done   p50=98.14 p95=645.98 achieved=160.1/160 shed=0 srvcpu=99.7 clicpu=0.1 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-24T07:53:30Z c9g-1-X-r200t160 start  hushar/tensor s4x16 mb4 spin0 64thr/64cpu 200rows x 160tps = 32000 rows/s
+2026-10-24T08:10:49Z c9g-1-X-r200t160 done   p50=4099.49 p95=4131.79 achieved=155.8/160 shed=3810 srvcpu=97.7 clicpu=0.7 failed (0/3 slice(s) held) -- settling 60s
+2026-10-24T08:11:50Z ladder X-r200 STOPS: X-r200t160 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T08:11:50Z c9g-1-H-r200t180 SKIPPED: H-r200t160 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T08:11:51Z c9g-1-T-r200t180 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 200rows x 180tps = 36000 rows/s
+2026-10-24T08:29:09Z c9g-1-T-r200t180 done   p50=4483.11 p95=4742.7 achieved=159.5/180 shed=18715 srvcpu=99.9 clicpu=0.1 failed (0/3 slice(s) held) -- settling 60s
+2026-10-24T08:30:09Z ladder T-r200 STOPS: T-r200t180 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T08:30:09Z c9g-1-X-r200t180 SKIPPED: X-r200t160 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T08:30:10Z c9g-1-H-r200t200 SKIPPED: H-r200t160 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T08:30:10Z c9g-1-T-r200t200 SKIPPED: T-r200t180 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T08:30:10Z c9g-1-X-r200t200 SKIPPED: X-r200t160 did not hold any of its 3 slice(s); every higher rung would fail too
+2026-10-24T08:30:11Z host=c9g-1 SWEEP COMPLETE
+ALL DONE rc=0 2026-10-24T08:30:11Z

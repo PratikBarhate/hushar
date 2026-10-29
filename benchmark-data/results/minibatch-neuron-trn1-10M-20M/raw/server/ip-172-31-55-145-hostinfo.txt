@@ -1,0 +1,37 @@
+=== host ===================================================
+role                 server
+hostname             ip-172-31-55-145
+instance type        trn1.2xlarge
+availability zone    us-west-2d
+private ipv4         172.31.55.145
+kernel               Linux 7.0.0-1014-aws
+os                   Ubuntu 24.04.5 LTS
+
+=== cpu ====================================================
+model                Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz
+architecture         x86_64
+physical cores       4
+threads per core     2
+vcpus (nproc)        8
+simd                 avx2,avx512f
+numa nodes           1
+  node0 cpus           0-7
+memory               31 GiB
+
+=== aws neuron =============================================
+instance-type: trn1.2xlarge
+instance-id: i-0b27db7bdc3292fff
++--------+--------+----------+--------+--------------+----------+------+
+| NEURON | NEURON |  NEURON  | NEURON |     PCI      |   CPU    | NUMA |
+| DEVICE | CORES  | CORE IDS | MEMORY |     BDF      | AFFINITY | NODE |
++--------+--------+----------+--------+--------------+----------+------+
+| 0      | 2      | 0-1      | 32 GB  | 0000:00:1e.0 | 0-7      | -1   |
++--------+--------+----------+--------+--------------+----------+------+
+
+=== software ===============================================
+provider             neuron
+ORT_DYLIB_PATH       unknown
+NRT_DYLIB_PATH       unknown
+neuron runtime       2.35.30.0-d2725ccb8
+rustc                rustc 1.99.1 (58cf8f9c3 2026-10-13)
+bundle               6e00a5f7-dirty

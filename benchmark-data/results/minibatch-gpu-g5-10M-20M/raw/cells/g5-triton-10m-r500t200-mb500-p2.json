@@ -1,0 +1,350 @@
+{
+  "id": "g5-triton-10m-r500t200-mb500-p2",
+  "phase": "main",
+  "arm": "triton",
+  "stack": "triton",
+  "wire": "tensor",
+  "size": "10m",
+  "parameter_count": 9138693,
+  "layers": 2,
+  "macs_per_row": 53288960,
+  "rows": 500,
+  "tps": 200,
+  "rows_per_sec": 100000,
+  "parallelism": 2,
+  "parallelism_kind": "instances",
+  "intra": null,
+  "wt": null,
+  "mini_batch": null,
+  "pieces": 1,
+  "split": false,
+  "max_batch": 0,
+  "warmup": 120,
+  "duration": 900,
+  "segments": 15,
+  "settle": 60,
+  "precision": "fp32",
+  "engine_cache": null,
+  "engine_shape": [
+    500,
+    690
+  ],
+  "split_note": "one ONNX Runtime session is leased per REQUEST and shared by every mini batch of it, and the TensorRT provider serializes concurrent Run() on one session, so the pieces fan out for vectorization on the host but queue on the device",
+  "banner": [
+    "model md5 5539c97131c896db6c58088d9f9b9ee3 as expected, 36571281 bytes",
+    "reusing /root/triton/plans/10m-5539c97131c8-r500-fp32.plan (36870996 bytes)",
+    "wrote /root/triton/models/bench_vectorized/config.pbtxt",
+    "  platform tensorrt_plan, max_batch_size 0, profile rows 500, fp32",
+    "  instances 2 KIND_GPU on gpu 0 -- 2 execution context(s) of one engine",
+    "  input features FP32 [-1, 690], output scores FP32 [-1, 5]",
+    "waiting for ready. ok",
+    "--- model",
+    " platform       tensorrt_plan",
+    " backend        tensorrt",
+    " max_batch_size 0",
+    " dynamic_batch  off",
+    " instances      2 KIND_GPU",
+    " intra_op       None",
+    " inter_op       None",
+    " exec_mode      None",
+    " spinning       1 (default)",
+    " inputs         1",
+    " outputs        ['scores']",
+    "  backend check: tensorrt (C++ libtriton_tensorrt.so)",
+    "  max_batch_size check: 0 as asked",
+    "  instance check: 2 as asked",
+    "  python-backend check: no stub processes (0)",
+    "triton up on grpc :8001"
+  ],
+  "summary": "l     : bench_vectorized (Triton C++ onnxruntime backend)\n  features  : 1 inputs per row, outputs ['scores']\n  offering  : 200 req/s x 500 row(s), 512 in flight, 120s warmup + 900s measured\n  payloads  : 32 x 1348 KiB, built in 3.0s\n  validated : {'scores': ([500, 5], 'FP32')}\n  warmup done, measuring\n\n  measured  : 900.0s\n  offered   : 200 req/s\n  achieved  : 200.0 req/s (100.0% of offered)\n  responses : ok 180001, failed 0, shed 0, dispatched 180000\n  latency   : p50 5.29  p95 5.42  p99 5.48  max 13.05  mean 5.27 ms\n  client cpu: 0.1% of 32 vCPU\n\n  reported as 15 slice(s) of 60s, under one continuous 900s load:\n  slice 1/15 : n=12002 achieved=200.03 p50=5.29 p95=5.42 p99=5.48 shed=0 failed=0\n  slice 2/15 : n=12000 achieved=200.00 p50=5.29 p95=5.42 p99=5.47 shed=0 failed=0\n  slice 3/15 : n=11999 achieved=199.98 p50=5.29 p95=5.41 p99=5.48 shed=0 failed=0\n  slice 4/15 : n=12000 achieved=200.00 p50=5.29 p95=5.41 p99=5.48 shed=0 failed=0\n  slice 5/15 : n=12000 achieved=200.00 p50=5.29 p95=5.43 p99=5.48 shed=0 failed=0\n  slice 6/15 : n=12000 achieved=200.00 p50=5.29 p95=5.42 p99=5.47 shed=0 failed=0\n  slice 7/15 : n=12000 achieved=200.00 p50=5.29 p95=5.42 p99=5.47 shed=0 failed=0\n  slice 8/15 : n=12000 achieved=200.00 p50=5.29 p95=5.42 p99=5.47 shed=0 failed=0\n  slice 9/15 : n=12000 achieved=200.00 p50=5.29 p95=5.41 p99=5.48 shed=0 failed=0\n  slice 10/15 : n=12000 achieved=200.00 p50=5.29 p95=5.41 p99=5.48 shed=0 failed=0\n  slice 11/15 : n=12000 achieved=200.00 p50=5.29 p95=5.42 p99=5.48 shed=0 failed=0\n  slice 12/15 : n=12000 achieved=200.00 p50=5.29 p95=5.43 p99=5.49 shed=0 failed=0\n  slice 13/15 : n=12000 achieved=200.00 p50=5.29 p95=5.45 p99=5.52 shed=0 failed=0\n  slice 14/15 : n=12000 achieved=200.00 p50=5.29 p95=5.43 p99=5.49 shed=0 failed=0\n  slice 15/15 : n=12000 achieved=200.00 p50=5.29 p95=5.43 p99=5.48 shed=0 failed=0\nJSON {\"label\": \"g5-triton-10m-r500t200-mb500-p2\", \"rows\": 500, \"offered\": 200, \"achieved\": 200.0, \"ok\": 180001, \"failed\": 0, \"shed\": 0, \"p50\": 5.29, \"p95\": 5.42, \"p99\": 5.48, \"mean\": 5.27, \"max\": 13.05, \"client_cpu\": 0.1, \"measured_secs\": 900.0, \"segments\": [{\"slice\": 1, \"seconds\": 60.0, \"n\": 12002, \"achieved\": 200.03, \"p50\": 5.29, \"p95\": 5.42, \"p99\": 5.48, \"shed\": 0, \"failed\": 0}, {\"slice\": 2, \"seconds\": 60.0, \"n\": 12000, \"achieved\": 200.0, \"p50\": 5.29, \"p95\": 5.42, \"p99\": 5.47, \"shed\": 0, \"failed\": 0}, {\"slice\": 3, \"seconds\": 60.0, \"n\": 11999, \"achieved\": 199.98, \"p50\": 5.29, \"p95\": 5.41, \"p99\": 5.48, \"shed\": 0, \"failed\": 0}, {\"slice\": 4, \"seconds\": 60.0, \"n\": 12000, \"achieved\": 200.0, \"p50\": 5.29, \"p95\": 5.41, \"p99\": 5.48, \"shed\": 0, \"failed\": 0}, {\"slice\": 5, \"seconds\": 60.0, \"n\": 12000, \"achieved\": 200.0, \"p50\": 5.29, \"p95\": 5.43, \"p99\": 5.48, \"shed\": 0, \"failed\": 0}, {\"slice\": 6, \"seconds\": 60.0, \"n\": 12000, \"achieved\": 200.0, \"p50\": 5.29, \"p95\": 5.42, \"p99\": 5.47, \"shed\": 0, \"failed\": 0}, {\"slice\": 7, \"seconds\": 60.0, \"n\": 12000, \"achieved\": 200.0, \"p50\": 5.29, \"p95\": 5.42, \"p99\": 5.47, \"shed\": 0, \"failed\": 0}, {\"slice\": 8, \"seconds\": 60.0, \"n\": 12000, \"achieved\": 200.0, \"p50\": 5.29, \"p95\": 5.42, \"p99\": 5.47, \"shed\": 0, \"failed\": 0}, {\"slice\": 9, \"seconds\": 60.0, \"n\": 12000, \"achieved\": 200.0, \"p50\": 5.29, \"p95\": 5.41, \"p99\": 5.48, \"shed\": 0, \"failed\": 0}, {\"slice\": 10, \"seconds\": 60.0, \"n\": 12000, \"achieved\": 200.0, \"p50\": 5.29, \"p95\": 5.41, \"p99\": 5.48, \"shed\": 0, \"failed\": 0}, {\"slice\": 11, \"seconds\": 60.0, \"n\": 12000, \"achieved\": 200.0, \"p50\": 5.29, \"p95\": 5.42, \"p99\": 5.48, \"shed\": 0, \"failed\": 0}, {\"slice\": 12, \"seconds\": 60.0, \"n\": 12000, \"achieved\": 200.0, \"p50\": 5.29, \"p95\": 5.43, \"p99\": 5.49, \"shed\": 0, \"failed\": 0}, {\"slice\": 13, \"seconds\": 60.0, \"n\": 12000, \"achieved\": 200.0, \"p50\": 5.29, \"p95\": 5.45, \"p99\": 5.52, \"shed\": 0, \"failed\": 0}, {\"slice\": 14, \"seconds\": 60.0, \"n\": 12000, \"achieved\": 200.0, \"p50\": 5.29, \"p95\": 5.43, \"p99\": 5.49, \"shed\": 0, \"failed\": 0}, {\"slice\": 15, \"seconds\": 60.0, \"n\": 12000, \"achieved\": 200.0, \"p50\": 5.29, \"p95\": 5.43, \"p99\": 5.48, \"shed\": 0, \"failed\": 0}]}\n",
+  "result": {
+    "offered": 200,
+    "achieved": 200.0,
+    "p50": 5.29,
+    "p95": 5.42,
+    "p99": 5.48,
+    "shed": 0,
+    "failed": 0,
+    "client_cpu": 0.1
+  },
+  "slices": [
+    {
+      "slice": 1,
+      "of": 15,
+      "n": 12002,
+      "achieved": 200.03,
+      "p50": 5.29,
+      "p95": 5.42,
+      "p99": 5.48,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 2,
+      "of": 15,
+      "n": 12000,
+      "achieved": 200.0,
+      "p50": 5.29,
+      "p95": 5.42,
+      "p99": 5.47,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 3,
+      "of": 15,
+      "n": 11999,
+      "achieved": 199.98,
+      "p50": 5.29,
+      "p95": 5.41,
+      "p99": 5.48,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 4,
+      "of": 15,
+      "n": 12000,
+      "achieved": 200.0,
+      "p50": 5.29,
+      "p95": 5.41,
+      "p99": 5.48,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 5,
+      "of": 15,
+      "n": 12000,
+      "achieved": 200.0,
+      "p50": 5.29,
+      "p95": 5.43,
+      "p99": 5.48,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 6,
+      "of": 15,
+      "n": 12000,
+      "achieved": 200.0,
+      "p50": 5.29,
+      "p95": 5.42,
+      "p99": 5.47,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 7,
+      "of": 15,
+      "n": 12000,
+      "achieved": 200.0,
+      "p50": 5.29,
+      "p95": 5.42,
+      "p99": 5.47,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 8,
+      "of": 15,
+      "n": 12000,
+      "achieved": 200.0,
+      "p50": 5.29,
+      "p95": 5.42,
+      "p99": 5.47,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 9,
+      "of": 15,
+      "n": 12000,
+      "achieved": 200.0,
+      "p50": 5.29,
+      "p95": 5.41,
+      "p99": 5.48,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 10,
+      "of": 15,
+      "n": 12000,
+      "achieved": 200.0,
+      "p50": 5.29,
+      "p95": 5.41,
+      "p99": 5.48,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 11,
+      "of": 15,
+      "n": 12000,
+      "achieved": 200.0,
+      "p50": 5.29,
+      "p95": 5.42,
+      "p99": 5.48,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 12,
+      "of": 15,
+      "n": 12000,
+      "achieved": 200.0,
+      "p50": 5.29,
+      "p95": 5.43,
+      "p99": 5.49,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 13,
+      "of": 15,
+      "n": 12000,
+      "achieved": 200.0,
+      "p50": 5.29,
+      "p95": 5.45,
+      "p99": 5.52,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 14,
+      "of": 15,
+      "n": 12000,
+      "achieved": 200.0,
+      "p50": 5.29,
+      "p95": 5.43,
+      "p99": 5.49,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 15,
+      "of": 15,
+      "n": 12000,
+      "achieved": 200.0,
+      "p50": 5.29,
+      "p95": 5.43,
+      "p99": 5.48,
+      "shed": 0,
+      "failed": 0
+    }
+  ],
+  "verdict": {
+    "state": "sustained",
+    "sustained": true,
+    "slices_held": 15,
+    "slices_total": 15,
+    "broke_in_slice": null,
+    "whole_window_held": true
+  },
+  "sustained": true,
+  "cpu_report": "cpu    4.4 %   mean host utilisation, scheduler run time\ntick   8.0 %   the same window from /proc/stat, tick-based, for comparison\nmem    0.0 %   server process, 0.0 GiB resident\nhost   7.2 %   memory used including page cache\nover   888 sample(s), 0s to 903s of the sweep\n",
+  "client_cpu_report": "cpu    0.3 %   mean host utilisation, scheduler run time\ntick   0.1 %   the same window from /proc/stat, tick-based, for comparison\nmem    0.0 %   server process, 0.0 GiB resident\nhost   1.4 %   memory used including page cache\nover   898 sample(s), 0s to 904s of the sweep\n",
+  "server_cpu_pct": 4.4,
+  "client_cpu_pct": 0.3,
+  "gpu_sampler_report": "875 gpu sample(s) in /tmp/hushar-server/g-g5-triton-10m-r500t200-mb500-p2.log",
+  "gpu_sample_log": "raw/server/g5-1/g-g5-triton-10m-r500t200-mb500-p2.log",
+  "clean_slate_verified": true,
+  "cloudwatch_namespace": null,
+  "cloudwatch_model_id": null,
+  "window": {
+    "client_start": "2026-10-27T04:47:00Z",
+    "start": "2026-10-27T04:49:00Z",
+    "end": "2026-10-27T05:04:05Z",
+    "warmup_seconds": 120,
+    "duration_seconds": 900,
+    "minute_aligned": true,
+    "note": "one continuous 900s load reported as 15 slice(s); host, GPU and CloudWatch all cover 905s from the end of warm-up"
+  },
+  "wall": {
+    "cell_start": "2026-10-27T04:46:21Z",
+    "cell_end": "2026-10-27T05:04:05Z"
+  },
+  "platform": "tensorrt_plan",
+  "backend": "tensorrt",
+  "plan": "/root/triton/plans/10m-5539c97131c8-r500-fp32.plan",
+  "triton_image": "nvcr.io/nvidia/tritonserver:26.05-py3",
+  "dynamic_batching": null,
+  "batching_note": "max_batch_size 0, so one graph call per request at the engine's static [500, 690] profile. Triton has no mini batch: this is the unsplit reference line for this row count, and the shape it runs is the same one hushar's UNSPLIT cell presents.",
+  "triton_server_side": {
+    "request": {
+      "window_mean_ms": 3.229,
+      "window_count": 180480,
+      "window_duration_ms": 582793.236,
+      "cumulative_quantiles_ms": {
+        "0.5": 3.215,
+        "0.9": 3.284,
+        "0.95": 3.298,
+        "0.99": 3.337,
+        "0.999": 3.429
+      }
+    },
+    "queue": {
+      "window_mean_ms": 0.03,
+      "window_count": 180480,
+      "window_duration_ms": 5345.003,
+      "cumulative_quantiles_ms": {
+        "0.5": 0.03,
+        "0.9": 0.036,
+        "0.95": 0.038,
+        "0.99": 0.045,
+        "0.999": 0.061
+      }
+    },
+    "compute_input": {
+      "window_mean_ms": 0.188,
+      "window_count": 180480,
+      "window_duration_ms": 34013.192,
+      "cumulative_quantiles_ms": {
+        "0.5": 0.185,
+        "0.9": 0.194,
+        "0.95": 0.209,
+        "0.99": 0.24,
+        "0.999": 0.26
+      }
+    },
+    "compute_infer": {
+      "window_mean_ms": 2.871,
+      "window_count": 180480,
+      "window_duration_ms": 518185.638,
+      "cumulative_quantiles_ms": {
+        "0.5": 2.87,
+        "0.9": 2.874,
+        "0.95": 2.875,
+        "0.99": 2.878,
+        "0.999": 2.881
+      }
+    },
+    "compute_output": {
+      "window_mean_ms": 0.079,
+      "window_count": 180480,
+      "window_duration_ms": 14323.869,
+      "cumulative_quantiles_ms": {
+        "0.5": 0.073,
+        "0.9": 0.102,
+        "0.95": 0.111,
+        "0.99": 0.122,
+        "0.999": 0.144
+      }
+    }
+  },
+  "host": "g5-1",
+  "server_ip": "172.31.36.110",
+  "instance": "g5.2xlarge",
+  "arch": "x86_64",
+  "cores": 8,
+  "conn": 512,
+  "sample_rate": "0.0",
+  "wire_note": "one 690-wide vector, identity transformation",
+  "model_file": "bench_model.onnx",
+  "model_md5": "5539c97131c896db6c58088d9f9b9ee3",
+  "model_size": "10m",
+  "onnxruntime": "1.28.3",
+  "rev": "7af1bf77",
+  "run": "minibatch-gpu-g5-10M-20M"
+}

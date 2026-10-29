@@ -1,0 +1,90 @@
+
+=============================
+== Triton Inference Server ==
+=============================
+
+NVIDIA Release 26.08 (build 64703337)
+Triton Server Version 2.72.0
+
+Copyright (c) 2018-2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+WARNING: The NVIDIA Driver was not detected.  GPU functionality will not be available.
+   Use the NVIDIA Container Toolkit to start this container with GPU support; see
+   https://docs.nvidia.com/datacenter/cloud-native/ .
+
+W1024 21:04:32.594859 1 pinned_memory_manager.cc:273] "Unable to allocate pinned system memory, pinned memory pool will not be available: CUDA driver version is insufficient for CUDA runtime version"
+I1024 21:04:32.594885 1 cuda_memory_manager.cc:117] "CUDA memory pool disabled"
+E1024 21:04:32.594929 1 server.cc:248] "CudaDriverHelper has not been initialized."
+I1024 21:04:32.595680 1 model_lifecycle.cc:478] "loading: bench_vectorized:1"
+I1024 21:04:32.598832 1 onnxruntime.cc:2917] "TRITONBACKEND_Initialize: onnxruntime"
+I1024 21:04:32.598843 1 onnxruntime.cc:2927] "Triton TRITONBACKEND API version: 1.19"
+I1024 21:04:32.598846 1 onnxruntime.cc:2933] "'onnxruntime' TRITONBACKEND API version: 1.19"
+I1024 21:04:32.598849 1 onnxruntime.cc:2963] "backend configuration:\n{\"cmdline\":{\"auto-complete-config\":\"false\",\"backend-directory\":\"/opt/tritonserver/backends\",\"min-compute-capability\":\"6.000000\",\"default-max-batch-size\":\"4\"}}"
+I1024 21:04:32.609145 1 onnxruntime.cc:3028] "TRITONBACKEND_ModelInitialize: bench_vectorized (version 1)"
+I1024 21:04:32.609447 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_0 (CPU device 0)"
+I1024 21:04:32.609455 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_1 (CPU device 0)"
+I1024 21:04:32.609497 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_2 (CPU device 0)"
+I1024 21:04:32.609520 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_3 (CPU device 0)"
+I1024 21:04:32.609534 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_4 (CPU device 0)"
+I1024 21:04:32.609566 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_5 (CPU device 0)"
+I1024 21:04:32.609601 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_6 (CPU device 0)"
+I1024 21:04:32.609677 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_7 (CPU device 0)"
+I1024 21:04:32.609690 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_8 (CPU device 0)"
+I1024 21:04:32.609715 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_9 (CPU device 0)"
+I1024 21:04:32.609749 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_10 (CPU device 0)"
+I1024 21:04:32.609773 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_11 (CPU device 0)"
+I1024 21:04:32.609807 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_12 (CPU device 0)"
+I1024 21:04:32.609841 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_13 (CPU device 0)"
+I1024 21:04:32.609851 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_14 (CPU device 0)"
+I1024 21:04:32.609879 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_15 (CPU device 0)"
+I1024 21:04:33.487150 1 model_lifecycle.cc:854] "successfully loaded 'bench_vectorized'"
+I1024 21:04:33.487193 1 server.cc:640] 
++------------------+------+
+| Repository Agent | Path |
++------------------+------+
++------------------+------+
+
+I1024 21:04:33.487217 1 server.cc:667] 
++-------------+-----------------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Backend     | Path                                                            | Config                                                                                                                                                         |
++-------------+-----------------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| onnxruntime | /opt/tritonserver/backends/onnxruntime/libtriton_onnxruntime.so | {"cmdline":{"auto-complete-config":"false","backend-directory":"/opt/tritonserver/backends","min-compute-capability":"6.000000","default-max-batch-size":"4"}} |
++-------------+-----------------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+I1024 21:04:33.487236 1 server.cc:710] 
++------------------+---------+--------+
+| Model            | Version | Status |
++------------------+---------+--------+
+| bench_vectorized | 1       | READY  |
++------------------+---------+--------+
+
+I1024 21:04:33.487384 1 metrics.cc:782] "Collecting CPU metrics"
+I1024 21:04:33.487434 1 tritonserver.cc:2665] 
++----------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Option                           | Value                                                                                                                                                                                                           |
++----------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| server_id                        | triton                                                                                                                                                                                                          |
+| server_version                   | 2.72.0                                                                                                                                                                                                          |
+| server_extensions                | classification sequence model_repository model_repository(unload_dependents) schedule_policy model_configuration system_shared_memory cuda_shared_memory binary_tensor_data parameters statistics trace logging |
+| model_repository_path[0]         | /models                                                                                                                                                                                                         |
+| model_control_mode               | MODE_NONE                                                                                                                                                                                                       |
+| strict_model_config              | 1                                                                                                                                                                                                               |
+| model_config_name                |                                                                                                                                                                                                                 |
+| rate_limit                       | OFF                                                                                                                                                                                                             |
+| pinned_memory_pool_byte_size     | 268435456                                                                                                                                                                                                       |
+| min_supported_compute_capability | 6.0                                                                                                                                                                                                             |
+| strict_readiness                 | 1                                                                                                                                                                                                               |
+| exit_timeout                     | 30                                                                                                                                                                                                              |
+| cache_enabled                    | 0                                                                                                                                                                                                               |
++----------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+I1024 21:04:33.488828 1 grpc_server.cc:2584] "Started GRPCInferenceService at 0.0.0.0:8001"
+I1024 21:04:33.488955 1 http_server.cc:4961] "Started HTTPService at 0.0.0.0:8000"
+I1024 21:04:33.529733 1 http_server.cc:400] "Started Metrics Service at 0.0.0.0:8002"

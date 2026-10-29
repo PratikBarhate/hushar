@@ -95,14 +95,31 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     --format=csv,noheader 2>/dev/null | sed 's/^/  /'
 fi
 
+NEURON_LS="$(command -v neuron-ls 2>/dev/null || true)"
+if [ -z "$NEURON_LS" ] && [ -x /opt/aws/neuron/bin/neuron-ls ]; then
+  NEURON_LS=/opt/aws/neuron/bin/neuron-ls
+fi
+if [ -n "$NEURON_LS" ]; then
+  echo
+  echo "=== aws neuron ============================================="
+  "$NEURON_LS" 2>/dev/null || true
+fi
+
 echo
 echo "=== software ==============================================="
 field "provider" "$PROVIDER"
 field "ORT_DYLIB_PATH" "${ORT_DYLIB_PATH:-}"
+field "NRT_DYLIB_PATH" "${NRT_DYLIB_PATH:-}"
 # The release archives carry their version in the directory name, which is the only
 # version string available without loading the library.
 if [ -n "${ORT_DYLIB_PATH:-}" ]; then
   field "ort version" "$(echo "$ORT_DYLIB_PATH" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | tail -1)"
+fi
+if command -v neuronx-cc >/dev/null 2>&1; then
+  field "neuronx-cc" "$(neuronx-cc --version 2>&1 | head -1)"
+fi
+if command -v dpkg-query >/dev/null 2>&1; then
+  field "neuron runtime" "$(dpkg-query -W -f='${Version}' aws-neuronx-runtime-lib 2>/dev/null)"
 fi
 field "rustc" "$(rustc --version 2>/dev/null)"
 if [ -r "$ROOT/BUNDLE_INFO" ]; then

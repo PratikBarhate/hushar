@@ -4,9 +4,12 @@
 #
 # Runs hushar on the SERVER host, for the client on the other host to drive.
 #
-#   scripts/benchmark/run_server.sh start          # raw model, provider from env.sh
-#   MODEL=raw-dcn scripts/benchmark/run_server.sh start
+#   scripts/benchmark/run_server.sh start          # transformer, provider from env.sh
+#   MODEL=dcn scripts/benchmark/run_server.sh start
 #   PROVIDER=trt:0 THREADS=4 scripts/benchmark/run_server.sh start
+#   PROVIDER=neuron NEFF_PATH=benchmark-data/generated/model.neff \
+#     MINI_BATCH_SIZE=50 MINI_BATCH_FIXED=1 SESSIONS=2 \
+#     scripts/benchmark/run_server.sh start
 #   scripts/benchmark/run_server.sh status
 #   scripts/benchmark/run_server.sh stop
 #
@@ -16,22 +19,36 @@
 # the comparison between rates exact.
 #
 # Environment:
-#   MODEL        raw (default), raw-dcn, vectorized, named, arch-ab, raw-ab,
-#                raw-dcn-ab, raw-batch1, raw-dcn-batch1, vectorized-batch1,
-#                named-batch1.
-#                raw and raw-dcn are the two architectures, both fed every feature
-#                exactly as the caller sent it, with the graph doing its own scaling
-#                and lookups: raw is a transformer encoder, raw-dcn is DCNv2 + MaskNet.
-#                vectorized and named have the SERVICE transform features instead, and
-#                are on the transformer, so that comparison holds the architecture still.
+#   MODEL        transformer (default), dcn, arch-ab, transformer-ab, dcn-ab,
+#                transformer-batch1, dcn-batch1.
+#                transformer and dcn are the two architectures, both fed one
+#                concatenated feature vector the SERVICE builds from the request's named
+#                features: transformer is an encoder stack, dcn is DCNv2 + MaskNet. Same
+#                parameter count and same input, so a run comparing them compares trunks.
 #                arch-ab loads both architectures and splits traffic between them, which
-#                measures the pair in one session on one host. raw-ab and raw-dcn-ab are
-#                the roll-out shape: one model loaded twice under two names, which is
+#                measures the pair in one session on one host. transformer-ab and dcn-ab
+#                are the roll-out shape: one model loaded twice under two names, which is
 #                what two arms of the same architecture cost
+#   MODEL_CONFIG unset  use this model configuration instead of MODEL's generated name.
+#                Useful for a compiled NEFF whose fixed batch has its own configuration
 #   AB_PERCENT   50   share of traffic the candidate takes, with any of the -ab models.
 #                Half each puts the same load on both, which is what makes their
 #                latencies comparable; a real roll-out starts far lower
-#   PROVIDER     cpu (default, or whatever env.sh set), trt:0, xnnpack:4
+#   PROVIDER     cpu (default, or whatever env.sh set), trt:0, xnnpack:4, neuron
+#   NEFF_PATH    required when PROVIDER=neuron. Compiled NEFF matching the configured
+#                mini-batch size; the ONNX model path is replaced with this path
+#   NEURON_START_CORE  0   first NeuronCore used by the first replica
+#   NEURON_CORES_PER_REPLICA  1   consecutive NeuronCores used by each logical
+#                replica. Each core loads one complete NEFF copy and contexts spread
+#                across those copies; this is data parallelism, not model sharding
+#   NEURON_REPLICAS_PER_CORE  1   replicas loaded onto the same core range before the
+#                next range is used. Above 1, a core serves that many requests at once
+#                (it still executes one at a time) at one more copy of the weights each
+#   NEURON_EXECUTION_CONTEXTS  1   reusable tensor sets per replica. Raise this when
+#                one request is split into several fixed mini batches that should execute
+#                concurrently on the same loaded model
+#   NEURON_CANDIDATE_START_CORE  unset  first core for a candidate Neuron model. Unset
+#                places it immediately after the control model's replicas
 #   INTER_THREADS  unset  threading.inter_op_threads -- the ALTERNATIVE to THREADS, not a
 #                companion. Threads running operators that do not depend on each other,
 #                which needs a branching graph to be worth anything. Set THREADS=1
@@ -39,24 +56,14 @@
 #                here because 0 means one thread per core.
 #   THREADS      threading.intra_op_threads, default 1 -- threads ONNX Runtime may use
 #                inside one operator. Say which you used in the report
-#   INFERENCE_CONCURRENCY  unset (one per core)  concurrent inferences. Lower it when
-#                raising THREADS: the load is INFERENCE_CONCURRENCY x THREADS, so leaving
-#                both high oversubscribes the cores
 #   WORKER_THREADS    unset (one per core)  tokio async workers. These never run
 #                inference, so 2 or 3 is plenty and the rest of the cores go to the engine
-#   COMPUTE_CORES  unset  logical CPUs the inference threads may use, as "0-95" or
-#                "2,4,6,8". On a multi-NUMA instance pin to ONE node -- see
-#                documentation/threads-and-cores.md. Linux only
-#   WORKER_CORES   unset  logical CPUs the async pool may use. Keep it disjoint from
-#                COMPUTE_CORES, which is the whole point of setting either
 #   PORT         8279
 #   BIND         0.0.0.0   the client is on another host, so this must not be loopback
-#   SESSIONS     1     independent ONNX Runtime sessions per model. The intra-op pool
-#                belongs to the session, so 1 means every concurrent request to a model
-#                queues for one pool and latency climbs with load on an idle machine.
-#                n gives n pools, each pinned to its own slice of the cores. Costs one
-#                copy of the weights per session, and wants ALLOW_SPINNING=0 -- most
-#                pools are idle at any instant and a spinning idle pool costs a busy one
+#   SESSIONS     1     backend replicas per model and the number of requests that run at
+#                once. For ONNX Runtime each replica is an independent session with its
+#                own thread pool. For Neuron each is a separate model load on consecutive
+#                NeuronCores. The blocking pool has this same width.
 #   ALLOW_SPINNING  unset  whether idle ONNX Runtime intra-op threads spin waiting for
 #                work. Unset leaves the runtime's own default, which is to spin. Set it
 #                to 0 whenever the execution provider brings a thread-pool of its own --
@@ -64,6 +71,13 @@
 #                cores means the idle one burns the time the busy one needs. The pairing
 #                that goes with it is THREADS=1, so ORT keeps no pool of its own:
 #                  ALLOW_SPINNING=0 THREADS=1 PROVIDER=xnnpack:21
+#   ORT_SESSION_CONFIG  unset  further ONNX Runtime session settings, as comma-separated
+#                key=value pairs written to threading.session_config verbatim:
+#                  ORT_SESSION_CONFIG=session.intra_op.spin_duration_us=500
+#                  ORT_SESSION_CONFIG=session.force_spinning_stop=1,session.dynamic_block_base=4
+#                Keys are the ones onnxruntime_session_options_config_keys.h documents. The
+#                banner's "config :" line repeats exactly what was sent, because the
+#                runtime accepts a misspelt key without complaint
 #   SAMPLE_RATE  0.2   fraction of requests whose features are logged. A fifth
 #                exercises the log path without the feature copies dominating what is
 #                being measured. 1.0 logs everything; 0.0 turns the log off
@@ -91,17 +105,15 @@
 #   METRICS_BATCH  500  batches per metrics publish
 #   CONN_LIMIT   unset (the server's own 500)  in-flight requests admitted per
 #                connection, as threading.connection_concurrency. Admission, not work:
-#                INFERENCE_CONCURRENCY is what bounds the cores. Set it only to measure
-#                admission itself
+#                SESSIONS is what bounds the cores. Set it only to measure admission itself
 #   MINI_BATCH_SIZE  unset  rows per mini batch, as the model config's
 #                mini_batch_size. Set it and a request's rows are cut into batches of
 #                this many and scored AT THE SAME TIME, one scoped thread each. That is
 #                what lowers latency: threads inside one operator stop helping well
 #                before the core count, because the operators are a chain of barriers,
 #                while separate mini batches share no barrier at all. Pair it with
-#                THREADS=1 and SESSIONS=1 -- the parallelism now comes from the split, a
-#                pool inside each batch competes with it, and the scoped threads inherit
-#                the caller's core slice so one session gives them the whole compute set
+#                THREADS=1 -- the parallelism now comes from the split, and a pool inside
+#                each batch competes with it
 #   MINI_BATCH_FIXED  unset  pad the last mini batch up to MINI_BATCH_SIZE, as
 #                is_fixed. Needed only by a graph whose leading dimension is pinned;
 #                leave it unset and the last batch is however many rows remain
@@ -117,8 +129,15 @@ cd "$ROOT"
 # shellcheck disable=SC1091
 [ -r "$ROOT/env.sh" ] && . "$ROOT/env.sh"
 
-MODEL="${MODEL:-raw}"
+MODEL="${MODEL:-transformer}"
+MODEL_CONFIG="${MODEL_CONFIG:-}"
 PROVIDER="${PROVIDER:-cpu}"
+NEFF_PATH="${NEFF_PATH:-}"
+NEURON_START_CORE="${NEURON_START_CORE:-0}"
+NEURON_CORES_PER_REPLICA="${NEURON_CORES_PER_REPLICA:-1}"
+NEURON_REPLICAS_PER_CORE="${NEURON_REPLICAS_PER_CORE:-1}"
+NEURON_EXECUTION_CONTEXTS="${NEURON_EXECUTION_CONTEXTS:-1}"
+NEURON_CANDIDATE_START_CORE="${NEURON_CANDIDATE_START_CORE:-}"
 THREADS="${THREADS:-1}"
 INTER_THREADS="${INTER_THREADS:-}"
 PORT="${PORT:-8279}"
@@ -126,6 +145,7 @@ BIND="${BIND:-0.0.0.0}"
 SAMPLE_RATE="${SAMPLE_RATE:-0.2}"
 CONN_LIMIT="${CONN_LIMIT:-}"
 ALLOW_SPINNING="${ALLOW_SPINNING:-}"
+ORT_SESSION_CONFIG="${ORT_SESSION_CONFIG:-}"
 SESSIONS="${SESSIONS:-1}"
 CW_NAMESPACE="${CW_NAMESPACE:-}"
 METRICS_BATCH="${METRICS_BATCH:-500}"
@@ -133,9 +153,6 @@ LOG_BATCH="${LOG_BATCH:-5000}"
 LOG_SENDS="${LOG_SENDS:-4}"
 AB_PERCENT="${AB_PERCENT:-50}"
 WORKER_THREADS="${WORKER_THREADS:-}"
-INFERENCE_CONCURRENCY="${INFERENCE_CONCURRENCY:-}"
-COMPUTE_CORES="${COMPUTE_CORES:-}"
-WORKER_CORES="${WORKER_CORES:-}"
 RUN_DIR="${RUN_DIR:-/tmp/hushar-server}"
 # Overridable so several model sizes can live side by side, each generated into its
 # own directory -- see generate_benchmark_models.py --out-dir.
@@ -177,29 +194,38 @@ stop() {
 start() {
   [ -x ./target/release/hushar ] \
     || { echo "no ./target/release/hushar -- run bootstrap.sh first" >&2; exit 1; }
-  [ -n "${ORT_DYLIB_PATH:-}" ] \
-    || { echo "ORT_DYLIB_PATH is not set; the engine needs a libonnxruntime" >&2; exit 1; }
+  if [ "$PROVIDER" = neuron ]; then
+    [ -n "$NEFF_PATH" ] \
+      || { echo "NEFF_PATH is required for PROVIDER=neuron" >&2; exit 1; }
+    [ -r "$NEFF_PATH" ] \
+      || { echo "NEFF_PATH is not readable: $NEFF_PATH" >&2; exit 1; }
+    [ -n "${MINI_BATCH_SIZE:-}" ] \
+      || { echo "MINI_BATCH_SIZE is required for a fixed-shape NEFF" >&2; exit 1; }
+  else
+    [ -n "${ORT_DYLIB_PATH:-}" ] \
+      || { echo "ORT_DYLIB_PATH is not set; the engine needs a libonnxruntime" >&2; exit 1; }
+  fi
 
-  case "$MODEL" in
-    raw)               base=$GEN_DIR/bench_raw_model_config.json ;;
-    raw-dcn)           base=$GEN_DIR/bench_raw_dcn_model_config.json ;;
-    vectorized)        base=$GEN_DIR/bench_model_config.json ;;
-    named)             base=$GEN_DIR/bench_named_model_config.json ;;
+  if [ -n "$MODEL_CONFIG" ]; then
+    base="$MODEL_CONFIG"
+  else
+    case "$MODEL" in
+      transformer)         base=$GEN_DIR/bench_model_config.json ;;
+    dcn)                 base=$GEN_DIR/bench_dcn_model_config.json ;;
     # Both architectures resident, half the traffic each: the comparison in one session.
-    arch-ab)           base=$GEN_DIR/bench_raw_model_config.json
-                       candidate=$GEN_DIR/bench_raw_dcn_model_config.json ;;
+    arch-ab)             base=$GEN_DIR/bench_model_config.json
+                         candidate=$GEN_DIR/bench_dcn_model_config.json ;;
     # One model loaded twice under two names -- the roll-out shape, without a second set
     # of weights that would cost the same to serve.
-    raw-ab)            base=$GEN_DIR/bench_raw_model_config.json
-                       candidate=$GEN_DIR/bench_raw_model_candidate_config.json ;;
-    raw-dcn-ab)        base=$GEN_DIR/bench_raw_dcn_model_config.json
-                       candidate=$GEN_DIR/bench_raw_dcn_model_candidate_config.json ;;
-    raw-batch1)        base=$GEN_DIR/bench_raw_model_batch1_config.json ;;
-    raw-dcn-batch1)    base=$GEN_DIR/bench_raw_dcn_model_batch1_config.json ;;
-    vectorized-batch1) base=$GEN_DIR/bench_model_batch1_config.json ;;
-    named-batch1)      base=$GEN_DIR/bench_named_model_batch1_config.json ;;
+    transformer-ab)      base=$GEN_DIR/bench_model_config.json
+                         candidate=$GEN_DIR/bench_model_candidate_config.json ;;
+    dcn-ab)              base=$GEN_DIR/bench_dcn_model_config.json
+                         candidate=$GEN_DIR/bench_dcn_model_candidate_config.json ;;
+    transformer-batch1)  base=$GEN_DIR/bench_model_batch1_config.json ;;
+    dcn-batch1)          base=$GEN_DIR/bench_dcn_model_batch1_config.json ;;
     *) echo "unknown MODEL $MODEL" >&2; exit 2 ;;
-  esac
+    esac
+  fi
   [ -f "$base" ] || {
     echo "missing $base" >&2
     echo "  package with --with-models, or run scripts/generate_benchmark_models.py here" >&2
@@ -212,7 +238,7 @@ start() {
     exit 1
   fi
 
-  # Only a local URI is a directory to create; an s3:// or kinesis:// one is not.
+  # Only a local URI is a directory to create; an s3:// one is not.
   mkdir -p "$RUN_DIR"
   case "$LOG_URI" in *://) ;; *://*) ;; *) mkdir -p "$LOG_URI" ;; esac
   model_config="$RUN_DIR/$TAG.model.json"
@@ -224,32 +250,43 @@ start() {
   #
   # threading.connection_concurrency is omitted unless CONN_LIMIT is set, so every host
   # takes the same default of 500. Admission is not the thing a hardware comparison is
-  # measuring -- INFERENCE_CONCURRENCY is -- and the banner records both, so the run is
-  # reproducible from the report either way.
+  # measuring -- SESSIONS is -- and the banner records both, so the run is reproducible
+  # from the report either way.
   python3 -c '
 import json, sys
 (base, model_out, service_out, provider, threads, port, bind, logs, rate, limit,
- candidate, candidate_out, percent, workers, inference,
- compute_cores, worker_cores, spinning, namespace, metrics_batch, sessions,
- log_batch, log_sends, inter_threads) = sys.argv[1:25]
+ candidate, candidate_out, percent, workers,
+ spinning, namespace, metrics_batch, sessions,
+ log_batch, log_sends, inter_threads, session_config,
+ neff_path, neuron_start_core, neuron_cores_per_replica,
+ neuron_execution_contexts, neuron_candidate_start_core,
+ neuron_replicas_per_core) = sys.argv[1:29]
 
 
 # Substitutes the per-host provider into one model configuration. The thread counts
 # are a service setting now, since they describe the host rather than the model.
-def rewrite(path, out, model_id=""):
+def rewrite(path, out, model_id="", start_core=neuron_start_core):
     config = json.load(open(path))
-    config["execution_provider"] = provider
-    # model_id is the ModelId dimension on every metric, so overriding it is how two
-    # hosts publishing to one namespace stay separate time series.
+    if provider == "neuron":
+        config.pop("execution_provider", None)
+        config["model_path"] = neff_path
+        config["backend"] = {
+            "type": "neuron",
+            "start_neuron_core": int(start_core),
+            "neuron_cores_per_replica": int(neuron_cores_per_replica),
+            "replicas_per_neuron_core": int(neuron_replicas_per_core),
+            "execution_contexts_per_replica": int(neuron_execution_contexts),
+        }
+    else:
+        config.pop("backend", None)
+        config["execution_provider"] = provider
     if model_id:
         config["model_id"] = model_id
-    # Mini batching is a model-config choice, so it is substituted here alongside the
-    # provider rather than passed as a flag. Absent means one batch per request.
     import os
     size = os.environ.get("MINI_BATCH_SIZE", "")
     if size:
         config["mini_batch_size"] = int(size)
-        if os.environ.get("MINI_BATCH_FIXED", "") not in ("", "0", "false", "no"):
+        if provider == "neuron" or os.environ.get("MINI_BATCH_FIXED", "") not in ("", "0", "false", "no"):
             config["is_fixed"] = True
     json.dump(config, open(out, "w"), indent=2)
 
@@ -272,16 +309,19 @@ if namespace:
     service["metrics"]["cloudwatch_namespace"] = namespace
 if workers:
     service["threading"]["worker_threads"] = int(workers)
-if inference:
-    service["threading"]["inference_concurrency"] = int(inference)
-if compute_cores:
-    service["threading"]["compute_cores"] = compute_cores
-if worker_cores:
-    service["threading"]["worker_cores"] = worker_cores
 # Tri-state: unset leaves the runtime default rather than choosing one here, so a run
 # that says nothing about spinning is not silently different from the runtime default.
 if spinning:
     service["threading"]["allow_spinning"] = spinning not in ("0", "false", "no")
+# Verbatim key=value pairs; the service validates them and the banner prints them back.
+if session_config:
+    entries = {}
+    for pair in session_config.split(","):
+        key, sep, value = pair.strip().partition("=")
+        if not sep:
+            sys.exit(f"ORT_SESSION_CONFIG entry {pair!r} is not key=value")
+        entries[key.strip()] = value.strip()
+    service["threading"]["session_config"] = entries
 if limit:
     service["threading"]["connection_concurrency"] = int(limit)
 # The two pools are alternatives and the service refuses both above 1, so this is written
@@ -292,18 +332,32 @@ if inter_threads and int(inter_threads) > 1:
 if candidate:
     # Both arms get the same provider and thread count, or the comparison would be
     # measuring the host settings rather than the models.
-    rewrite(candidate, candidate_out, f"{_mid}-candidate" if _mid else "")
+    candidate_start = neuron_candidate_start_core or str(
+        int(neuron_start_core)
+        + -(-int(sessions) // int(neuron_replicas_per_core)) * int(neuron_cores_per_replica)
+    )
+    rewrite(
+        candidate,
+        candidate_out,
+        f"{_mid}-candidate" if _mid else "",
+        candidate_start,
+    )
     service["candidate_model"] = {"config_path": candidate_out,
                                   "traffic_percent": int(percent)}
 json.dump(service, open(service_out, "w"), indent=2)
 ' "$base" "$model_config" "$service_config" "$PROVIDER" "$THREADS" "$PORT" "$BIND" \
   "$LOG_URI" "$SAMPLE_RATE" "$CONN_LIMIT" \
   "${candidate:-}" "$RUN_DIR/$TAG.candidate.json" "$AB_PERCENT" \
-  "$WORKER_THREADS" "$INFERENCE_CONCURRENCY" "$COMPUTE_CORES" "$WORKER_CORES" \
+  "$WORKER_THREADS" \
   "$ALLOW_SPINNING" "$CW_NAMESPACE" "$METRICS_BATCH" "$SESSIONS" \
-  "$LOG_BATCH" "$LOG_SENDS" "$INTER_THREADS"
+  "$LOG_BATCH" "$LOG_SENDS" "$INTER_THREADS" "$ORT_SESSION_CONFIG" \
+  "$NEFF_PATH" "$NEURON_START_CORE" "$NEURON_CORES_PER_REPLICA" \
+  "$NEURON_EXECUTION_CONTEXTS" "$NEURON_CANDIDATE_START_CORE" \
+  "$NEURON_REPLICAS_PER_CORE"
 
-  if [ -n "$INTER_THREADS" ] && [ "$INTER_THREADS" -gt 1 ] 2>/dev/null; then
+  if [ "$PROVIDER" = neuron ]; then
+    pool="${SESSIONS} replica(s), ${NEURON_CORES_PER_REPLICA} NeuronCore(s) and ${NEURON_EXECUTION_CONTEXTS} context(s) each, ${NEURON_REPLICAS_PER_CORE} per core"
+  elif [ -n "$INTER_THREADS" ] && [ "$INTER_THREADS" -gt 1 ] 2>/dev/null; then
     pool="${INTER_THREADS} inter-op thread(s)"
   else
     pool="${THREADS} intra-op thread(s)"
@@ -330,7 +384,7 @@ json.dump(service, open(service_out, "w"), indent=2)
 
   # The banner is the contract: it names the provider actually registered, which is not
   # necessarily the one asked for if the host's library lacks it.
-  grep -E "loaded on|inputs |outputs |features |A/B|threads ->|batch  :|admit  :|pool   :|spin   :|cores  :|note   :|metrics ->|inference logs ->|listening" "$LOG" | sed 's/^/  /'
+  grep -E "loaded on|Neuron ->|inputs |outputs |features |A/B|threads ->|batch  :|ctx    :|share  :|admit  :|pool   :|spin   :|config :|cores  :|note   :|metrics ->|inference logs ->|listening" "$LOG" | sed 's/^/  /'
   echo
   # hostname -I is Linux-only and returns nothing elsewhere, so fall back to instance
   # metadata and then to a placeholder rather than printing "http://:8279". The `|| true`

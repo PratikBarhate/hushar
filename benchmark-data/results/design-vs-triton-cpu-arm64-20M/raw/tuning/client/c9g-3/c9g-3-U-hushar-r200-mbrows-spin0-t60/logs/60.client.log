@@ -1,0 +1,26 @@
+hushar benchmark [cell @ 60 req/s]
+  server    : http://172.31.34.156:8279
+  model     : bench-vectorized on cpu
+  features  : 210 per row
+  asking    : whichever the server's split chooses
+  offering  : 60 req/s x 200 row(s), 240 in flight (4s of latency), 120s warmup + 300s measured, reported in 3 slices
+  payload   : 211288 bytes per request, 1056.4 bytes per row, 210 feature(s)
+  warmup done, measuring
+
+  bench-vectorized on cpu
+  ---------------------------------------------
+  achieved      :      59.9 req/s   (11980.0 rows/s)
+  offered       :        60 req/s
+  measured      :     17970 requests  (of 25169 that succeeded overall)
+  latency  p50  :   3164.83 ms
+           p95  :   4018.49 ms
+           p99  :   4048.10 ms
+           max  :   4079.69 ms
+           mean :   2792.16 ms
+  failed        :         0
+  shed          :        31  (offered but never sent: 240 in flight was the cap)
+
+  reported as 3 slice(s) of 100s, under one continuous 300s load:
+  slice 1/3 : n=6000 achieved=60.00 p50=978.80 p95=2226.75 p99=2260.19 shed=0 failed=0
+  slice 2/3 : n=6001 achieved=60.01 p50=3182.37 p95=3872.81 p99=3952.20 shed=0 failed=0
+  slice 3/3 : n=5969 achieved=59.69 p50=3993.32 p95=4040.84 p99=4059.24 shed=31 failed=0

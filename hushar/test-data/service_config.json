@@ -4,14 +4,15 @@
   "model_config_path": "test-data/model_config_vectorized.json",
   "threading": {
     "worker_threads": 2,
-    "inference_concurrency": 8,
+    "sessions_per_model": 8,
     "intra_op_threads": 1
   },
   "inference_log": {
     "uri": "/tmp/hushar-inference-logs",
     "batch_size": 5000,
     "sample_rate": 1.0,
-    "max_sends_in_flight": 4
+    "max_sends_in_flight": 4,
+    "prefix_shards": 16
   },
   "metrics": {
     "batch_size": 500,

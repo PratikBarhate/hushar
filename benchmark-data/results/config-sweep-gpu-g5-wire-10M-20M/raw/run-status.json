@@ -1,0 +1,56 @@
+{
+  "run": "config-sweep-gpu-g5-wire-10M-20M",
+  "main": {
+    "cells": 8,
+    "sustained": 8,
+    "partial": 0,
+    "failed_load": 0,
+    "with_cloudwatch": 8,
+    "with_gpu_samples": 8
+  },
+  "probes": {
+    "cells": 0,
+    "sustained": 0,
+    "partial": 0,
+    "failed_load": 0,
+    "with_cloudwatch": 0,
+    "with_gpu_samples": 0
+  },
+  "by_arm": {
+    "hushar": {
+      "cells": 4,
+      "sustained": 4,
+      "partial": 0,
+      "failed_load": 0,
+      "with_cloudwatch": 4,
+      "with_gpu_samples": 4
+    },
+    "hushar-tensor": {
+      "cells": 4,
+      "sustained": 4,
+      "partial": 0,
+      "failed_load": 0,
+      "with_cloudwatch": 4,
+      "with_gpu_samples": 4
+    }
+  },
+  "by_size": {
+    "10m": {
+      "cells": 4,
+      "sustained": 4,
+      "partial": 0,
+      "failed_load": 0,
+      "with_cloudwatch": 4,
+      "with_gpu_samples": 4
+    },
+    "20m": {
+      "cells": 4,
+      "sustained": 4,
+      "partial": 0,
+      "failed_load": 0,
+      "with_cloudwatch": 4,
+      "with_gpu_samples": 4
+    }
+  },
+  "preserved_attempt_failures": 0
+}

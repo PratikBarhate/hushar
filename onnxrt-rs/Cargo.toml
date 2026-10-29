@@ -1,14 +1,14 @@
 [package]
 name = "onnxrt-rs"
-# `0.1.0` is this crate's own API version; `+onnxruntime.1.29.0` names the
+# `0.1.0` is this crate's own API version; `+onnxruntime.1.28.0` names the
 # upstream release the checked-in bindings were generated from. SemVer build
 # metadata is ignored for version comparison, so it documents the pairing
 # without constraining resolution -- the same convention zstd-sys
 # (2.0.16+zstd.1.5.7) and libgit2-sys (0.18.8+1.9.7) use. Deliberately not
-# `version = "1.29.0"`: this crate loads whatever runtime is on the host at
+# `version = "1.28.0"`: this crate loads whatever runtime is on the host at
 # run time, so it works against a *range* of versions, and mirroring upstream
 # would leave no way to version a fix to the wrapper itself.
-version = "0.1.0+onnxruntime.1.29.0"
+version = "0.1.0+onnxruntime.1.28.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true

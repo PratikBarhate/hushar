@@ -125,7 +125,7 @@ impl Api {
     }
 
     /// The ONNX Runtime version string reported by the loaded library, for
-    /// example `"1.29.0"`.
+    /// example `"1.28.0"`.
     pub fn version(&self) -> &'static str {
         self.version
     }

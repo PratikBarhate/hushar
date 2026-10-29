@@ -1,0 +1,21 @@
+{
+  "run": "config-sweep-gpu-g5-wire-10M-20M",
+  "size": "20m",
+  "host": "g5-2",
+  "rev": "ffba569-dirty",
+  "pinned": true,
+  "selection": {
+    "hushar": {
+      "parallelism": 4,
+      "parallelism_kind": "sessions",
+      "rule": "pinned by PIN_PARALLELISM=10m:2,20m:4; no probe ran",
+      "probes": []
+    },
+    "hushar-tensor": {
+      "parallelism": 4,
+      "parallelism_kind": "sessions",
+      "rule": "pinned by PIN_PARALLELISM=10m:2,20m:4; no probe ran",
+      "probes": []
+    }
+  }
+}

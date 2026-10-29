@@ -1,0 +1,23 @@
+hushar benchmark [cell @ 8000 req/s]
+  server    : http://172.31.46.43:8279
+  model     : bench-vectorized on cpu
+  features  : 210 per row
+  asking    : whichever the server's split chooses
+  offering  : 8000 req/s x 1 row(s), 32000 in flight (4s of latency), 120s warmup + 300s measured
+  warmup done, measuring
+
+  bench-vectorized on cpu
+  ---------------------------------------------
+  achieved      :    6288.8 req/s   (6288.8 rows/s)
+  offered       :      8000 req/s
+  measured      :   1886642 requests  (of 2675289 that succeeded overall)
+  latency  p50  :   5085.43 ms
+           p95  :   5145.17 ms
+           p99  :   5245.47 ms
+           max  :   5304.42 ms
+           mean :   5088.13 ms
+  failed        :         0
+  shed          :    684719  (offered but never sent: 32000 in flight was the cap)
+
+  NOTE: 20% of the offered rate was shed, so 8000 req/s is above what this
+  configuration sustains. The latencies above are for the requests that ran.

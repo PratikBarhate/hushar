@@ -4,11 +4,11 @@
 #
 # Server-side latency percentiles, for the report's srv p50 and srv p95 columns.
 #
-#   scripts/benchmark/server_latency.sh HusharBench bench-raw
-#   scripts/benchmark/server_latency.sh HusharBench bench-raw bench-raw-candidate
-#   MINUTES=60 scripts/benchmark/server_latency.sh HusharBench bench-raw
+#   scripts/benchmark/server_latency.sh HusharBench bench-vectorized
+#   scripts/benchmark/server_latency.sh HusharBench bench-vectorized bench-vectorized-candidate
+#   MINUTES=60 scripts/benchmark/server_latency.sh HusharBench bench-vectorized
 #   START=2026-09-10T18:00:00Z END=2026-09-10T18:45:00Z \
-#     scripts/benchmark/server_latency.sh HusharBench bench-raw bench-raw-candidate
+#     scripts/benchmark/server_latency.sh HusharBench bench-vectorized bench-vectorized-candidate
 #
 # The server publishes one data point per scored batch, in microseconds, under a ModelId
 # dimension -- so CloudWatch holds the distribution and this asks it for the percentiles.
@@ -20,8 +20,8 @@
 #
 # Environment:
 #   METRIC     InferenceTime   also VectorizationTime, ToTensorTime -- both are the
-#              SERVICE's featurisation, so they are near zero on a raw model whose graph
-#              does its own, and worth reading on a vectorized one
+#              SERVICE's featurisation, which every model now relies on, so both are
+#              worth reading
 #   MINUTES    30              window ending now, when START/END are not given
 #   START/END  ISO 8601, e.g. 2026-09-10T18:00:00Z. Prefer these: they cut the window to
 #              the measured sweep rather than including the warmup and the idle tail

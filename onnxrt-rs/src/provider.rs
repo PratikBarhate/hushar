@@ -163,7 +163,9 @@ pub enum ExecutionProvider {
     /// NVIDIA, through TensorRT.
     ///
     /// TensorRT compiles the graph ahead of first use, so the first inference is
-    /// slow and later ones are usually the fastest available on NVIDIA hardware.
+    /// slow and later ones are usually the fastest available on NVIDIA hardware. An
+    /// engine cache (`trt_engine_cache_enable` with `trt_engine_cache_path`) moves that
+    /// compile to the first run ever rather than the first run of every process.
     ///
     /// Note the coverage tradeoff: TensorRT does not implement every ONNX
     /// operator, and nodes it cannot take fall back to **CPU**, which means
@@ -171,6 +173,9 @@ pub enum ExecutionProvider {
     TensorRt {
         /// CUDA device ordinal.
         device_id: i32,
+        /// Further provider options, as ONNX Runtime spells them (`trt_fp16_enable`,
+        /// `trt_engine_cache_path`, ...), passed through untouched after `device_id`.
+        options: Vec<(String, String)>,
     },
 
     /// AMD, through MIGraphX.
@@ -261,9 +266,12 @@ impl ExecutionProvider {
         }
     }
 
-    /// TensorRT on `device_id`.
+    /// TensorRT on `device_id`, with ONNX Runtime's own defaults for everything else.
     pub fn tensor_rt(device_id: i32) -> Self {
-        Self::TensorRt { device_id }
+        Self::TensorRt {
+            device_id,
+            options: Vec::new(),
+        }
     }
 
     /// MIGraphX on `device_id`.
@@ -297,6 +305,25 @@ impl ExecutionProvider {
             Self::TensorRt { .. } => "TensorrtExecutionProvider",
             Self::MiGraphx { .. } => "MIGraphXExecutionProvider",
             Self::Custom { name, .. } => name,
+        }
+    }
+
+    /// Whether this provider executes on a device with memory of its own.
+    ///
+    /// A host provider runs ONNX Runtime's own kernels on the CPU, so every element type
+    /// the runtime has reaches it. A device provider has only the types its hardware has,
+    /// and a node it cannot take is left on the CPU provider, with a copy at each edge of
+    /// the partition. Strings are the type no device has.
+    ///
+    /// CoreML and OpenVINO are either one, depending on the units they were pointed at.
+    /// [`Self::Custom`] counts as a host provider: its name says nothing about where it
+    /// runs, so the question cannot be answered and the benign answer is the right one.
+    pub fn runs_off_host(&self) -> bool {
+        match self {
+            Self::Cpu | Self::Xnnpack { .. } | Self::Custom { .. } => false,
+            Self::CoreMl { compute_units, .. } => *compute_units != CoreMlComputeUnits::CpuOnly,
+            Self::OpenVino { device_type, .. } => !device_type.eq_ignore_ascii_case("cpu"),
+            Self::TensorRt { .. } | Self::MiGraphx { .. } => true,
         }
     }
 
@@ -425,15 +452,22 @@ impl ExecutionProvider {
             }
             Self::Custom { name, options: kv } => append_by_name(api, options, name, kv),
 
-            Self::TensorRt { device_id } => append_via_factory!(
-                api,
-                options,
-                &[("device_id".to_owned(), device_id.to_string())],
-                CreateTensorRTProviderOptions,
-                UpdateTensorRTProviderOptions,
-                ReleaseTensorRTProviderOptions,
-                SessionOptionsAppendExecutionProvider_TensorRT_V2
-            ),
+            Self::TensorRt {
+                device_id,
+                options: trt_options,
+            } => {
+                let mut kv = vec![("device_id".to_owned(), device_id.to_string())];
+                kv.extend(trt_options.iter().cloned());
+                append_via_factory!(
+                    api,
+                    options,
+                    &kv,
+                    CreateTensorRTProviderOptions,
+                    UpdateTensorRTProviderOptions,
+                    ReleaseTensorRTProviderOptions,
+                    SessionOptionsAppendExecutionProvider_TensorRT_V2
+                )
+            }
             Self::MiGraphx { device_id } => {
                 let append = ort_fn!(api, SessionOptionsAppendExecutionProvider_MIGraphX);
                 let migraphx_options = sys::OrtMIGraphXProviderOptions {
@@ -470,6 +504,7 @@ impl ExecutionProvider {
 /// | `xnnpack` | XNNPACK |
 /// | `openvino`, `openvino:gpu:threads=8` | Intel, on the named device |
 /// | `tensorrt`, `trt:0`, `tensorrt:1` | NVIDIA, on device 0 or 1 |
+/// | `tensorrt:0:cache=/var/cache/trt:fp16=1` | NVIDIA, with an engine cache and FP16 |
 /// | `migraphx`, `migraphx:0` | AMD |
 ///
 /// The two CoreML suffixes — compute units and model format — are independent, so
@@ -480,6 +515,12 @@ impl ExecutionProvider {
 /// The device type defaults to `CPU`. A multi-device form carries a colon of its own,
 /// as in `openvino:auto:gpu,cpu`, and the mode and its device list are rejoined.
 ///
+/// TensorRT takes a bare device id plus `key=value` options in any order. Five keys are
+/// spelt short — `cache=<dir>` (engine cache, enabled at that path), `timing_cache=<dir>`,
+/// `fp16=<0|1>`, `workspace=<bytes>` and `opt_level=<0-5>` — and any `trt_*` key is
+/// passed to ONNX Runtime verbatim, so every TensorRT option is reachable. A value
+/// cannot carry a colon, which rules out the `trt_profile_*_shapes` spellings.
+///
 /// `cuda` and `rocm` are rejected rather than passed through, because they have
 /// dedicated appenders that the generic path would not reach; use `tensorrt` and
 /// `migraphx`. Anything else becomes [`ExecutionProvider::Custom`] with no options,
@@ -488,8 +529,9 @@ impl ExecutionProvider {
 /// # Errors
 ///
 /// [`Error::InvalidProvider`], naming what was expected, for an unparseable device
-/// id, thread or stream count, an unknown CoreML or OpenVINO option, two device
-/// types for OpenVINO, or one of the two rejected providers.
+/// id, thread or stream count, an unknown CoreML, OpenVINO or TensorRT option, two
+/// device types for OpenVINO or two device ids for TensorRT, or one of the two
+/// rejected providers.
 impl FromStr for ExecutionProvider {
     type Err = Error;
 
@@ -634,9 +676,68 @@ impl FromStr for ExecutionProvider {
                 input: s.to_owned(),
                 reason: "the CUDA provider is not offered; use \"tensorrt\" for NVIDIA".to_owned(),
             }),
-            "tensorrt" | "trt" => Ok(Self::TensorRt {
-                device_id: device_id()?,
-            }),
+            "tensorrt" | "trt" => {
+                let bad = |reason: String| Error::InvalidProvider {
+                    input: s.to_owned(),
+                    reason,
+                };
+                let mut device: Option<i32> = None;
+                let mut options: Vec<(String, String)> = Vec::new();
+                for part in tail.into_iter().flat_map(|t| t.split(':')) {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    let Some((key, value)) = part.split_once('=') else {
+                        if device.is_some() {
+                            return Err(bad(format!(
+                                "two device ids given for TensorRT, {} and {part:?}; \
+                                 name one",
+                                device.unwrap_or_default()
+                            )));
+                        }
+                        device = Some(part.parse::<i32>().map_err(|_| {
+                            bad(format!("expected a device id after ':', got {part:?}"))
+                        })?);
+                        continue;
+                    };
+                    let key = key.trim().to_ascii_lowercase();
+                    let value = value.trim();
+                    if value.is_empty() {
+                        return Err(bad(format!("TensorRT option {key:?} has no value")));
+                    }
+                    let push = |options: &mut Vec<(String, String)>, k: &str, v: &str| {
+                        options.push((k.to_owned(), v.to_owned()));
+                    };
+                    match key.as_str() {
+                        "cache" | "engine_cache" => {
+                            push(&mut options, "trt_engine_cache_enable", "1");
+                            push(&mut options, "trt_engine_cache_path", value);
+                        }
+                        "timing_cache" => {
+                            push(&mut options, "trt_timing_cache_enable", "1");
+                            push(&mut options, "trt_timing_cache_path", value);
+                        }
+                        "fp16" => push(&mut options, "trt_fp16_enable", flag(value, &bad)?),
+                        "workspace" => push(&mut options, "trt_max_workspace_size", value),
+                        "opt_level" => {
+                            push(&mut options, "trt_builder_optimization_level", value);
+                        }
+                        k if k.starts_with("trt_") => push(&mut options, k, value),
+                        other => {
+                            return Err(bad(format!(
+                                "unknown TensorRT option {other:?}; expected cache, \
+                                 timing_cache, fp16, workspace, opt_level, or any trt_* \
+                                 key as ONNX Runtime spells it"
+                            )));
+                        }
+                    }
+                }
+                Ok(Self::TensorRt {
+                    device_id: device.unwrap_or(0),
+                    options,
+                })
+            }
             "rocm" => Err(Error::InvalidProvider {
                 input: s.to_owned(),
                 reason: "the ROCm provider is not offered; use \"migraphx\" for AMD".to_owned(),
@@ -681,7 +782,14 @@ impl std::fmt::Display for ExecutionProvider {
                 }
                 f.write_str(")")
             }
-            Self::TensorRt { device_id } | Self::MiGraphx { device_id } => {
+            Self::TensorRt { device_id, options } => {
+                write!(f, "TensorRT(device={device_id}")?;
+                for (key, value) in options {
+                    write!(f, ", {key}={value}")?;
+                }
+                f.write_str(")")
+            }
+            Self::MiGraphx { device_id } => {
                 write!(f, "{}(device={device_id})", self.name())
             }
             _ => f.write_str(self.name()),
@@ -757,6 +865,17 @@ fn normalized_provider_name(name: &str) -> String {
     name.trim()
         .trim_end_matches("ExecutionProvider")
         .to_ascii_lowercase()
+}
+
+/// Normalises a boolean provider option to the `"1"` or `"0"` ONNX Runtime expects.
+fn flag(value: &str, bad: &dyn Fn(String) -> Error) -> Result<&'static str> {
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" | "yes" => Ok("1"),
+        "0" | "false" | "off" | "no" => Ok("0"),
+        other => Err(bad(format!(
+            "expected 0 or 1 for a TensorRT flag, got {other:?}"
+        ))),
+    }
 }
 
 /// Appends a provider through the generic string-keyed entry point.

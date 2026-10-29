@@ -1,0 +1,19 @@
+hushar benchmark [reachability]
+  server    : http://172.31.46.43:8279
+  model     : bench-vectorized on cpu
+  features  : 210 per row
+  asking    : whichever the server's split chooses
+  offering  : 5 req/s x 200 row(s), 4 in flight (pinned), 0s warmup + 2s measured
+
+  bench-vectorized on cpu
+  ---------------------------------------------
+  achieved      :       5.0 req/s   (1000.0 rows/s)
+  offered       :         5 req/s
+  measured      :        10 requests  (of 10 that succeeded overall)
+  latency  p50  :     22.45 ms
+           p95  :     30.47 ms
+           p99  :     30.47 ms
+           max  :     30.47 ms
+           mean :     23.51 ms
+  failed        :         0
+  shed          :         0  (offered but never sent: 4 in flight was the cap)

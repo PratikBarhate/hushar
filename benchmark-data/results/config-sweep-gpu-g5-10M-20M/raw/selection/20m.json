@@ -1,0 +1,15 @@
+{
+  "run": "config-sweep-gpu-g5-10M-20M",
+  "size": "20m",
+  "host": "g5-1",
+  "rev": "ffba569-dirty",
+  "pinned": true,
+  "selection": {
+    "triton": {
+      "parallelism": 4,
+      "parallelism_kind": "instances",
+      "rule": "pinned by PIN_PARALLELISM=20m:4; no probe ran",
+      "probes": []
+    }
+  }
+}

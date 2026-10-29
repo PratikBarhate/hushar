@@ -1,0 +1,21 @@
+triton benchmark [c9g-2-L-r200t80]
+  server    : 172.31.33.146:8001
+  model     : bench_vectorized (Triton C++ onnxruntime backend)
+  features  : 1 inputs per row, outputs ['scores']
+  offering  : 80 req/s x 200 row(s), 320 in flight, 120s warmup + 900s measured
+  payloads  : 32 x 539 KiB, built in 1.2s
+  validated : {'scores': ([200, 5], 'FP32')}
+  warmup done, measuring
+
+  measured  : 900.0s
+  offered   : 80 req/s
+  achieved  : 74.0 req/s (92.5% of offered)
+  responses : ok 66612, failed 0, shed 5536, dispatched 66464
+  latency   : p50 4306.66  p95 4365.59  p99 4567.72  max 4932.46  mean 4315.17 ms
+  client cpu: 0.1% of 32 vCPU
+
+  reported as 3 slice(s) of 300s, under one continuous 900s load:
+  slice 1/3 : n=22490 achieved=74.97 p50=4305.66 p95=4358.69 p99=4471.87 shed=1828 failed=0
+  slice 2/3 : n=22189 achieved=73.96 p50=4304.81 p95=4330.26 p99=4504.30 shed=1811 failed=0
+  slice 3/3 : n=21933 achieved=73.11 p50=4309.70 p95=4428.33 p99=4701.53 shed=1897 failed=0
+JSON {"label": "c9g-2-L-r200t80", "rows": 200, "offered": 80, "achieved": 74.0, "ok": 66612, "failed": 0, "shed": 5536, "p50": 4306.66, "p95": 4365.59, "p99": 4567.72, "mean": 4315.17, "max": 4932.46, "client_cpu": 0.1, "measured_secs": 900.0, "segments": [{"slice": 1, "seconds": 300.0, "n": 22490, "achieved": 74.97, "p50": 4305.66, "p95": 4358.69, "p99": 4471.87, "shed": 1828, "failed": 0}, {"slice": 2, "seconds": 300.0, "n": 22189, "achieved": 73.96, "p50": 4304.81, "p95": 4330.26, "p99": 4504.3, "shed": 1811, "failed": 0}, {"slice": 3, "seconds": 300.0, "n": 21933, "achieved": 73.11, "p50": 4309.7, "p95": 4428.33, "p99": 4701.53, "shed": 1897, "failed": 0}]}

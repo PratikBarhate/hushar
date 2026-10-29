@@ -1,0 +1,31 @@
+launched 2026-10-24T20:40:21Z for c9g-2
+2026-10-24T20:40:22Z preflight c9g-2: {'type': 'c9g.16xlarge', 'ami': 'ami-025d1d5c1b9b090aa', 'kernel': '6.18.54-121.166.amzn2023.aarch64', 'nproc': '64', 'providers': '0', 'ortso': '1.28.0', 'md5': '30f9c5330b808a34b55fe88048a20da6', 'tensorcfg': 'yes', 'tensorspec': 'yes', 'onnx': 'yes', 'docker': 'yes'}
+2026-10-24T20:40:22Z preflight c9g-2: both clients report slices
+2026-10-24T20:40:22Z preflight c9g-2: OK, c9g.16xlarge, 64 CPUs, CPU-only runtime, ami ami-025d1d5c1b9b090aa, kernel 6.18.54-121.166.amzn2023.aarch64, model md5 30f9c5330b808a34b55fe88048a20da6, docker present
+2026-10-24T20:40:22Z host=c9g-2 rev=ffba569-dirty run=design-vs-triton-cpu-arm64-20M-tune phase=tune bucket set
+2026-10-24T20:40:22Z model bench_model.onnx size=20m md5=30f9c5330b808a34b55fe88048a20da6
+2026-10-24T20:40:22Z   arm U: triton/tensor, 10 cell(s)
+2026-10-24T20:40:22Z 10 cell(s) at most: U-triton-r100-i4x16-t80, U-triton-r100-i8x8-t80, U-triton-r100-i2x32-t80, U-triton-r100-i16x4-t80, U-triton-r100-dyn0-t80, U-triton-r100-i4x16-t120, U-triton-r100-i8x8-t120, U-triton-r100-i2x32-t120, U-triton-r100-i16x4-t120, U-triton-r100-dyn0-t120
+2026-10-24T20:40:22Z warmup=120s measured=300s in 3 slice(s) settle=45s -> 10.6 min/cell, at most 1.8 h
+2026-10-24T20:40:22Z c9g-2-U-triton-r100-i4x16-t80 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 100rows x 80tps = 8000 rows/s
+2026-10-24T20:47:38Z c9g-2-U-triton-r100-i4x16-t80 done   p50=30.17 p95=35.98 achieved=80.0/80 shed=0 srvcpu=78.6 clicpu=0.1 sustained (3/3 slice(s) held) -- settling 45s
+2026-10-24T20:48:24Z c9g-2-U-triton-r100-i8x8-t80 start  triton/tensor s8x8 mbrows spin1 64thr/64cpu 100rows x 80tps = 8000 rows/s
+2026-10-24T20:55:40Z c9g-2-U-triton-r100-i8x8-t80 done   p50=51.42 p95=52.64 achieved=80.0/80 shed=0 srvcpu=60.2 clicpu=0.1 sustained (3/3 slice(s) held) -- settling 45s
+2026-10-24T20:56:26Z c9g-2-U-triton-r100-i2x32-t80 start  triton/tensor s2x32 mbrows spin1 64thr/64cpu 100rows x 80tps = 8000 rows/s
+2026-10-24T21:03:42Z c9g-2-U-triton-r100-i2x32-t80 done   p50=19.99 p95=216.12 achieved=80.0/80 shed=0 srvcpu=98.5 clicpu=0.2 sustained (3/3 slice(s) held) -- settling 45s
+2026-10-24T21:04:28Z c9g-2-U-triton-r100-i16x4-t80 start  triton/tensor s16x4 mbrows spin1 64thr/64cpu 100rows x 80tps = 8000 rows/s
+2026-10-24T21:11:44Z c9g-2-U-triton-r100-i16x4-t80 done   p50=96.41 p95=98.07 achieved=80.0/80 shed=0 srvcpu=51.8 clicpu=0.1 sustained (3/3 slice(s) held) -- settling 45s
+2026-10-24T21:12:29Z c9g-2-U-triton-r100-dyn0-t80 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 100rows x 80tps = 8000 rows/s
+2026-10-24T21:19:46Z c9g-2-U-triton-r100-dyn0-t80 done   p50=30.07 p95=37.71 achieved=80.0/80 shed=0 srvcpu=79.7 clicpu=0.1 sustained (3/3 slice(s) held) -- settling 45s
+2026-10-24T21:20:32Z c9g-2-U-triton-r100-i4x16-t120 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 100rows x 120tps = 12000 rows/s
+2026-10-24T21:27:48Z c9g-2-U-triton-r100-i4x16-t120 done   p50=33.77 p95=389.59 achieved=120.0/120 shed=0 srvcpu=98.7 clicpu=0.1 sustained (3/3 slice(s) held) -- settling 45s
+2026-10-24T21:28:33Z c9g-2-U-triton-r100-i8x8-t120 start  triton/tensor s8x8 mbrows spin1 64thr/64cpu 100rows x 120tps = 12000 rows/s
+2026-10-24T21:35:50Z c9g-2-U-triton-r100-i8x8-t120 done   p50=53.78 p95=60.85 achieved=120.0/120 shed=0 srvcpu=93.2 clicpu=0.2 sustained (3/3 slice(s) held) -- settling 45s
+2026-10-24T21:36:35Z c9g-2-U-triton-r100-i2x32-t120 start  triton/tensor s2x32 mbrows spin1 64thr/64cpu 100rows x 120tps = 12000 rows/s
+2026-10-24T21:43:52Z c9g-2-U-triton-r100-i2x32-t120 done   p50=4683.64 p95=5466.82 achieved=99.8/120 shed=6273 srvcpu=100.0 clicpu=0.1 failed (0/3 slice(s) held) -- settling 45s
+2026-10-24T21:44:38Z c9g-2-U-triton-r100-i16x4-t120 start  triton/tensor s16x4 mbrows spin1 64thr/64cpu 100rows x 120tps = 12000 rows/s
+2026-10-24T21:51:54Z c9g-2-U-triton-r100-i16x4-t120 done   p50=101.99 p95=109.33 achieved=120.0/120 shed=0 srvcpu=81.6 clicpu=0.1 sustained (3/3 slice(s) held) -- settling 45s
+2026-10-24T21:52:40Z c9g-2-U-triton-r100-dyn0-t120 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 100rows x 120tps = 12000 rows/s
+2026-10-24T21:59:56Z c9g-2-U-triton-r100-dyn0-t120 done   p50=30.86 p95=74.68 achieved=120.0/120 shed=0 srvcpu=98.6 clicpu=0.1 sustained (3/3 slice(s) held) -- settling 45s
+2026-10-24T22:00:42Z host=c9g-2 SWEEP COMPLETE
+ALL DONE rc=0 2026-10-24T22:00:42Z

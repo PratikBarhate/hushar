@@ -17,7 +17,7 @@
 //!
 //! A mutex and a push, the same cost for every request. The request that fills the
 //! buffer additionally takes the batch and spawns a task; it does **not** await the
-//! send, so no request ever waits on S3, CloudWatch or Kinesis.
+//! send, so no request ever waits on S3, CloudWatch or the disk.
 //!
 //! The lock is [`std::sync::Mutex`] rather than tokio's, because the critical section
 //! contains no `await` — it is a push and possibly a `mem::take`.

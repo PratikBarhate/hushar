@@ -1,0 +1,56 @@
+{
+  "run": "minibatch-gpu-g5-10M-20M",
+  "main": {
+    "cells": 16,
+    "sustained": 13,
+    "partial": 0,
+    "failed_load": 3,
+    "with_cloudwatch": 12,
+    "with_gpu_samples": 16
+  },
+  "probes": {
+    "cells": 0,
+    "sustained": 0,
+    "partial": 0,
+    "failed_load": 0,
+    "with_cloudwatch": 0,
+    "with_gpu_samples": 0
+  },
+  "by_arm": {
+    "hushar": {
+      "cells": 12,
+      "sustained": 9,
+      "partial": 0,
+      "failed_load": 3,
+      "with_cloudwatch": 12,
+      "with_gpu_samples": 12
+    },
+    "triton": {
+      "cells": 4,
+      "sustained": 4,
+      "partial": 0,
+      "failed_load": 0,
+      "with_cloudwatch": 0,
+      "with_gpu_samples": 4
+    }
+  },
+  "by_size": {
+    "10m": {
+      "cells": 8,
+      "sustained": 7,
+      "partial": 0,
+      "failed_load": 1,
+      "with_cloudwatch": 6,
+      "with_gpu_samples": 8
+    },
+    "20m": {
+      "cells": 8,
+      "sustained": 6,
+      "partial": 0,
+      "failed_load": 2,
+      "with_cloudwatch": 6,
+      "with_gpu_samples": 8
+    }
+  },
+  "preserved_attempt_failures": 0
+}

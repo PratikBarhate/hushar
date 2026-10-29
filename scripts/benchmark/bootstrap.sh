@@ -2,26 +2,26 @@
 # Copyright (c) 2025 Pratik Barhate
 # Licensed under the MIT License. See the LICENSE file in the project root for more information.
 #
-# Prepares one benchmark instance: toolchain, ONNX Runtime, release build.
+# Prepares one benchmark instance: toolchain, selected runtime, release build.
 # Run it inside the unpacked bundle, once per host.
 #
 #   scripts/benchmark/bootstrap.sh --role server --provider cpu
 #   scripts/benchmark/bootstrap.sh --role server --provider tensorrt
+#   scripts/benchmark/bootstrap.sh --role server --provider neuron
 #   scripts/benchmark/bootstrap.sh --role client
 #
 # Roles matter because the two hosts need different things:
 #
-#   server   the hushar binary, and an ONNX Runtime to load
-#   client   the benchmark-client binary only -- it never touches the engine,
-#            so no ONNX Runtime is downloaded and the build is much shorter
+#   server   the hushar binary and either ONNX Runtime or AWS Neuron Runtime
+#   client   the benchmark-client binary only -- it never touches an engine
 #
 # Writes env.sh in the bundle root. run_server.sh sources it, so ORT_DYLIB_PATH is set
 # the same way every run rather than from whatever the shell happened to have.
 #
 # Options:
 #   --role server|client|both   default both
-#   --provider NAME             cpu (default), xnnpack, openvino, tensorrt
-#   --ort-version V             default 1.29.0
+#   --provider NAME             cpu (default), xnnpack, openvino, tensorrt, neuron
+#   --ort-version V             default 1.28.0
 #   --ort-url URL               a specific archive, overriding the derived one
 #   --skip-packages             do not touch the package manager
 #   --skip-build                set up only, build nothing
@@ -36,7 +36,7 @@ usage() { awk 'NR>3 && /^#/ { sub(/^# ?/, ""); print; next } NR>3 { exit }' "$0"
 
 ROLE=both
 PROVIDER=cpu
-ORT_VERSION="${ORT_VERSION:-1.29.0}"
+ORT_VERSION="${ORT_VERSION:-1.28.0}"
 ORT_URL="${ORT_URL:-}"
 ORT_HOME="${ORT_HOME:-$HOME/ort}"
 SKIP_PACKAGES=0
@@ -58,8 +58,8 @@ done
 
 case "$ROLE" in server|client|both) ;; *) echo "bad --role $ROLE" >&2; exit 2 ;; esac
 case "$PROVIDER" in
-  cpu|xnnpack|openvino|tensorrt) ;;
-  *) echo "bad --provider $PROVIDER (cpu, xnnpack, openvino, tensorrt)" >&2; exit 2 ;;
+  cpu|xnnpack|openvino|tensorrt|neuron) ;;
+  *) echo "bad --provider $PROVIDER (cpu, xnnpack, openvino, tensorrt, neuron)" >&2; exit 2 ;;
 esac
 
 say() { printf '\n== %s\n' "$1"; }
@@ -101,7 +101,8 @@ echo "rustc   $(rustc --version)"
 
 # ------------------------------------------------------------------ onnx runtime
 ORT_DYLIB=""
-if [ "$ROLE" != client ]; then
+NRT_DYLIB=""
+if [ "$ROLE" != client ] && [ "$PROVIDER" != neuron ]; then
   say "onnx runtime"
   ARCH="$(uname -m)"
 
@@ -129,7 +130,7 @@ if [ "$ROLE" != client ]; then
         needs_own_library <<'EOF' || exit 1
 Build one from source on this host (see documentation/hardware.md):
 
-  git clone --recursive --branch v1.29.0 https://github.com/microsoft/onnxruntime
+  git clone --recursive --branch v1.28.0 https://github.com/microsoft/onnxruntime
   cd onnxruntime
   ./build.sh --config Release --build_shared_lib --parallel \
     --use_xnnpack --skip_tests
@@ -143,7 +144,7 @@ Follow Intel's instructions for the version paired with this ONNX Runtime releas
 then (see documentation/hardware.md):
 
   source /opt/intel/openvino/setupvars.sh
-  git clone --recursive --branch v1.29.0 https://github.com/microsoft/onnxruntime
+  git clone --recursive --branch v1.28.0 https://github.com/microsoft/onnxruntime
   cd onnxruntime
   ./build.sh --config Release --build_shared_lib --parallel \
     --use_openvino CPU --skip_tests
@@ -173,6 +174,19 @@ EOF
   echo "library $ORT_DYLIB"
 fi
 
+if [ "$ROLE" != client ] && [ "$PROVIDER" = neuron ]; then
+  say "neuron runtime"
+  NEURON_LS="$(command -v neuron-ls 2>/dev/null || true)"
+  [ -n "$NEURON_LS" ] || NEURON_LS=/opt/aws/neuron/bin/neuron-ls
+  [ -x "$NEURON_LS" ] \
+    || { echo "neuron-ls is missing; use a Neuron DLAMI or install the Neuron SDK" >&2; exit 1; }
+  NRT_DYLIB="${NRT_DYLIB_PATH:-/opt/aws/neuron/lib/libnrt.so.1}"
+  [ -r "$NRT_DYLIB" ] \
+    || { echo "libnrt.so.1 is missing; install aws-neuronx-runtime-lib" >&2; exit 1; }
+  "$NEURON_LS"
+  echo "library $NRT_DYLIB"
+fi
+
 # ------------------------------------------------------------------ env.sh
 #
 # Every line is a DEFAULT rather than an override. run_server.sh sources this file before
@@ -189,6 +203,8 @@ export ROLE="\${ROLE:-$ROLE}"
 EOF
 [ -n "$ORT_DYLIB" ] \
   && echo "export ORT_DYLIB_PATH=\"\${ORT_DYLIB_PATH:-$ORT_DYLIB}\"" >> "$ROOT/env.sh"
+[ -n "$NRT_DYLIB" ] \
+  && echo "export NRT_DYLIB_PATH=\"\${NRT_DYLIB_PATH:-$NRT_DYLIB}\"" >> "$ROOT/env.sh"
 # A provider built as its own shared library -- XNNPACK, OpenVINO -- sits beside the
 # engine, and OpenVINO's runtime with it. Without this the provider is simply missing from
 # the banner at run time, even though bootstrap was given the path.
@@ -206,10 +222,15 @@ if [ "$SKIP_BUILD" = 0 ]; then
   # comparison needs: an accelerator arm and its CPU control arm then differ only in the
   # provider string, with no rebuild between them to cast doubt on the pair.
   if [ "$ROLE" != client ]; then
-    FEATURES="$PROVIDER"
-    [ "$PROVIDER" = cpu ] || FEATURES="cpu,$PROVIDER"
-    say "building hushar --features $FEATURES"
-    cargo build --release -p hushar --features "$FEATURES"
+    if [ "$PROVIDER" = neuron ]; then
+      say "building hushar with the Neuron backend"
+      cargo build --release -p hushar
+    else
+      FEATURES="$PROVIDER"
+      [ "$PROVIDER" = cpu ] || FEATURES="cpu,$PROVIDER"
+      say "building hushar --features $FEATURES"
+      cargo build --release -p hushar --features "$FEATURES"
+    fi
   fi
   if [ "$ROLE" != server ]; then
     say "building benchmark-client"
@@ -219,7 +240,7 @@ fi
 
 say "ready"
 ROLE="$ROLE" PROVIDER="$PROVIDER" ORT_DYLIB_PATH="${ORT_DYLIB:-}" \
-  scripts/benchmark/hostinfo.sh
+  NRT_DYLIB_PATH="${NRT_DYLIB:-}" scripts/benchmark/hostinfo.sh
 cat <<EOF
 
 next, on this host:

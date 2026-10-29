@@ -1,0 +1,22 @@
+launched 2026-10-25T05:49:56Z for c9g-2
+2026-10-25T05:50:03Z preflight c9g-2: {'type': 'c9g.16xlarge', 'ami': 'ami-025d1d5c1b9b090aa', 'kernel': '6.18.54-121.166.amzn2023.aarch64', 'nproc': '64', 'providers': '0', 'ortso': '1.28.0', 'md5': '30f9c5330b808a34b55fe88048a20da6', 'tensorcfg': 'yes', 'tensorspec': 'yes', 'onnx': 'yes', 'docker': 'yes'}
+2026-10-25T05:50:03Z preflight c9g-2: both clients report slices
+2026-10-25T05:50:03Z preflight c9g-2: OK, c9g.16xlarge, 64 CPUs, CPU-only runtime, ami ami-025d1d5c1b9b090aa, kernel 6.18.54-121.166.amzn2023.aarch64, model md5 30f9c5330b808a34b55fe88048a20da6, docker present
+2026-10-25T05:50:03Z host=c9g-2 rev=ffba569-dirty run=design-vs-triton-cpu-arm64-20M phase=refine bucket set
+2026-10-25T05:50:03Z model bench_model.onnx size=20m md5=30f9c5330b808a34b55fe88048a20da6
+2026-10-25T05:50:03Z pinned hushar: 4x16 mb8 spin0
+2026-10-25T05:50:03Z pinned triton: 8x8 on intra, one call per request
+2026-10-25T05:50:03Z configurations were TUNED by PHASE=tune
+2026-10-25T05:50:03Z   arm H: hushar/features, 1 cell(s)
+2026-10-25T05:50:03Z   arm L: triton/tensor, 1 cell(s)
+2026-10-25T05:50:03Z   arm T: triton/tensor, 1 cell(s)
+2026-10-25T05:50:03Z 3 cell(s) at most: H-r200t65, T-r200t55, L-r200t75
+2026-10-25T05:50:03Z warmup=120s measured=900s in 3 slice(s) settle=60s -> 20.8 min/cell, at most 1.0 h
+2026-10-25T05:50:04Z c9g-2-H-r200t65 start  hushar/features s8x8 mb4 spin0 64thr/64cpu 200rows x 65tps = 13000 rows/s
+2026-10-25T06:07:19Z c9g-2-H-r200t65 done   p50=22.6 p95=32.23 achieved=65.0/65 shed=0 srvcpu=85.7 clicpu=0.2 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-25T06:08:20Z c9g-2-T-r200t55 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 200rows x 55tps = 11000 rows/s
+2026-10-25T06:25:36Z c9g-2-T-r200t55 done   p50=58.9 p95=74.0 achieved=55.0/55 shed=0 srvcpu=93.6 clicpu=0.1 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-25T06:26:37Z c9g-2-L-r200t75 start  triton/tensor s8x8 mbrows spin1 64thr/64cpu 200rows x 75tps = 15000 rows/s
+2026-10-25T06:43:55Z c9g-2-L-r200t75 done   p50=4047.34 p95=4124.26 achieved=73.7/75 shed=1219 srvcpu=100.0 clicpu=0.1 failed (0/3 slice(s) held) -- settling 60s
+2026-10-25T06:44:55Z host=c9g-2 SWEEP COMPLETE
+ALL DONE rc=0 2026-10-25T06:44:55Z

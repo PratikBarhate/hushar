@@ -18,7 +18,7 @@ pub(crate) mod metrics;
 pub(crate) mod model_loader;
 
 pub(crate) use blob_store::{BlobStore, BlobStores, Location};
-pub(crate) use data_sink::{DataDestination, DataSink, Sampler};
+pub(crate) use data_sink::{DataSink, Sampler};
 pub(crate) use metrics::MetricsSink;
 pub(crate) use model_loader::*;
 

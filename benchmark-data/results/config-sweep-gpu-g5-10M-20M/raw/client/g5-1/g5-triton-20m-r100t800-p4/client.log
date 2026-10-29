@@ -1,0 +1,23 @@
+triton benchmark [g5-triton-20m-r100t800-p4]
+  server    : 172.31.37.73:8001
+  model     : bench_vectorized (Triton C++ onnxruntime backend)
+  features  : 1 inputs per row, outputs ['scores']
+  offering  : 800 req/s x 100 row(s), 512 in flight, 120s warmup + 300s measured
+  payloads  : 32 x 270 KiB, built in 0.6s
+  validated : {'scores': ([100, 5], 'FP32')}
+  warmup done, measuring
+
+  measured  : 300.0s
+  offered   : 800 req/s
+  achieved  : 772.4 req/s (96.5% of offered)
+  responses : ok 231716, failed 0, shed 8618, dispatched 231205
+  latency   : p50 662.81  p95 666.15  p99 667.80  max 671.90  mean 662.90 ms
+  client cpu: 0.3% of 32 vCPU
+
+  reported as 5 slice(s) of 60s, under one continuous 300s load:
+  slice 1/5 : n=46789 achieved=779.82 p50=662.36 p95=665.43 p99=666.70 shed=1690 failed=0
+  slice 2/5 : n=46241 achieved=770.68 p50=662.88 p95=665.84 p99=667.95 shed=1723 failed=0
+  slice 3/5 : n=46227 achieved=770.45 p50=662.97 p95=666.60 p99=668.06 shed=1738 failed=0
+  slice 4/5 : n=46224 achieved=770.40 p50=663.09 p95=666.39 p99=667.80 shed=1737 failed=0
+  slice 5/5 : n=46235 achieved=770.58 p50=662.85 p95=666.24 p99=668.15 shed=1730 failed=0
+JSON {"label": "g5-triton-20m-r100t800-p4", "rows": 100, "offered": 800, "achieved": 772.4, "ok": 231716, "failed": 0, "shed": 8618, "p50": 662.81, "p95": 666.15, "p99": 667.8, "mean": 662.9, "max": 671.9, "client_cpu": 0.3, "measured_secs": 300.0, "segments": [{"slice": 1, "seconds": 60.0, "n": 46789, "achieved": 779.82, "p50": 662.36, "p95": 665.43, "p99": 666.7, "shed": 1690, "failed": 0}, {"slice": 2, "seconds": 60.0, "n": 46241, "achieved": 770.68, "p50": 662.88, "p95": 665.84, "p99": 667.95, "shed": 1723, "failed": 0}, {"slice": 3, "seconds": 60.0, "n": 46227, "achieved": 770.45, "p50": 662.97, "p95": 666.6, "p99": 668.06, "shed": 1738, "failed": 0}, {"slice": 4, "seconds": 60.0, "n": 46224, "achieved": 770.4, "p50": 663.09, "p95": 666.39, "p99": 667.8, "shed": 1737, "failed": 0}, {"slice": 5, "seconds": 60.0, "n": 46235, "achieved": 770.58, "p50": 662.85, "p95": 666.24, "p99": 668.15, "shed": 1730, "failed": 0}]}

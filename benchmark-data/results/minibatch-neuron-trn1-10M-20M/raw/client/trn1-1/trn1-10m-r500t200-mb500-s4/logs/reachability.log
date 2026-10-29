@@ -1,0 +1,20 @@
+hushar benchmark [reachability]
+  server    : http://172.31.18.204:8279
+  model     : bench-model-neuron-10m-b500 on neuron
+  features  : 210 per row
+  asking    : whichever the server's split chooses
+  offering  : 5 req/s x 500 row(s), 4 in flight (pinned), 0s warmup + 2s measured
+  payload   : 518488 bytes per request, 1037.0 bytes per row, 210 feature(s)
+
+  bench-model-neuron-10m-b500 on neuron
+  ---------------------------------------------
+  achieved      :       5.0 req/s   (2500.0 rows/s)
+  offered       :         5 req/s
+  measured      :        10 requests  (of 10 that succeeded overall)
+  latency  p50  :     11.80 ms
+           p95  :     16.24 ms
+           p99  :     16.24 ms
+           max  :     16.24 ms
+           mean :     12.32 ms
+  failed        :         0
+  shed          :         0  (offered but never sent: 4 in flight was the cap)

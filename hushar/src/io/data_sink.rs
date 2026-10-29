@@ -4,8 +4,7 @@
 //! Where the data a request produces goes.
 //!
 //! Today that is the inference log: the features as received and the scores they
-//! produced, as batched protobuf objects in a blob store or as records on a Kinesis
-//! data stream.
+//! produced, as batched protobuf objects in a blob store.
 //!
 //! The request path calls [`DataSink::record`] directly, which appends to an
 //! [`Accumulator`](super::accumulator::Accumulator) and returns. Nothing awaits a
@@ -14,72 +13,18 @@
 //! # Adding a destination
 //!
 //! 1. Implement [`DataSink`].
-//! 2. Add a scheme to [`DataDestination::parse`].
-//! 3. Add an arm to `build_data_sink` in `main`.
+//! 2. Build it in place of [`BlobDataSink`] in `build_data_sink` in `main`.
 
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use aws_sdk_kinesis::types::{PutRecordsRequestEntry, PutRecordsResultEntry};
 use chrono::{Datelike, Timelike};
 use hushar::hushar_proto::{InferenceLogBatch, InferenceLogs};
 use prost::Message;
 
 use crate::io::accumulator::Accumulator;
-use crate::io::{BlobStore, FileReaderResult, Location, describe_aws_error};
-
-/// Where inference logs are sent.
-///
-/// # Fields
-///
-/// * `Blob` - batched protobuf objects beneath a prefix
-/// * `Kinesis` - records on a Kinesis data stream
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DataDestination {
-    Blob(Location),
-    Kinesis { stream: String },
-}
-
-impl DataDestination {
-    /// Parses a destination URI.
-    ///
-    /// `kinesis://stream-name` selects the stream; anything else is a blob-store
-    /// location and follows [`Location::parse`], so `s3://bucket/prefix` and bare
-    /// filesystem paths are both accepted.
-    ///
-    /// # Errors
-    ///
-    /// If a `kinesis://` URI carries no stream name or carries a path, or if
-    /// [`Location::parse`] rejects the URI.
-    pub(crate) fn parse(uri: &str) -> FileReaderResult<Self> {
-        if let Some(stream) = uri.strip_prefix("kinesis://") {
-            let stream = stream.trim_matches('/');
-            if stream.is_empty() {
-                return Err(format!("{uri:?} has no stream name").into());
-            }
-            if stream.contains('/') {
-                return Err(format!(
-                    "{uri:?} looks like a path, but a Kinesis destination is just a \
-                     stream name, as in kinesis://my-stream"
-                )
-                .into());
-            }
-            return Ok(Self::Kinesis {
-                stream: stream.to_owned(),
-            });
-        }
-        Ok(Self::Blob(Location::parse(uri)?))
-    }
-
-    /// The destination as a URI, for banners and errors.
-    pub(crate) fn uri(&self) -> String {
-        match self {
-            Self::Blob(location) => location.uri(),
-            Self::Kinesis { stream } => format!("kinesis://{stream}"),
-        }
-    }
-}
+use crate::io::{BlobStore, Location};
 
 /// How many requests reach the data sink.
 ///
@@ -181,6 +126,7 @@ pub(crate) trait DataSink: Debug + Send + Sync {
 struct BlobWriter {
     store: Arc<dyn BlobStore>,
     prefix: Location,
+    shards: u32,
 }
 
 impl BlobWriter {
@@ -196,7 +142,7 @@ impl BlobWriter {
         let logs = InferenceLogs {
             inference_log_batches: batches,
         };
-        let target = self.prefix.join(&time_partitioned_key());
+        let target = self.prefix.join(&partitioned_key(self.shards));
         if let Err(e) = self.store.put(&target, logs.encode_to_vec()).await {
             eprintln!(
                 "logs: lost {rows} rows, could not write {}: {e}",
@@ -208,8 +154,8 @@ impl BlobWriter {
 
 /// Batched protobuf objects in a blob store.
 ///
-/// The default. Objects are named by time so they can be queried by partition without
-/// listing everything.
+/// The default. Objects are named by shard and time so they can be queried by partition
+/// without listing everything.
 #[derive(Debug)]
 pub(crate) struct BlobDataSink {
     writer: Arc<BlobWriter>,
@@ -223,17 +169,24 @@ impl BlobDataSink {
     ///
     /// * `store` - the blob store the objects are written to
     /// * `prefix` - the location every object is written beneath
+    /// * `shards` - how many key prefixes to spread objects over, at least one. See
+    ///   [`partitioned_key`]
     /// * `capacity` - batches per object. Not clamped, since an object store takes an
     ///   object of any size, so this is purely a memory decision.
     /// * `max_in_flight` - writes allowed at once
     pub(crate) fn new(
         store: Arc<dyn BlobStore>,
         prefix: Location,
+        shards: u32,
         capacity: usize,
         max_in_flight: usize,
     ) -> Self {
         Self {
-            writer: Arc::new(BlobWriter { store, prefix }),
+            writer: Arc::new(BlobWriter {
+                store,
+                prefix,
+                shards,
+            }),
             accumulator: Accumulator::new("logs", capacity, max_in_flight),
         }
     }
@@ -265,280 +218,49 @@ impl DataSink for BlobDataSink {
     }
 }
 
-/// A time-partitioned object name, unique per write.
+/// A sharded, time-partitioned object name, unique per write.
 ///
-/// Hive-style partitions, zero-padded so lexical order matches chronological order, and
-/// a UUID so concurrent writes never collide on a name.
-fn time_partitioned_key() -> String {
+/// A `shard=` segment leads, then Hive-style time partitions, zero-padded so lexical
+/// order matches chronological order, then a UUID so concurrent writes never collide on
+/// a name.
+///
+/// # The leading shard
+///
+/// Amazon S3 scales its request rate per key prefix, and splits a hot prefix only after
+/// observing the load. A fleet writing beneath one `mi=` prefix shares one rate limit
+/// while that split happens, so writes are spread over `shards` distinct prefixes
+/// instead. It leads because a prefix is matched from the left: entropy any later —
+/// the object's own UUID, for instance — shares a prefix with everything else written
+/// in the same minute.
+///
+/// Spelled `shard=07` rather than `07` because Hive-style partition discovery stops at
+/// the first level that is not `key=value`, and a bare segment would take the time
+/// partitions below it out of the table with it.
+///
+/// # Arguments
+///
+/// * `shards` - prefixes to spread over, at least one. The number is taken from the
+///   same UUID that names the object, and padded to a fixed width so that no shard's
+///   prefix is a prefix of another's.
+///
+/// # Panics
+///
+/// If `shards` is zero, which names no prefix to write beneath.
+/// [`validate`](crate::config::HusharServiceConfig::validate) refuses it at startup.
+fn partitioned_key(shards: u32) -> String {
     let now = chrono::Utc::now();
+    let id = uuid::Uuid::new_v4();
+    let shard = (id.as_u128() % u128::from(shards)) as u32;
+    let width = (shards - 1).to_string().len();
     format!(
-        "year={}/month={:02}/day={:02}/hour={:02}/mi={:02}/{}_{}.pb",
+        "shard={shard:0width$}/year={}/month={:02}/day={:02}/hour={:02}/mi={:02}/{id}_{}.pb",
         now.year(),
         now.month(),
         now.day(),
         now.hour(),
         now.minute(),
-        uuid::Uuid::new_v4(),
         now.timestamp_micros()
     )
-}
-
-/// Records `PutRecords` accepts in one call.
-const KINESIS_MAX_RECORDS: usize = 500;
-
-/// Bytes one record may carry, partition key included.
-const KINESIS_MAX_RECORD_BYTES: usize = 10 * 1024 * 1024;
-
-/// Attempts made before a batch is reported lost.
-///
-/// Bounded, so a throttled stream cannot hold a send slot indefinitely.
-const KINESIS_MAX_ATTEMPTS: usize = 3;
-
-/// The part of a Kinesis sink that talks to the stream.
-#[derive(Debug)]
-struct KinesisWriter {
-    client: Arc<aws_sdk_kinesis::Client>,
-    stream: String,
-}
-
-impl KinesisWriter {
-    /// Sends `batches` as records, retrying the ones the stream rejected.
-    ///
-    /// `PutRecords` answers **200 even when individual records were rejected**,
-    /// reporting them positionally in the response body, so the body is inspected and
-    /// only the rejected records are retried. A whole-request failure leaves every
-    /// record pending. Anything still pending after `KINESIS_MAX_ATTEMPTS` is reported
-    /// as lost on stderr, as is a batch too large to encode into one record.
-    async fn send(&self, batches: Vec<InferenceLogBatch>) {
-        let mut pending: Vec<PutRecordsRequestEntry> = Vec::with_capacity(batches.len());
-        for batch in batches {
-            match to_entry(&batch) {
-                Ok(entry) => pending.push(entry),
-                Err(reason) => eprintln!(
-                    "logs: dropped request {:?} with {} rows: {reason}",
-                    batch.request_id,
-                    batch.row_ids.len()
-                ),
-            }
-        }
-
-        for attempt in 1..=KINESIS_MAX_ATTEMPTS {
-            if pending.is_empty() {
-                return;
-            }
-
-            let response = match self
-                .client
-                .put_records()
-                .stream_name(&self.stream)
-                .set_records(Some(pending.clone()))
-                .send()
-                .await
-            {
-                Ok(response) => response,
-                Err(e) => {
-                    eprintln!(
-                        "logs: attempt {attempt}/{KINESIS_MAX_ATTEMPTS} to stream {} failed: {}",
-                        self.stream,
-                        describe_aws_error(&e)
-                    );
-                    if attempt < KINESIS_MAX_ATTEMPTS {
-                        backoff(attempt).await;
-                    }
-                    continue;
-                }
-            };
-
-            let (retry, reasons) = failed_entries(pending, response.records());
-            if retry.is_empty() {
-                return;
-            }
-            eprintln!(
-                "logs: {} of {} records rejected by stream {} on attempt \
-                 {attempt}/{KINESIS_MAX_ATTEMPTS}: {}",
-                retry.len(),
-                retry.len() + response.records().len().saturating_sub(retry.len()),
-                self.stream,
-                summarise(&reasons)
-            );
-            pending = retry;
-            if attempt < KINESIS_MAX_ATTEMPTS {
-                backoff(attempt).await;
-            }
-        }
-
-        if !pending.is_empty() {
-            eprintln!(
-                "logs: giving up on {} records after {KINESIS_MAX_ATTEMPTS} attempts \
-                 to stream {}; those rows are lost",
-                pending.len(),
-                self.stream
-            );
-        }
-    }
-}
-
-/// A Kinesis data stream.
-#[derive(Debug)]
-pub(crate) struct KinesisDataSink {
-    writer: Arc<KinesisWriter>,
-    accumulator: Accumulator<InferenceLogBatch>,
-}
-
-impl KinesisDataSink {
-    /// Builds a Kinesis sink for `stream`.
-    ///
-    /// # Arguments
-    ///
-    /// * `client` - the Kinesis client the records are sent with
-    /// * `stream` - the data stream's name
-    /// * `capacity` - batches per send, clamped to `KINESIS_MAX_RECORDS`, the 500 records
-    ///   `PutRecords` accepts in one call, because one batch becomes one record
-    /// * `max_in_flight` - sends allowed at once
-    pub(crate) fn new(
-        client: Arc<aws_sdk_kinesis::Client>,
-        stream: impl Into<String>,
-        capacity: usize,
-        max_in_flight: usize,
-    ) -> Self {
-        Self {
-            writer: Arc::new(KinesisWriter {
-                client,
-                stream: stream.into(),
-            }),
-            accumulator: Accumulator::new(
-                "logs",
-                capacity.clamp(1, KINESIS_MAX_RECORDS),
-                max_in_flight,
-            ),
-        }
-    }
-}
-
-#[tonic::async_trait]
-impl DataSink for KinesisDataSink {
-    fn backend(&self) -> &str {
-        "Amazon Kinesis"
-    }
-
-    fn batch_size(&self) -> usize {
-        self.accumulator.capacity()
-    }
-
-    fn record(&self, batch: InferenceLogBatch) {
-        let writer = Arc::clone(&self.writer);
-        self.accumulator.add(
-            [batch],
-            move |batches| async move { writer.send(batches).await },
-        );
-    }
-
-    async fn flush(&self) {
-        let writer = Arc::clone(&self.writer);
-        self.accumulator
-            .flush(move |batches| async move { writer.send(batches).await })
-            .await;
-    }
-}
-
-/// Turns one batch into one stream record.
-///
-/// The partition key is the batch's `request_id`, which Kinesis hashes to pick a shard:
-/// an even spread, with one request's rows kept together for a consumer.
-///
-/// # Errors
-///
-/// If the encoded batch and its partition key together exceed
-/// `KINESIS_MAX_RECORD_BYTES`, or the record cannot be built.
-fn to_entry(batch: &InferenceLogBatch) -> Result<PutRecordsRequestEntry, String> {
-    let data = batch.encode_to_vec();
-    let key = partition_key(&batch.request_id);
-
-    let size = data.len() + key.len();
-    if size > KINESIS_MAX_RECORD_BYTES {
-        return Err(format!(
-            "encoded to {size} bytes, over the {KINESIS_MAX_RECORD_BYTES}-byte \
-             per-record limit; reduce the batch size"
-        ));
-    }
-
-    PutRecordsRequestEntry::builder()
-        .data(aws_sdk_kinesis::primitives::Blob::new(data))
-        .partition_key(key)
-        .build()
-        .map_err(|e| format!("cannot build a stream record: {e}"))
-}
-
-/// A partition key that Kinesis will accept.
-///
-/// The service requires 1 to 256 characters, so a blank `request_id` becomes a random
-/// UUID and an over-long one is truncated to 256 characters, on a character boundary.
-/// Either would otherwise be rejected for the whole request, not just that record.
-fn partition_key(request_id: &str) -> String {
-    const MAX: usize = 256;
-    let trimmed = request_id.trim();
-    if trimmed.is_empty() {
-        return uuid::Uuid::new_v4().to_string();
-    }
-    if trimmed.len() <= MAX {
-        return trimmed.to_owned();
-    }
-    trimmed.chars().take(MAX).collect()
-}
-
-/// Splits a response into the records that need retrying and why.
-///
-/// Response records correlate with request records by position, which the API
-/// guarantees, so the pairing is a zip. A record counts as succeeded when it carries no
-/// error code.
-///
-/// # Returns
-///
-/// The entries to retry, and the error code seen for each. A response whose length does
-/// not match the request cannot be read positionally, so every entry is retried with one
-/// reason explaining why.
-fn failed_entries(
-    sent: Vec<PutRecordsRequestEntry>,
-    results: &[PutRecordsResultEntry],
-) -> (Vec<PutRecordsRequestEntry>, Vec<String>) {
-    if results.len() != sent.len() {
-        let reason = format!(
-            "response had {} results for {} records, so they could not be matched \
-             positionally",
-            results.len(),
-            sent.len()
-        );
-        return (sent, vec![reason]);
-    }
-
-    let mut retry = Vec::new();
-    let mut reasons = Vec::new();
-    for (entry, result) in sent.into_iter().zip(results) {
-        if let Some(code) = result.error_code() {
-            reasons.push(code.to_owned());
-            retry.push(entry);
-        }
-    }
-    (retry, reasons)
-}
-
-/// Counts each distinct reason, so one line does not repeat a code once per record.
-fn summarise(reasons: &[String]) -> String {
-    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
-    for reason in reasons {
-        *counts.entry(reason.as_str()).or_default() += 1;
-    }
-    counts
-        .into_iter()
-        .map(|(reason, count)| format!("{reason} x{count}"))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Waits before a retry, doubling with each attempt and levelling off after the sixth.
-async fn backoff(attempt: usize) {
-    let millis = 50u64 << (attempt.min(6) as u32);
-    tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
 }
 
 #[cfg(test)]
@@ -583,75 +305,6 @@ mod tests {
             "city",
             FeatureData::Str((0..rows).map(|i| format!("city-{i}")).collect()),
         )
-    }
-
-    fn entry(key: &str) -> PutRecordsRequestEntry {
-        PutRecordsRequestEntry::builder()
-            .data(aws_sdk_kinesis::primitives::Blob::new(b"x".to_vec()))
-            .partition_key(key)
-            .build()
-            .expect("valid entry")
-    }
-
-    fn ok_result() -> PutRecordsResultEntry {
-        PutRecordsResultEntry::builder()
-            .shard_id("shard-1")
-            .sequence_number("42")
-            .build()
-    }
-
-    fn failed_result(code: &str) -> PutRecordsResultEntry {
-        PutRecordsResultEntry::builder()
-            .error_code(code)
-            .error_message("throttled")
-            .build()
-    }
-
-    #[test]
-    fn a_kinesis_uri_is_a_stream_name() {
-        assert_eq!(
-            DataDestination::parse("kinesis://inference-logs").expect("valid"),
-            DataDestination::Kinesis {
-                stream: "inference-logs".into()
-            }
-        );
-        assert_eq!(
-            DataDestination::parse("kinesis://inference-logs/").expect("valid"),
-            DataDestination::Kinesis {
-                stream: "inference-logs".into()
-            }
-        );
-    }
-    /// A `kinesis://` URI carrying a path is refused rather than read as a stream name.
-    #[test]
-    fn a_kinesis_uri_with_a_path_is_refused_rather_than_mangled() {
-        let err = DataDestination::parse("kinesis://stream/extra/path")
-            .expect_err("a path is not a stream name");
-        assert!(
-            err.to_string().contains("stream name"),
-            "the error should explain the shape: {err}"
-        );
-        assert!(DataDestination::parse("kinesis://").is_err());
-    }
-    /// Other schemes parse as blob-store locations, and an unsupported one errors.
-    #[test]
-    fn other_uris_still_mean_a_blob_store() {
-        assert!(matches!(
-            DataDestination::parse("s3://bucket/logs").expect("valid"),
-            DataDestination::Blob(Location::S3 { .. })
-        ));
-        assert!(matches!(
-            DataDestination::parse("/tmp/logs").expect("valid"),
-            DataDestination::Blob(Location::Local(_))
-        ));
-        assert!(DataDestination::parse("az://container/logs").is_err());
-    }
-
-    #[test]
-    fn a_destination_round_trips_through_its_uri() {
-        for uri in ["kinesis://my-stream", "s3://bucket/logs", "/tmp/logs"] {
-            assert_eq!(DataDestination::parse(uri).expect("valid").uri(), uri);
-        }
     }
 
     /// A rate of one keeps every request.
@@ -713,119 +366,12 @@ mod tests {
         assert_eq!(kept, 100, "one in four of 400 requests");
     }
 
-    /// Only the records the response reported an error for are retried.
-    #[test]
-    fn only_the_rejected_records_are_retried() {
-        let sent = vec![entry("a"), entry("b"), entry("c")];
-        let results = vec![
-            ok_result(),
-            failed_result("ProvisionedThroughputExceededException"),
-            ok_result(),
-        ];
-
-        let (retry, reasons) = failed_entries(sent, &results);
-        assert_eq!(retry.len(), 1, "only the middle record failed");
-        assert_eq!(retry[0].partition_key(), "b", "and it must be that one");
-        assert_eq!(reasons, vec!["ProvisionedThroughputExceededException"]);
-    }
-
-    #[test]
-    fn a_fully_successful_response_retries_nothing() {
-        let sent = vec![entry("a"), entry("b")];
-        let results = vec![ok_result(), ok_result()];
-        let (retry, reasons) = failed_entries(sent, &results);
-        assert!(retry.is_empty());
-        assert!(reasons.is_empty());
-    }
-
-    #[test]
-    fn a_fully_failed_response_retries_everything_in_order() {
-        let sent = vec![entry("a"), entry("b"), entry("c")];
-        let results = vec![
-            failed_result("InternalFailure"),
-            failed_result("ProvisionedThroughputExceededException"),
-            failed_result("InternalFailure"),
-        ];
-        let (retry, reasons) = failed_entries(sent, &results);
-        let keys: Vec<&str> = retry.iter().map(|e| e.partition_key()).collect();
-        assert_eq!(keys, vec!["a", "b", "c"]);
-        assert_eq!(reasons.len(), 3);
-    }
-    /// A response whose length does not match the request retries every record.
-    #[test]
-    fn a_response_that_does_not_line_up_retries_everything() {
-        let sent = vec![entry("a"), entry("b"), entry("c")];
-        let results = vec![ok_result()];
-        let (retry, reasons) = failed_entries(sent, &results);
-        assert_eq!(retry.len(), 3, "all three should be retried");
-        assert_eq!(reasons.len(), 1, "with one explanation of why");
-        assert!(
-            reasons[0].contains("could not be matched"),
-            "got {reasons:?}"
-        );
-    }
-    /// Repeated error codes are summarised with a count rather than listed.
-    #[test]
-    fn reasons_are_counted_not_repeated() {
-        let reasons = vec![
-            "ProvisionedThroughputExceededException".to_owned(),
-            "ProvisionedThroughputExceededException".to_owned(),
-            "InternalFailure".to_owned(),
-        ];
-        let summary = summarise(&reasons);
-        assert!(
-            summary.contains("ProvisionedThroughputExceededException x2"),
-            "got {summary}"
-        );
-        assert!(summary.contains("InternalFailure x1"), "got {summary}");
-    }
-
-    #[test]
-    fn a_batch_becomes_a_record_keyed_by_its_request_id() {
-        let entry = to_entry(&batch("req-7", 3)).expect("valid record");
-        assert_eq!(entry.partition_key(), "req-7");
-        assert!(
-            !entry.data().as_ref().is_empty(),
-            "the encoded batch should be the payload"
-        );
-    }
-    /// A blank request id becomes a non-empty key, and a different one each time.
-    #[test]
-    fn an_absent_request_id_still_produces_a_usable_key() {
-        let a = partition_key("");
-        let b = partition_key("   ");
-        assert!(!a.is_empty() && !b.is_empty());
-        assert_ne!(a, b, "keyless records should still spread across shards");
-    }
-    /// An over-long request id is truncated to the limit, on a character boundary.
-    #[test]
-    fn an_over_long_request_id_is_truncated_to_the_limit() {
-        let key = partition_key(&"x".repeat(1000));
-        assert_eq!(key.chars().count(), 256);
-
-        let key = partition_key(&"é".repeat(1000));
-        assert_eq!(key.chars().count(), 256);
-        assert!(key.is_char_boundary(key.len()));
-    }
-    /// A batch over the per-record byte limit is reported as an error, not sent.
-    #[test]
-    fn a_record_over_the_size_limit_is_reported_not_sent() {
-        let huge = InferenceLogBatch {
-            request_id: "big".into(),
-            model_id: "m".into(),
-            row_ids: row_ids(1),
-            features: text_column(1),
-            scores: Some(score_type(vec![0.0; KINESIS_MAX_RECORD_BYTES])),
-        };
-        let err = to_entry(&huge).expect_err("over the limit");
-        assert!(err.contains("per-record limit"), "got {err}");
-    }
-
     /// A blob sink writing to a fresh temporary directory.
     fn blob_sink(dir: &std::path::Path, capacity: usize) -> BlobDataSink {
         BlobDataSink::new(
             Arc::new(LocalBlobStore) as Arc<dyn BlobStore>,
             Location::Local(dir.to_path_buf()),
+            1,
             capacity,
             2,
         )
@@ -892,53 +438,84 @@ mod tests {
         );
         std::fs::remove_dir_all(&dir).ok();
     }
-    /// A log key carries zero-padded time partitions and is unique per call.
+    /// The value of one `key=value` segment of a log key.
+    fn segment(key: &str, field: &str) -> String {
+        key.split(field)
+            .nth(1)
+            .expect(field)
+            .split('/')
+            .next()
+            .expect("value")
+            .to_owned()
+    }
+
+    /// A log key leads with a shard, then carries zero-padded time partitions, and is
+    /// unique per call.
     #[test]
-    fn a_log_key_is_partitioned_by_time_and_unique() {
-        let a = time_partitioned_key();
-        let b = time_partitioned_key();
+    fn a_log_key_leads_with_a_shard_then_partitions_by_time() {
+        let a = partitioned_key(16);
+        let b = partitioned_key(16);
         assert_ne!(a, b, "two keys in the same minute must not collide");
+        assert!(a.starts_with("shard="), "the shard must lead: {a}");
         for part in ["year=", "month=", "day=", "hour=", "mi="] {
             assert!(a.contains(part), "{a} should contain {part}");
         }
-        let month = a
-            .split("month=")
-            .nth(1)
-            .expect("month")
-            .split('/')
-            .next()
-            .expect("value");
+        let month = segment(&a, "month=");
         assert_eq!(month.len(), 2, "month should be zero-padded, got {month}");
     }
-
-    /// A Kinesis sink with credentials that will never work, for testing buffering.
-    fn offline_kinesis(capacity: usize) -> KinesisDataSink {
-        let config = aws_sdk_kinesis::Config::builder()
-            .behavior_version_latest()
-            .region(aws_sdk_kinesis::config::Region::new("us-east-1"))
-            .credentials_provider(aws_sdk_kinesis::config::Credentials::for_tests())
-            .build();
-        KinesisDataSink::new(
-            Arc::new(aws_sdk_kinesis::Client::from_conf(config)),
-            "test-stream",
-            capacity,
+    /// Shard numbers stay inside the configured count, and over many keys use all of it.
+    #[test]
+    fn shard_numbers_cover_the_configured_range() {
+        let seen: std::collections::BTreeSet<String> = (0..2_000)
+            .map(|_| segment(&partitioned_key(8), "shard="))
+            .collect();
+        assert_eq!(
+            seen,
+            (0..8).map(|n| n.to_string()).collect(),
+            "all eight shards should be used, and nothing outside them"
+        );
+    }
+    /// Shard numbers are padded to a fixed width, so no shard's prefix contains
+    /// another's and S3 has one byte position to split on.
+    #[test]
+    fn a_shard_number_is_padded_to_a_fixed_width() {
+        let widths: std::collections::BTreeSet<usize> = (0..500)
+            .map(|_| segment(&partitioned_key(1_000), "shard=").len())
+            .collect();
+        assert_eq!(
+            widths,
+            std::collections::BTreeSet::from([3]),
+            "1000 shards should all be three digits"
+        );
+    }
+    /// One shard still names itself, so the layout does not change shape with the count.
+    #[test]
+    fn a_single_shard_still_names_itself() {
+        assert!(partitioned_key(1).starts_with("shard=0/"));
+    }
+    /// The shard reaches the written object, not just the key the writer computed.
+    #[tokio::test]
+    async fn a_written_object_sits_beneath_its_shard() {
+        let dir = temp_dir();
+        let sink = BlobDataSink::new(
+            Arc::new(LocalBlobStore) as Arc<dyn BlobStore>,
+            Location::Local(dir.clone()),
+            4,
+            1,
             2,
-        )
-    }
-
-    #[tokio::test]
-    async fn the_kinesis_sink_buffers_up_to_capacity() {
-        let sink = offline_kinesis(3);
+        );
         sink.record(batch("a", 1));
-        sink.record(batch("b", 1));
-        assert_eq!(sink.accumulator.buffered(), 2, "still buffered");
-    }
-    /// The Kinesis batch size is clamped to what `PutRecords` accepts, and to at least
-    /// one.
-    #[tokio::test]
-    async fn the_kinesis_capacity_cannot_exceed_what_put_records_accepts() {
-        assert_eq!(offline_kinesis(50_000).batch_size(), KINESIS_MAX_RECORDS);
-        assert_eq!(offline_kinesis(0).batch_size(), 1);
+        sink.flush().await;
+
+        let written = walk(&dir);
+        assert_eq!(written.len(), 1, "one batch at capacity one");
+        let path = written[0].display().to_string();
+        assert!(
+            path.contains("/shard="),
+            "{path} should sit beneath a shard"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
     /// A blob sink reports the batch size it was given, unclamped.
     #[tokio::test]
@@ -946,28 +523,11 @@ mod tests {
         let dir = temp_dir();
         assert_eq!(blob_sink(&dir, 50_000).batch_size(), 50_000);
     }
-    /// Each sink names its backend rather than its address.
+    /// A sink names its store rather than its address.
     #[tokio::test]
-    async fn each_sink_names_its_backend_the_way_its_siblings_do() {
-        assert_eq!(offline_kinesis(10).backend(), "Amazon Kinesis");
+    async fn a_sink_names_its_store_not_its_address() {
         let dir = temp_dir();
         assert_eq!(blob_sink(&dir, 1).backend(), "local filesystem");
-    }
-    /// A later attempt waits longer than an earlier one.
-    #[tokio::test]
-    async fn backoff_grows_with_each_attempt() {
-        let start = std::time::Instant::now();
-        backoff(1).await;
-        let first = start.elapsed();
-
-        let start = std::time::Instant::now();
-        backoff(3).await;
-        let third = start.elapsed();
-
-        assert!(
-            third > first,
-            "attempt 3 should wait longer than attempt 1 ({third:?} vs {first:?})"
-        );
     }
 
     /// Every file beneath `dir`, recursively.

@@ -1,0 +1,210 @@
+{
+  "arm": "T",
+  "stack": "triton",
+  "wire": "tensor",
+  "rows": 100,
+  "tps": 280,
+  "rows_per_sec": 28000,
+  "offered_rows_per_sec": 28000,
+  "repeat": null,
+  "key": "T-r100t280",
+  "ladder": "T-r100",
+  "rung": 2,
+  "config": {
+    "instances": 4,
+    "width": 16,
+    "exec_mode": "0",
+    "max_batch": 0,
+    "delay_us": 0
+  },
+  "config_text": "4x16 on intra, one call per request",
+  "note": "THEIR DESIGN: a finished 690-float tensor, Triton at its best configuration; 100 row(s) x 280 req/s = 28000 rows/s offered",
+  "mb": null,
+  "mb_is_rows": true,
+  "spin": 1,
+  "sessions": 4,
+  "width": 16,
+  "threads": 64,
+  "wt": null,
+  "host": "c9g-1",
+  "id": "c9g-1-T-r100t280",
+  "banner": [
+    "model md5 5539c97131c896db6c58088d9f9b9ee3 as expected, 36571281 bytes",
+    "wrote /root/triton/models/bench_vectorized/config.pbtxt",
+    "  inputs 1, outputs 1, max_batch_size 0, dynamic_batching off",
+    "  instances 4 KIND_CPU, sequential execution, width 16 on intra_op, intra_op 16, inter_op 1, spinning ort-default-on (backend cannot disable it)",
+    "  threads: 4 x 16 = 64 in the intra_op pools",
+    "    FLOAT    trailing [690] x 1",
+    "waiting for ready. ok",
+    "--- model",
+    " platform       onnxruntime_onnx",
+    " backend        onnxruntime",
+    " max_batch_size 0",
+    " dynamic_batch  off",
+    " instances      4 KIND_CPU",
+    " intra_op       16",
+    " inter_op       1",
+    " exec_mode      0",
+    " spinning       1 (default)",
+    " inputs         1",
+    " outputs        ['scores']",
+    "  backend check: onnxruntime (C++ libtriton_onnxruntime.so)",
+    "  python-backend check: no stub processes (0)",
+    "triton up on grpc :8001"
+  ],
+  "summary": "triton benchmark [c9g-1-T-r100t280]\n  server    : 172.31.40.195:8001\n  model     : bench_vectorized (Triton C++ onnxruntime backend)\n  features  : 1 inputs per row, outputs ['scores']\n  offering  : 280 req/s x 100 row(s), 1120 in flight, 120s warmup + 900s measured\n  payloads  : 32 x 270 KiB, built in 0.6s\n  validated : {'scores': ([100, 5], 'FP32')}\n  warmup done, measuring\n\n  measured  : 900.0s\n  offered   : 280 req/s\n  achieved  : 280.0 req/s (100.0% of offered)\n  responses : ok 252001, failed 0, shed 0, dispatched 251998\n  latency   : p50 14.36  p95 191.93  p99 404.29  max 851.40  mean 47.72 ms\n  client cpu: 0.1% of 32 vCPU\n\n  reported as 3 slice(s) of 300s, under one continuous 900s load:\n  slice 1/3 : n=84003 achieved=280.01 p50=14.22 p95=177.98 p99=263.65 shed=0 failed=0\n  slice 2/3 : n=83999 achieved=280.00 p50=15.66 p95=149.03 p99=213.41 shed=0 failed=0\n  slice 3/3 : n=83999 achieved=280.00 p50=13.82 p95=301.92 p99=660.05 shed=0 failed=0\nJSON {\"label\": \"c9g-1-T-r100t280\", \"rows\": 100, \"offered\": 280, \"achieved\": 280.0, \"ok\": 252001, \"failed\": 0, \"shed\": 0, \"p50\": 14.36, \"p95\": 191.93, \"p99\": 404.29, \"mean\": 47.72, \"max\": 851.4, \"client_cpu\": 0.1, \"measured_secs\": 900.0, \"segments\": [{\"slice\": 1, \"seconds\": 300.0, \"n\": 84003, \"achieved\": 280.01, \"p50\": 14.22, \"p95\": 177.98, \"p99\": 263.65, \"shed\": 0, \"failed\": 0}, {\"slice\": 2, \"seconds\": 300.0, \"n\": 83999, \"achieved\": 280.0, \"p50\": 15.66, \"p95\": 149.03, \"p99\": 213.41, \"shed\": 0, \"failed\": 0}, {\"slice\": 3, \"seconds\": 300.0, \"n\": 83999, \"achieved\": 280.0, \"p50\": 13.82, \"p95\": 301.92, \"p99\": 660.05, \"shed\": 0, \"failed\": 0}]}\n",
+  "result": {
+    "offered": 280,
+    "achieved": 280.0,
+    "p50": 14.36,
+    "p95": 191.93,
+    "p99": 404.29,
+    "shed": 0,
+    "failed": 0,
+    "client_cpu": 0.1
+  },
+  "slices": [
+    {
+      "slice": 1,
+      "of": 3,
+      "n": 84003,
+      "achieved": 280.01,
+      "p50": 14.22,
+      "p95": 177.98,
+      "p99": 263.65,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 2,
+      "of": 3,
+      "n": 83999,
+      "achieved": 280.0,
+      "p50": 15.66,
+      "p95": 149.03,
+      "p99": 213.41,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 3,
+      "of": 3,
+      "n": 83999,
+      "achieved": 280.0,
+      "p50": 13.82,
+      "p95": 301.92,
+      "p99": 660.05,
+      "shed": 0,
+      "failed": 0
+    }
+  ],
+  "verdict": {
+    "state": "sustained",
+    "sustained": true,
+    "slices_held": 3,
+    "slices_total": 3,
+    "broke_in_slice": null,
+    "whole_window_held": true
+  },
+  "sustained": true,
+  "cpu_report": "cpu    99.0 %   mean host utilisation, scheduler run time\ntick   98.9 %   the same window from /proc/stat, tick-based, for comparison\nmem    0.0 %   server process, 0.0 GiB resident\nhost   2.1 %   memory used including page cache\nover   858 sample(s), 0s to 881s of the sweep\n",
+  "client_cpu_report": "cpu    0.1 %   mean host utilisation, scheduler run time\ntick   0.1 %   the same window from /proc/stat, tick-based, for comparison\nmem    0.0 %   server process, 0.0 GiB resident\nhost   1.4 %   memory used including page cache\nover   876 sample(s), 0s to 881s of the sweep\n",
+  "server_cpu_pct": 99.0,
+  "client_cpu_pct": 0.1,
+  "clean_slate_verified": true,
+  "window": {
+    "start": "2026-10-24T03:03:16Z",
+    "end": "2026-10-24T03:17:58Z",
+    "measured_from": "2026-10-24T03:03:16Z",
+    "note": "one continuous 900s load reported as 3 slice(s); sampling and srv percentiles cover 882s, starting 20s after warmup ended so warmup's last metric batch falls outside it"
+  },
+  "wall": {
+    "cell_start": "2026-10-24T03:00:55Z",
+    "cell_end": "2026-10-24T03:17:58Z"
+  },
+  "ort_version": "1.28.0",
+  "spinning": "ort-default-on",
+  "spinning_note": "no spinning key in config.pbtxt; the onnxruntime backend in 26.08 forwards no session.*.allow_spinning entry, so ONNX Runtime's default spin applies",
+  "dynamic_batching": null,
+  "triton_server_side": {
+    "request": {
+      "window_mean_ms": 47.66,
+      "window_count": 246474,
+      "window_duration_ms": 11746862.838,
+      "cumulative_quantiles_ms": {
+        "0.5": 12.636,
+        "0.9": 100.301,
+        "0.95": 231.339,
+        "0.99": 360.356,
+        "0.999": 393.43
+      }
+    },
+    "queue": {
+      "window_mean_ms": 34.422,
+      "window_count": 246474,
+      "window_duration_ms": 8484195.451,
+      "cumulative_quantiles_ms": {
+        "0.5": 0.01,
+        "0.9": 86.789,
+        "0.95": 218.351,
+        "0.99": 346.137,
+        "0.999": 376.403
+      }
+    },
+    "compute_input": {
+      "window_mean_ms": 0.006,
+      "window_count": 246474,
+      "window_duration_ms": 1530.602,
+      "cumulative_quantiles_ms": {
+        "0.5": 0.007,
+        "0.9": 0.008,
+        "0.95": 0.009,
+        "0.99": 0.011,
+        "0.999": 0.089
+      }
+    },
+    "compute_infer": {
+      "window_mean_ms": 13.157,
+      "window_count": 246474,
+      "window_duration_ms": 3242750.219,
+      "cumulative_quantiles_ms": {
+        "0.5": 12.417,
+        "0.9": 12.99,
+        "0.95": 13.635,
+        "0.99": 23.564,
+        "0.999": 39.931
+      }
+    },
+    "compute_output": {
+      "window_mean_ms": 0.007,
+      "window_count": 246474,
+      "window_duration_ms": 1770.668,
+      "cumulative_quantiles_ms": {
+        "0.5": 0.007,
+        "0.9": 0.01,
+        "0.95": 0.011,
+        "0.99": 0.013,
+        "0.999": 0.04
+      }
+    }
+  },
+  "triton_image": "nvcr.io/nvidia/tritonserver:26.08-py3",
+  "instance": "c9g.16xlarge",
+  "arch": "arm64",
+  "phase": "head",
+  "tuned": true,
+  "warmup_s": 120,
+  "duration_s": 900,
+  "segments": 3,
+  "settle_s": 60,
+  "guard_s": 20,
+  "conn": 512,
+  "sample_rate": "0.0",
+  "cores": 64,
+  "wire_note": "one 690-wide vector, identity transformation; the form Triton's contract requires, so both stacks receive the same bytes",
+  "model_file": "bench_model.onnx",
+  "model_md5": "5539c97131c896db6c58088d9f9b9ee3",
+  "model_size": "10m",
+  "rev": "ffba569-dirty",
+  "run": "design-vs-triton-cpu-arm64-10M"
+}

@@ -1,0 +1,20 @@
+hushar benchmark [reachability]
+  server    : http://172.31.40.195:8279
+  model     : bench-vectorized-tensor on cpu
+  features  : 1 per row
+  asking    : whichever the server's split chooses
+  offering  : 5 req/s x 200 row(s), 4 in flight (pinned), 0s warmup + 2s measured
+  payload   : 553728 bytes per request, 2768.6 bytes per row, 1 feature(s)
+
+  bench-vectorized-tensor on cpu
+  ---------------------------------------------
+  achieved      :       5.0 req/s   (1000.0 rows/s)
+  offered       :         5 req/s
+  measured      :        10 requests  (of 10 that succeeded overall)
+  latency  p50  :     10.04 ms
+           p95  :     13.10 ms
+           p99  :     13.10 ms
+           max  :     13.10 ms
+           mean :     10.14 ms
+  failed        :         0
+  shed          :         0  (offered but never sent: 4 in flight was the cap)

@@ -1,0 +1,38 @@
+server        http://172.31.32.122:8279
+model         transformer
+tag           cell
+rates         750
+duration      300s measured, 120s warmup on the first rate
+segments      5 slice(s) of the measured window, load continuous
+rows          100
+concurrency   sized from each rate as rate x 4
+
+NOTE the engine is a property of the SERVER host. Take it from that host's
+     startup banner, which names the loaded ORT provider or Neuron runtime.
+
+=== host ===================================================
+role                 client
+hostname             ip-172-31-41-69.us-west-2.compute.internal
+instance type        m9g.8xlarge
+availability zone    us-west-2a
+private ipv4         172.31.41.69
+kernel               Linux 6.18.56-125.164.amzn2023.aarch64
+os                   Amazon Linux 2023.12.20261026
+
+=== cpu ====================================================
+model                unknown
+architecture         aarch64
+physical cores       32
+threads per core     1
+vcpus (nproc)        32
+simd                 asimd,sve,sve2
+numa nodes           1
+  node0 cpus           0-31
+memory               124 GiB
+
+=== software ===============================================
+provider             unknown
+ORT_DYLIB_PATH       unknown
+NRT_DYLIB_PATH       unknown
+rustc                rustc 1.99.1 (58cf8f9c3 2026-10-13)
+bundle               ffba569-dirty

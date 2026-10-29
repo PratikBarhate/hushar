@@ -1,0 +1,146 @@
+
+=============================
+== Triton Inference Server ==
+=============================
+
+NVIDIA Release 26.08 (build 64703337)
+Triton Server Version 2.72.0
+
+Copyright (c) 2018-2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+WARNING: The NVIDIA Driver was not detected.  GPU functionality will not be available.
+   Use the NVIDIA Container Toolkit to start this container with GPU support; see
+   https://docs.nvidia.com/datacenter/cloud-native/ .
+
+I1023 02:25:39.658502 1 cuda_memory_manager.cc:117] "CUDA memory pool disabled"
+W1023 02:25:39.658477 1 pinned_memory_manager.cc:273] "Unable to allocate pinned system memory, pinned memory pool will not be available: CUDA driver version is insufficient for CUDA runtime version"
+E1023 02:25:39.658565 1 server.cc:248] "CudaDriverHelper has not been initialized."
+I1023 02:25:39.659608 1 model_lifecycle.cc:478] "loading: bench_raw:1"
+I1023 02:25:39.659626 1 model_lifecycle.cc:478] "loading: bench_vectorized:1"
+I1023 02:25:39.662617 1 onnxruntime.cc:2917] "TRITONBACKEND_Initialize: onnxruntime"
+I1023 02:25:39.662628 1 onnxruntime.cc:2927] "Triton TRITONBACKEND API version: 1.19"
+I1023 02:25:39.662631 1 onnxruntime.cc:2933] "'onnxruntime' TRITONBACKEND API version: 1.19"
+I1023 02:25:39.662633 1 onnxruntime.cc:2963] "backend configuration:\n{\"cmdline\":{\"auto-complete-config\":\"false\",\"backend-directory\":\"/opt/tritonserver/backends\",\"min-compute-capability\":\"6.000000\",\"default-max-batch-size\":\"4\"}}"
+I1023 02:25:39.671809 1 onnxruntime.cc:3028] "TRITONBACKEND_ModelInitialize: bench_vectorized (version 1)"
+I1023 02:25:39.671846 1 onnxruntime.cc:3028] "TRITONBACKEND_ModelInitialize: bench_raw (version 1)"
+I1023 02:25:39.672076 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_0 (CPU device 0)"
+I1023 02:25:39.672113 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_1 (CPU device 0)"
+I1023 02:25:39.672118 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_2 (CPU device 0)"
+I1023 02:25:39.672158 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_3 (CPU device 0)"
+I1023 02:25:39.672815 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_0 (CPU device 0)"
+I1023 02:25:39.672833 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_1 (CPU device 0)"
+I1023 02:25:39.672871 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_2 (CPU device 0)"
+I1023 02:25:39.672894 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_3 (CPU device 0)"
+I1023 02:25:39.672913 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_4 (CPU device 0)"
+I1023 02:25:39.672962 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_5 (CPU device 0)"
+I1023 02:25:39.672982 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_6 (CPU device 0)"
+I1023 02:25:39.673020 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_7 (CPU device 0)"
+I1023 02:25:39.673036 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_8 (CPU device 0)"
+I1023 02:25:39.673085 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_9 (CPU device 0)"
+I1023 02:25:39.673090 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_10 (CPU device 0)"
+I1023 02:25:39.673133 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_11 (CPU device 0)"
+I1023 02:25:39.673161 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_12 (CPU device 0)"
+I1023 02:25:39.673190 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_13 (CPU device 0)"
+I1023 02:25:39.673217 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_14 (CPU device 0)"
+I1023 02:25:39.673266 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_16 (CPU device 0)"
+I1023 02:25:39.673268 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_15 (CPU device 0)"
+I1023 02:25:39.673316 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_17 (CPU device 0)"
+I1023 02:25:39.673320 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_18 (CPU device 0)"
+I1023 02:25:39.673351 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_19 (CPU device 0)"
+I1023 02:25:39.673405 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_20 (CPU device 0)"
+I1023 02:25:39.673415 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_21 (CPU device 0)"
+I1023 02:25:39.673431 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_22 (CPU device 0)"
+I1023 02:25:39.673466 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_23 (CPU device 0)"
+I1023 02:25:39.673520 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_24 (CPU device 0)"
+I1023 02:25:39.673546 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_25 (CPU device 0)"
+I1023 02:25:39.673572 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_26 (CPU device 0)"
+I1023 02:25:39.673615 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_27 (CPU device 0)"
+I1023 02:25:39.673662 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_28 (CPU device 0)"
+I1023 02:25:39.673676 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_29 (CPU device 0)"
+I1023 02:25:39.673725 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_30 (CPU device 0)"
+I1023 02:25:39.673729 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_31 (CPU device 0)"
+I1023 02:25:39.673744 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_32 (CPU device 0)"
+I1023 02:25:39.673803 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_33 (CPU device 0)"
+I1023 02:25:39.673806 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_34 (CPU device 0)"
+I1023 02:25:39.673822 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_35 (CPU device 0)"
+I1023 02:25:39.673871 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_36 (CPU device 0)"
+I1023 02:25:39.673888 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_37 (CPU device 0)"
+I1023 02:25:39.673914 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_38 (CPU device 0)"
+I1023 02:25:39.673958 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_39 (CPU device 0)"
+I1023 02:25:39.673964 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_40 (CPU device 0)"
+I1023 02:25:39.674002 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_41 (CPU device 0)"
+I1023 02:25:39.674007 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_42 (CPU device 0)"
+I1023 02:25:39.674044 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_43 (CPU device 0)"
+I1023 02:25:39.674072 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_44 (CPU device 0)"
+I1023 02:25:39.674099 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_45 (CPU device 0)"
+I1023 02:25:39.674133 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_46 (CPU device 0)"
+I1023 02:25:39.674146 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_47 (CPU device 0)"
+I1023 02:25:39.674180 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_48 (CPU device 0)"
+I1023 02:25:39.674216 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_49 (CPU device 0)"
+I1023 02:25:39.674227 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_50 (CPU device 0)"
+I1023 02:25:39.674255 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_51 (CPU device 0)"
+I1023 02:25:39.674288 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_52 (CPU device 0)"
+I1023 02:25:39.674314 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_53 (CPU device 0)"
+I1023 02:25:39.674334 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_54 (CPU device 0)"
+I1023 02:25:39.674397 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_55 (CPU device 0)"
+I1023 02:25:39.674404 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_56 (CPU device 0)"
+I1023 02:25:39.674418 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_57 (CPU device 0)"
+I1023 02:25:39.674562 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_58 (CPU device 0)"
+I1023 02:25:39.674573 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_59 (CPU device 0)"
+I1023 02:25:39.674604 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_60 (CPU device 0)"
+I1023 02:25:39.674627 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_61 (CPU device 0)"
+I1023 02:25:39.674680 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_63 (CPU device 0)"
+I1023 02:25:39.674682 1 onnxruntime.cc:3093] "TRITONBACKEND_ModelInstanceInitialize: bench_raw_0_62 (CPU device 0)"
+I1023 02:25:39.793772 1 model_lifecycle.cc:854] "successfully loaded 'bench_vectorized'"
+I1023 02:25:51.214643 1 model_lifecycle.cc:854] "successfully loaded 'bench_raw'"
+I1023 02:25:51.214688 1 server.cc:640] 
++------------------+------+
+| Repository Agent | Path |
++------------------+------+
++------------------+------+
+
+I1023 02:25:51.214710 1 server.cc:667] 
++-------------+-----------------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Backend     | Path                                                            | Config                                                                                                                                                         |
++-------------+-----------------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| onnxruntime | /opt/tritonserver/backends/onnxruntime/libtriton_onnxruntime.so | {"cmdline":{"auto-complete-config":"false","backend-directory":"/opt/tritonserver/backends","min-compute-capability":"6.000000","default-max-batch-size":"4"}} |
++-------------+-----------------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+I1023 02:25:51.214732 1 server.cc:710] 
++------------------+---------+--------+
+| Model            | Version | Status |
++------------------+---------+--------+
+| bench_raw        | 1       | READY  |
+| bench_vectorized | 1       | READY  |
++------------------+---------+--------+
+
+I1023 02:25:51.214867 1 metrics.cc:782] "Collecting CPU metrics"
+I1023 02:25:51.214918 1 tritonserver.cc:2665] 
++----------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Option                           | Value                                                                                                                                                                                                           |
++----------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| server_id                        | triton                                                                                                                                                                                                          |
+| server_version                   | 2.72.0                                                                                                                                                                                                          |
+| server_extensions                | classification sequence model_repository model_repository(unload_dependents) schedule_policy model_configuration system_shared_memory cuda_shared_memory binary_tensor_data parameters statistics trace logging |
+| model_repository_path[0]         | /models                                                                                                                                                                                                         |
+| model_control_mode               | MODE_NONE                                                                                                                                                                                                       |
+| strict_model_config              | 1                                                                                                                                                                                                               |
+| model_config_name                |                                                                                                                                                                                                                 |
+| rate_limit                       | OFF                                                                                                                                                                                                             |
+| pinned_memory_pool_byte_size     | 268435456                                                                                                                                                                                                       |
+| min_supported_compute_capability | 6.0                                                                                                                                                                                                             |
+| strict_readiness                 | 1                                                                                                                                                                                                               |
+| exit_timeout                     | 30                                                                                                                                                                                                              |
+| cache_enabled                    | 0                                                                                                                                                                                                               |
++----------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+I1023 02:25:51.216359 1 grpc_server.cc:2584] "Started GRPCInferenceService at 0.0.0.0:8001"
+I1023 02:25:51.216478 1 http_server.cc:4961] "Started HTTPService at 0.0.0.0:8000"
+I1023 02:25:51.257257 1 http_server.cc:400] "Started Metrics Service at 0.0.0.0:8002"

@@ -3,9 +3,8 @@
 
 """Generates the benchmark models and the configurations that serve them.
 
-Two architectures, and three ways for features to reach them. Every model classifies into
-5 classes and is sized to about 100M parameters, so any two of them are worth putting side
-by side.
+Two architectures, both fed the same way. Every model classifies into 5 classes and is
+sized to about 100M parameters, so any two of them are worth putting side by side.
 
 The architectures:
 
@@ -17,33 +16,16 @@ Same parameter count, an order of magnitude apart in arithmetic per row, because
 encoder applies its weights to each of 8 tokens and the ranking model applies them once.
 Which of the two a piece of hardware prefers is not something to read off a spec sheet.
 
-The ways in, all measured on the transformer, so that comparison holds the architecture
-still:
+Features reach both the same way: the service transforms every feature and concatenates
+them into one `[rows, width]` float input. `VectorizationTime` is reported separately from
+`InferenceTime`, so the cost of turning a request into a tensor stays visible against the
+cost of scoring it. The schema is padded to `TARGET_FEATURES` because that per-feature
+cost is invisible at a dozen features.
 
-    raw         one input per feature, every value exactly as the caller sent it; the
-                graph scales, one-hot encodes and embeds all of it itself, and the
-                configuration says nothing about features at all
-    vectorized  one `[rows, width]` float input; the service transforms every feature
-                and concatenates them
-    named       one input per feature; the service transforms the numbers, and the two
-                text features reach the graph as strings
-
-`VectorizationTime` is reported separately from `InferenceTime`, because turning a request
-into tensors is the cost those three exist to compare: `vectorized` puts that work in the
-service, `raw` puts all of it in the graph, and `named` splits it. The schema is padded to
-`TARGET_FEATURES` because a per-input path pays per input, and that cost is invisible at a
-dozen features.
-
-`raw` is the shape a trained model usually arrives in: featurization is part of the graph,
-so a deployment has nothing to configure and nothing to keep in sync -- its configuration
-has no `vectorization_config`, which is how hushar is told that every model input is fed by
-the feature of its own name. Both architectures take it, and they share the featurization
-front end weight for weight, so a run comparing them is comparing trunks.
-
-A roll-out loads a model **twice** rather than serving a second set of weights: each raw
-model gets a candidate configuration naming the same file under a second `model_id`. Two
-arms that differ only in their weights cost exactly what two arms sharing them cost, and
-cost is all this measures.
+A roll-out loads a model **twice** rather than serving a second set of weights: each model
+gets a candidate configuration naming the same file under a second `model_id`. Two arms
+that differ only in their weights cost exactly what two arms sharing them cost, and cost
+is all this measures.
 
 Model and configuration are written together, from one source, because the two have
 to agree on every width. Deriving them separately is how a service comes to load a
@@ -51,8 +33,7 @@ model and then refuse every request.
 
     python scripts/generate_benchmark_models.py
 
-Writes the models, their configurations, the string vocabulary and the raw models'
-feature specification into `benchmark-data/generated/`.
+Writes the models and their configurations into `benchmark-data/generated/`.
 """
 
 import argparse
@@ -64,7 +45,6 @@ import numpy as np
 import onnx
 import torch
 import torch.nn as nn
-from onnx import TensorProto, helper
 
 # The default when --params is not given. A size is chosen rather than derived because
 # the depth is solved to hit it -- see depth_for_target.
@@ -101,10 +81,6 @@ CROSS_LAYERS = 3
 # MaskNet computes its mask through a layer wider than the vector it masks.
 MASK_RATIO = 2
 
-# Tokens the graph's own embedding tables cover. Anything else is out of vocabulary
-# and lands on the default row, which costs exactly the same to look up.
-VOCAB = 2000
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Everything written here is generated, so the directory is not tracked by git.
 # Configurations name the model by this relative path, which resolves from the
@@ -123,24 +99,18 @@ EMBEDDINGS = [("emb_review", 96, 8), ("emb_category", 64, 12),
 ONE_HOTS = [("oh_color", 48), ("oh_size", 64), ("oh_channel", 32), ("oh_status", 96)]
 IDENTITIES = [("id_scores", 2), ("id_vector", 8)]
 
-# The named model's text features, embedded inside the graph rather than by a
-# configured lookup table.
-TEXT_INPUTS = ["text_title", "text_brand"]
-
-# Named inputs to land on. A real deployment counts features in the hundreds, and the
-# named path pays per input: 200 features means 200 tensors built per request, against
-# one concatenated vector for the vectorized path. That per-input cost is the thing
-# worth measuring, and it does not show up at a dozen features.
+# Features to land on. A real deployment counts features in the hundreds, and the service
+# pays per feature: 200 of them means 200 transformations run per request. That cost is
+# the thing worth measuring, and it does not show up at a dozen features.
 TARGET_FEATURES = 200
 
 
 def synthetic_scalers(count):
     """Pads the schema out to `TARGET_FEATURES` with 32-bit scalars.
 
-    Only 32-bit, so every one is also a named input -- see `NAMED_SCALARS`. They
-    alternate between the two 32-bit transformations and vary their bounds so no two
-    are identical, but they carry no meaning beyond being a feature: the count is what
-    is being modelled here, not the semantics.
+    They alternate between the two 32-bit transformations and vary their bounds so no
+    two are identical, but they carry no meaning beyond being a feature: the count is
+    what is being modelled here, not the semantics.
     """
     out = []
     for i in range(count):
@@ -159,7 +129,7 @@ def synthetic_scalers(count):
     return out
 
 
-NAMED_SCALERS_BASE = [
+BASE_SCALERS = [
     ("mm32_temperature", {"type": "min_max_scaling32", "min": -40.0, "max": 120.0}),
     ("mm32_price", {"type": "min_max_scaling32", "min": 0.0, "max": 10000.0}),
     ("mm32_percentage", {"type": "min_max_scaling32", "min": 0.0, "max": 100.0}),
@@ -168,8 +138,8 @@ NAMED_SCALERS_BASE = [
     ("sd32_duration", {"type": "standardization32", "mean": 300.0, "std_dev": 150.0}),
 ]
 
-# 64-bit scalers stay out of the named model on purpose -- see `NAMED_SCALARS` -- so
-# they do not count towards the target.
+# The 64-bit scalers do not count towards the target, so the padding below is unaffected
+# by how many of them there are.
 WIDE_SCALERS = [
     ("mm64_revenue", {"type": "min_max_scaling64", "min": 0.0, "max": 1e9}),
     ("mm64_distance", {"type": "min_max_scaling64", "min": 0.0, "max": 40000.0}),
@@ -179,26 +149,18 @@ WIDE_SCALERS = [
     ("sd64_views", {"type": "standardization64", "mean": 1e6, "std_dev": 5e5}),
 ]
 
-# Everything named already accounted for: the 32-bit scalers, the one-hot arrays and
-# the two text inputs. The remainder is made up with synthetic 32-bit scalars.
-_NAMED_ALREADY = len(NAMED_SCALERS_BASE) + len(ONE_HOTS) + len(TEXT_INPUTS)
-SCALERS = (NAMED_SCALERS_BASE
-           + synthetic_scalers(TARGET_FEATURES - _NAMED_ALREADY)
+# What the target already accounts for: the hand-written 32-bit scalers, the one-hot
+# arrays, and the two features that used to reach the graph as text. The two are still
+# counted so the padding, and therefore `VECTOR_WIDTH`, is what every tracked run was
+# measured at -- a schema that changed width would not be comparable with them.
+_ACCOUNTED = len(BASE_SCALERS) + len(ONE_HOTS) + 2
+SCALERS = (BASE_SCALERS
+           + synthetic_scalers(TARGET_FEATURES - _ACCOUNTED)
            + WIDE_SCALERS)
 
-# The named model's float inputs, paired with 32-bit scalers only. A 64-bit scaler
-# would demand a double on the wire and then narrow it to feed an FP32 input, which
-# buys nothing -- that path earns its keep when the model input is FP64 as well.
-NAMED_SCALARS = [name for name, spec in SCALERS if spec["type"].endswith("32")]
-
-# The raw model's numeric inputs, split by the precision the value arrives in. It makes
-# the same distinction the transformation suffixes make -- a 32-bit scaler's value feeds
-# an FP32 input and a 64-bit one an FP64 input -- but honours it in the graph, taking the
-# double and casting it there rather than having the service do the narrowing. So the raw
-# model keeps every feature the vectorized configuration has, including the six the named
-# model leaves out.
-RAW_SCALARS_32 = [(name, spec) for name, spec in SCALERS if spec["type"].endswith("32")]
-RAW_SCALARS_64 = [(name, spec) for name, spec in SCALERS if spec["type"].endswith("64")]
+# The width the concatenated input carries, asserted rather than assumed: it is the one
+# number a model, its configuration and every tracked result all have to agree on.
+VECTOR_WIDTH = 690
 
 # The suffix the second arm of a roll-out is loaded under. It names the same file as the
 # control, because a candidate that differs only in its weights costs what the control
@@ -220,7 +182,7 @@ def vectors(rng, count, width):
 
 def embedding_transformation(rng, name, width, vocab):
     return {
-        "type": "embedding",
+        "type": "embedding_lookup",
         "embeddings": dict(zip(words(f"{name}_v", vocab), vectors(rng, vocab, width))),
         "default_val": [0.0] * width,
     }
@@ -234,34 +196,7 @@ def one_hot_transformation(name, width):
     }
 
 
-def affine_of(spec):
-    """One scaler as `(value - offset) * scale`, for the version living in the graph.
-
-    Min-max scaling is `(x - min) / (max - min)` and standardization is
-    `(x - mean) / std_dev`, so both are an affine and 200 of them are two constant
-    vectors -- one `Sub` and one `Mul` for the whole numeric block, rather than 200
-    per-feature subgraphs. Which is the point of doing it in the graph at all.
-    """
-    if spec["type"].startswith("min_max"):
-        return spec["min"], 1.0 / (spec["max"] - spec["min"])
-    return spec["mean"], 1.0 / spec["std_dev"]
-
-
-def plausible_range(spec):
-    """The raw values a scaler expects to see, for the load generator to sample from.
-
-    Read off the transformation's own parameters, so the numbers on the wire land where
-    the scaling was defined for: a min-max scaler's own bounds, and three standard
-    deviations either side of a standardization's mean. The service derives the same
-    range from the same fields when it is the one transforming, so a vectorized run and
-    a raw run put the same values on the wire.
-    """
-    if spec["type"].startswith("min_max"):
-        return spec["min"], spec["max"]
-    return spec["mean"] - 3.0 * spec["std_dev"], spec["mean"] + 3.0 * spec["std_dev"]
-
-
-def vectorized_config(rng, model_path, provider, rows=None):
+def vectorized_config(rng, model_id, model_path, provider, rows=None):
     """Every feature transformed and concatenated into one input.
 
     `feature_order` fixes the layout, so the model's input width is the sum of the
@@ -285,7 +220,7 @@ def vectorized_config(rng, model_path, provider, rows=None):
     order = ([n for n, _, _ in EMBEDDINGS] + [n for n, _ in ONE_HOTS]
              + [n for n, _ in IDENTITIES] + [n for n, _ in SCALERS])
     return {
-        "model_id": "bench-vectorized-v1",
+        "model_id": model_id,
         "model_path": model_path,
         "execution_provider": provider,
         # A pinned graph needs every batch padded up to its size, which is what
@@ -297,154 +232,6 @@ def vectorized_config(rng, model_path, provider, rows=None):
             "feature_order": order,
         },
     }
-
-
-def named_config(model_path, provider, rows=None):
-    """One input per feature, every one fed from the request verbatim.
-
-    `model_inputs` transforms nothing: the shape decides that, not the input's type, so
-    declaring a transformation here is refused at startup. Each input therefore receives
-    what the caller sends -- a float for a scalar, a vector for a one-hot, text for a
-    string -- and `named_feature_spec` is what tells the load generator to send exactly
-    that.
-
-    `rows` pins the batch size, as in `vectorized_config`.
-    """
-    inputs = {}
-    for name in NAMED_SCALARS:
-        inputs[name] = {"data_type": "float"}
-    for name, _width in ONE_HOTS:
-        inputs[name] = {"data_type": "float_array"}
-    for name in TEXT_INPUTS:
-        inputs[name] = {"data_type": "string"}
-
-    return {
-        "model_id": "bench-named-v1",
-        "model_path": model_path,
-        "execution_provider": provider,
-        # A pinned graph needs every batch padded up to its size, which is what
-        # is_fixed declares; without it a short last batch is a shape mismatch.
-        **({"mini_batch_size": rows, "is_fixed": True} if rows is not None else {}),
-        "vectorization_config": {
-            "model_inputs": inputs,
-        },
-    }
-
-
-def named_feature_spec():
-    """What the load generator sends for each of the named model's inputs.
-
-    `model_inputs` declares each input's type but not the values a caller should put in
-    it, and it carries no transformations to infer a range from, so the generator needs
-    this the same way the raw model does.
-
-    A one-hot input is a `float_array` of its width here, not a word: the encoding used
-    to be a configured transformation and is the caller's to send now, so the values on
-    the wire are the vector the model always received.
-    """
-    vocabulary = raw_vocabularies()
-    spec = {}
-    for name in NAMED_SCALARS:
-        scaler = next(s for n, s in SCALERS if n == name)
-        low, high = plausible_range(scaler)
-        spec[name] = {"kind": "float", "low": low, "high": high}
-    for name, width in ONE_HOTS:
-        spec[name] = {"kind": "float_array", "width": width}
-    for name in TEXT_INPUTS:
-        spec[name] = {"kind": "choice", "words": vocabulary[name]}
-    return spec
-
-
-def raw_config(model_id, model_path, provider, rows=None):
-    """One input per feature, every one fed verbatim -- the model featurizes itself.
-
-    The scaling, one-hot encoding and embedding lookups the vectorized configuration
-    spells out are inside the graph instead, so a category arrives as its *name* and a
-    scalar as its unscaled value. Nothing here transforms anything.
-
-    The inputs are still declared. Every field of the resulting plan comes from the
-    model's signature, so the declaration cannot change what is fed -- what it buys is
-    startup: a misspelled input, or a model that no longer takes what this deployment
-    thinks it does, is caught before the first request instead of silently serving a
-    different contract.
-
-    `rows` pins the batch size, as in `vectorized_config`.
-    """
-    inputs = {}
-    for name, _vocab, _dim in EMBEDDINGS:
-        inputs[name] = {"data_type": "string"}
-    for name, _width in ONE_HOTS:
-        inputs[name] = {"data_type": "string"}
-    for name in TEXT_INPUTS:
-        inputs[name] = {"data_type": "string"}
-    for name, _width in IDENTITIES:
-        inputs[name] = {"data_type": "float_array"}
-    for name, _spec in RAW_SCALARS_32:
-        inputs[name] = {"data_type": "float"}
-    for name, _spec in RAW_SCALARS_64:
-        # The suffix decides the wire variant here as it does everywhere else: a 64-bit
-        # scaler's feature feeds an FP64 input, and the graph does the narrowing.
-        inputs[name] = {"data_type": "double"}
-
-    return {
-        "model_id": model_id,
-        "model_path": model_path,
-        "execution_provider": provider,
-        # A pinned graph needs every batch padded up to its size, which is what
-        # is_fixed declares; without it a short last batch is a shape mismatch.
-        **({"mini_batch_size": rows, "is_fixed": True} if rows is not None else {}),
-        "vectorization_config": {
-            "model_inputs": inputs,
-        },
-    }
-
-
-def raw_vocabularies():
-    """Every string input the raw graph maps to a row index itself.
-
-    The categories and the embedding keys are the same lists the other two
-    configurations carry, so all three shapes see the same feature values -- only the
-    party doing the lookup changes.
-    """
-    vocabulary = {name: words(f"{name}_v", vocab) for name, _, vocab in EMBEDDINGS}
-    vocabulary.update({name: sorted(words(f"{name}_c", w)) for name, w in ONE_HOTS})
-    vocabulary.update({name: words(f"{name}_v", VOCAB) for name in TEXT_INPUTS})
-    return vocabulary
-
-
-def raw_feature_spec():
-    """What the load generator sends for each of the raw model's features.
-
-    The client reads a model configuration to learn which features to send, and a raw
-    model's configuration mentions none -- the graph's inputs are the features. So this
-    file takes its place, and says only what a generator needs: a range, a width, or a
-    word list.
-
-    Written from the same schema the other two configurations are, so the values on the
-    wire are the same in all three runs. A client inventing its own feature names would
-    make every feature fall back to its default and measure a request path production
-    never sees.
-    """
-    vocabulary = raw_vocabularies()
-    spec = {}
-    for name, _, _ in EMBEDDINGS:
-        spec[name] = {"kind": "choice", "words": vocabulary[name]}
-    for name, _ in ONE_HOTS:
-        spec[name] = {"kind": "choice", "words": vocabulary[name]}
-    for name, width in IDENTITIES:
-        spec[name] = {"kind": "float_array", "width": width}
-    for name, scaler in SCALERS:
-        low, high = plausible_range(scaler)
-        spec[name] = {
-            # The suffix decides the wire variant, as it does everywhere else: a 64-bit
-            # scaler's feature feeds an FP64 input, which takes a double and not a float.
-            "kind": "double" if scaler["type"].endswith("64") else "float",
-            "low": low,
-            "high": high,
-        }
-    for name in TEXT_INPUTS:
-        spec[name] = {"kind": "choice", "words": vocabulary[name]}
-    return spec
 
 
 def service_config(control, candidate=None):
@@ -640,171 +427,6 @@ class VectorizedModel(nn.Module):
         return self.encoder(self.to_tokens(features).reshape(-1, N_TOKENS, D_MODEL))
 
 
-class NamedModel(nn.Module):
-    """One input per feature in, class probabilities out.
-
-    Text arrives already encoded to a row index, because mapping a string to an index
-    is not something torch can export. Those inputs are replaced by the string
-    front-end after export -- see `add_string_front_end`.
-    """
-
-    def __init__(self, scalars, arrays, texts, layers):
-        super().__init__()
-        self.scalars, self.arrays, self.texts = scalars, arrays, texts
-        dense_tokens = N_TOKENS - len(texts)
-        dense_width = len(scalars) + sum(width for _, width in arrays)
-        self.to_tokens = nn.Linear(dense_width, dense_tokens * D_MODEL)
-        self.tables = nn.ModuleList(nn.Embedding(VOCAB + 1, D_MODEL) for _ in texts)
-        self.dense_tokens = dense_tokens
-        self.encoder = Encoder(layers)
-
-    def forward(self, *inputs):
-        dense = torch.cat(inputs[: len(self.scalars) + len(self.arrays)], dim=-1)
-        tokens = [self.to_tokens(dense).reshape(-1, self.dense_tokens, D_MODEL)]
-        for table, ids in zip(self.tables, inputs[len(self.scalars) + len(self.arrays):]):
-            tokens.append(table(ids.reshape(-1)).reshape(-1, 1, D_MODEL))
-        return self.encoder(torch.cat(tokens, dim=1))
-
-
-def zeroed_last_row(table):
-    """Zeros an embedding table's last row, which is where out of vocabulary lands.
-
-    The configured `embedding` transformation answers an unknown key with `default_val`,
-    all zeros. Matching it keeps the two paths equivalent, so the only difference between
-    them is which side did the lookup.
-    """
-    with torch.no_grad():
-        table.weight[-1].zero_()
-    return table
-
-
-class RawFeatures(nn.Module):
-    """Raw features in -- unscaled numbers and category names -- one dense vector out.
-
-    Every transformation the vectorized configuration describes happens here instead,
-    inside the graph:
-
-        scalers      concatenated, then one `(x - offset) * scale` over the block
-        64-bit ones  cast to FP32 first, which is all the wider input costs
-        one-hots     a lookup in a frozen identity table whose last row is zeros
-        embeddings   a lookup in a learned table whose last row is zeros
-        arrays       straight through, already the vector the model wants
-        text         a lookup in a learned table, returned separately
-
-    The dense vector has the same layout and width as the vectorized model's single
-    input, so a raw model and the vectorized one differ in *where* featurization runs and
-    in nothing else. That is what makes their latencies worth subtracting.
-
-    Text comes back on its own rather than concatenated, because the two trunks want it
-    differently: the encoder takes each vector as a token, and the ranking trunk has no
-    token axis to put it on and concatenates it. Everything else about this module is
-    shared between them weight for weight.
-
-    Lookups rather than a `OneHot` operator, because a one-hot *is* a lookup in an
-    identity matrix and `Gather` is the op every execution provider here implements. The
-    table carries one row more than it has categories, and the string front end sends
-    anything out of vocabulary to it -- so an unknown category contributes zeros, exactly
-    as `default_val` does on the configured path.
-
-    Strings arrive already encoded to a row index, because mapping a string to an index
-    is not something torch can export. Those inputs are replaced by the string front end
-    after export -- see `add_string_front_end`.
-    """
-
-    def __init__(self, scalars32, scalars64, arrays, one_hots, embeddings, texts):
-        super().__init__()
-        offsets, scales = zip(*(affine_of(spec) for _, spec in scalars32 + scalars64))
-        # Buffers rather than parameters: they are the transformation, not something
-        # learned, so they belong with the graph and not in what a size target counts.
-        self.register_buffer("offset", torch.tensor(offsets, dtype=torch.float32))
-        self.register_buffer("scale", torch.tensor(scales, dtype=torch.float32))
-        self.narrow, self.wide = len(scalars32), len(scalars64)
-        self.array_widths = [width for _, width in arrays]
-        self.one_hots = nn.ModuleList(
-            nn.Embedding.from_pretrained(
-                torch.cat([torch.eye(width), torch.zeros(1, width)]), freeze=True
-            )
-            for _, width in one_hots
-        )
-        self.embeddings = nn.ModuleList(
-            zeroed_last_row(nn.Embedding(vocab + 1, width))
-            for _, width, vocab in embeddings
-        )
-        self.tables = nn.ModuleList(nn.Embedding(VOCAB + 1, D_MODEL) for _ in texts)
-        self.width = (
-            self.narrow
-            + self.wide
-            + sum(self.array_widths)
-            + sum(width for _, width in one_hots)
-            + sum(width for _, width, _ in embeddings)
-        )
-        # What a trunk with no token axis has to take on as well.
-        self.text_width = len(texts) * D_MODEL
-
-    def forward(self, *inputs):
-        taken = 0
-
-        def take(count):
-            """The next `count` inputs, in the order `export` names them."""
-            nonlocal taken
-            chunk = inputs[taken:taken + count]
-            taken += count
-            return chunk
-
-        narrow = take(self.narrow)
-        wide = take(self.wide)
-        arrays = take(len(self.array_widths))
-        one_hot_ids = take(len(self.one_hots))
-        embedding_ids = take(len(self.embeddings))
-        text_ids = take(len(self.tables))
-
-        # One Sub and one Mul for every scaler in the schema, rather than a subgraph per
-        # feature: min-max scaling and standardization are the same affine, so 200 of
-        # them are two constant vectors -- see affine_of.
-        numbers = torch.cat(narrow + tuple(w.to(torch.float32) for w in wide), dim=-1)
-        # Concatenated in the vectorized model's feature order, so this is the tensor the
-        # service would otherwise have handed us.
-        parts = [table(ids.reshape(-1)) for table, ids in zip(self.embeddings, embedding_ids)]
-        parts += [table(ids.reshape(-1)) for table, ids in zip(self.one_hots, one_hot_ids)]
-        parts += list(arrays)
-        parts.append((numbers - self.offset) * self.scale)
-
-        texts = tuple(
-            table(ids.reshape(-1)) for table, ids in zip(self.tables, text_ids)
-        )
-        return torch.cat(parts, dim=-1), texts
-
-
-class RawTransformer(nn.Module):
-    """Raw features into the encoder: the dense vector becomes tokens, text one each."""
-
-    def __init__(self, features, layers):
-        super().__init__()
-        self.features = features
-        self.dense_tokens = N_TOKENS - len(features.tables)
-        self.to_tokens = nn.Linear(features.width, self.dense_tokens * D_MODEL)
-        self.encoder = Encoder(layers)
-
-    def forward(self, *inputs):
-        dense, texts = self.features(*inputs)
-        tokens = [self.to_tokens(dense).reshape(-1, self.dense_tokens, D_MODEL)]
-        tokens += [text.reshape(-1, 1, D_MODEL) for text in texts]
-        return self.encoder(torch.cat(tokens, dim=1))
-
-
-class RawCrossMaskNet(nn.Module):
-    """Raw features into the ranking trunk: everything in one vector, text included."""
-
-    def __init__(self, features, blocks):
-        super().__init__()
-        self.features = features
-        self.trunk = CrossMaskNet(features.width + features.text_width, blocks)
-
-    def forward(self, *inputs):
-        dense, texts = self.features(*inputs)
-        return self.trunk(torch.cat((dense,) + texts, dim=-1))
-
-
 # ------------------------------------------------------------------ sizing
 
 def parameters_of(model):
@@ -837,7 +459,7 @@ def export(model, example, path, input_names, rows=None, output_name="scores"):
     A dynamic axis is what a serving path wants, since the service batches however many
     rows a request carries. A pinned one exists to be measured against it: hushar serves
     a pinned model only when the configuration declares the same row count, and refuses
-    every request of another size. See benchmark-data/results/ for what it is worth.
+    every request of another size.
     """
     dynamic = None
     if rows is None:
@@ -850,47 +472,6 @@ def export(model, example, path, input_names, rows=None, output_name="scores"):
         dynamo=False,
     )
     onnx.checker.check_model(onnx.load(path))
-
-
-def add_string_front_end(path, vocabularies, rows=None):
-    """Replaces the encoded-index inputs with string inputs the graph maps itself.
-
-    A `LabelEncoder` per string input turns the value into a row index, defaulting to
-    the last row for anything out of vocabulary, and the exported `Gather` then reads
-    the table. This is the whole reason a string reaches the model at all: the service
-    passes text through untouched, so the mapping can live with the weights it belongs
-    to instead of in configuration.
-
-    Text, categories and embedding keys all take this route -- the difference between
-    them is only what the table they index holds.
-    """
-    body = onnx.load(path)
-    axis = rows if rows is not None else "rows"
-    nodes, inputs = [], []
-    for name, vocabulary in vocabularies.items():
-        inputs.append(helper.make_tensor_value_info(
-            name, TensorProto.STRING, [axis, 1]))
-        nodes.append(helper.make_node(
-            "LabelEncoder", [name], [f"{name}_id"], domain="ai.onnx.ml",
-            keys_strings=vocabulary,
-            values_int64s=list(range(len(vocabulary))),
-            default_int64=len(vocabulary),
-        ))
-    front = helper.make_model(
-        helper.make_graph(
-            nodes, "string_front_end", inputs,
-            [helper.make_tensor_value_info(f"{n}_id", TensorProto.INT64, [axis, 1])
-             for n in vocabularies],
-        ),
-        opset_imports=[helper.make_opsetid("", OPSET), helper.make_opsetid("ai.onnx.ml", 2)],
-    )
-    front.ir_version = body.ir_version
-    merged = onnx.compose.merge_models(
-        front, body, io_map=[(f"{n}_id", f"{n}_id") for n in vocabularies]
-    )
-    onnx.checker.check_model(merged)
-    onnx.save(merged, path)
-    return merged
 
 
 def signature(path):
@@ -961,135 +542,68 @@ def main():
     batches = [("", None)] + ([("_batch1", 1)] if arguments.with_batch1 else [])
 
     os.makedirs(out_dir, exist_ok=True)
-    torch.manual_seed(0)
     rng = np.random.default_rng(0)
-    vocabulary = {name: words(f"{name}_v", VOCAB) for name in TEXT_INPUTS}
     written, described = {}, []
 
-    # ---- vectorized
-    template = vectorized_config(rng, "", "cpu")
-    vectorization = template["vectorization_config"]
-    width = sum(len(vectorization["feature_transformations"][n]["default_val"])
-                for n in vectorization["feature_order"])
-    layers, total = depth_for_target(lambda n: VectorizedModel(width, n), target_params)
-    print(f"vectorized : width {width}, transformer {layers} layers, "
-          f"{total:,} parameters")
-    model = VectorizedModel(width, layers).eval()
-
-    for suffix, rows in batches:
-        name = f"bench_model{suffix}"
-        path = os.path.join(out_dir, f"{name}.onnx")
-        export(model, torch.randn(rows or 2, width), path, ["features"], rows=rows)
-        config = vectorized_config(rng, f"{out_rel}/{name}.onnx", "cpu", rows=rows)
-        config["model_id"] = f"bench-vectorized{suffix.replace('_', '-')}"
-        written[f"{name}_config.json"] = config
-        described.append((f"vectorized rows={rows or 'dynamic'}", path))
-
-    # ---- named
-    scalars, arrays = NAMED_SCALARS, ONE_HOTS
-    build = lambda n: NamedModel(scalars, arrays, TEXT_INPUTS, n)
-    named_total = parameters_of(build(layers))
-    dense_width = len(scalars) + sum(w for _, w in arrays)
-    features = len(scalars) + len(arrays) + len(TEXT_INPUTS)
-    print(f"named      : {features} features = {len(scalars)} scalars + "
-          f"{len(arrays)} arrays ({dense_width} dense) + {len(TEXT_INPUTS)} strings, "
-          f"transformer {layers} layers, {named_total:,} parameters")
-    input_names = scalars + [n for n, _ in arrays] + [f"{n}_id" for n in TEXT_INPUTS]
-    named_model = build(layers).eval()
-
-    for suffix, rows in batches:
-        name = f"bench_named_model{suffix}"
-        path = os.path.join(out_dir, f"{name}.onnx")
-        batch = rows or 2
-        example = (tuple(torch.randn(batch, 1) for _ in scalars)
-                   + tuple(torch.randn(batch, w) for _, w in arrays)
-                   + tuple(torch.zeros(batch, 1, dtype=torch.int64)
-                           for _ in TEXT_INPUTS))
-        export(named_model, example, path, input_names, rows=rows)
-        add_string_front_end(path, vocabulary, rows=rows)
-        config = named_config(f"{out_rel}/{name}.onnx", "cpu", rows=rows)
-        config["model_id"] = f"bench-named{suffix.replace('_', '-')}"
-        written[f"{name}_config.json"] = config
-        described.append((f"named rows={rows or 'dynamic'}", path))
-
-    # ---- raw, one model per architecture: featurization inside the graph
-    #
-    # The dense vector it builds is the vectorized model's input, so the two are only
-    # comparable while the layouts agree. Checked rather than assumed: a feature added to
-    # one list and not the other would quietly make them different models, and the whole
-    # pair exists to hold everything but the featurization site still.
-    raw_strings = [n for n, _ in ONE_HOTS] + [n for n, _, _ in EMBEDDINGS] + TEXT_INPUTS
-    raw_order = ([n for n, _, _ in EMBEDDINGS] + [n for n, _ in ONE_HOTS]
-                 + [n for n, _ in IDENTITIES]
-                 + [n for n, _ in RAW_SCALARS_32] + [n for n, _ in RAW_SCALARS_64])
-    if raw_order != vectorization["feature_order"]:
+    # The schema settles the width, and the width settles both models' input. Checked
+    # rather than assumed: a feature added to one of the lists above changes it, and a
+    # run at a different width is not comparable with anything already recorded.
+    template = vectorized_config(rng, "", "", "cpu")["vectorization_config"]
+    width = sum(len(template["feature_transformations"][n]["default_val"])
+                for n in template["feature_order"])
+    if width != VECTOR_WIDTH:
         raise SystemExit(
-            "the raw model's dense layout no longer matches the vectorized model's "
-            "feature_order, so the two would not be comparable"
+            f"the schema now concatenates to {width} values per row, not the "
+            f"{VECTOR_WIDTH} every tracked result was measured at. Update "
+            f"VECTOR_WIDTH deliberately if that is intended."
         )
+    print(f"schema     : {len(template['feature_order'])} features, width {width}")
 
-    raw_features = lambda: RawFeatures(RAW_SCALARS_32, RAW_SCALARS_64, IDENTITIES,
-                                       ONE_HOTS, EMBEDDINGS, TEXT_INPUTS)
-    # The ranking trunk's block count, solved the same way the encoder's layer count was.
-    blocks, _ = depth_for_target(
-        lambda n: RawCrossMaskNet(raw_features(), n), target_params
+    # One depth per architecture, solved to the parameter target so the two are worth
+    # putting side by side. The encoder counts layers and the ranking trunk blocks.
+    layers, encoder_total = depth_for_target(
+        lambda n: VectorizedModel(width, n), target_params
     )
-    feature_count = len(raw_order) + len(TEXT_INPUTS)
-    print(f"raw        : {feature_count} features = {len(RAW_SCALARS_32)} float + "
-          f"{len(RAW_SCALARS_64)} double + {len(IDENTITIES)} array + "
-          f"{len(ONE_HOTS) + len(EMBEDDINGS)} category + {len(TEXT_INPUTS)} text, "
-          f"scaled and looked up in the graph into the same {width} dense")
-    raw_input_names = ([n for n, _ in RAW_SCALARS_32] + [n for n, _ in RAW_SCALARS_64]
-                       + [n for n, _ in IDENTITIES]
-                       + [f"{n}_id" for n in raw_strings])
-    raw_vocabulary = raw_vocabularies()
-
-    # Two trunks on that one front end. Reseeded before each so they are built from the
-    # same weights for the part they share, leaving the trunk as the only difference.
+    blocks, ranking_total = depth_for_target(
+        lambda n: CrossMaskNet(width, n), target_params
+    )
     architectures = [
-        ("bench_raw_model", "bench-raw", "transformer",
-         lambda: RawTransformer(raw_features(), layers), f"{layers} encoder layers"),
-        ("bench_raw_dcn_model", "bench-raw-dcn", "dcn",
-         lambda: RawCrossMaskNet(raw_features(), blocks),
-         f"DCNv2 {CROSS_LAYERS} cross + MaskNet {blocks} blocks at {D_DEEP} wide"),
+        ("bench_model", "bench-vectorized", "transformer",
+         lambda: VectorizedModel(width, layers),
+         f"{layers} encoder layers", encoder_total),
+        ("bench_dcn_model", "bench-vectorized-dcn", "dcn",
+         lambda: CrossMaskNet(width, blocks),
+         f"DCNv2 {CROSS_LAYERS} cross + MaskNet {blocks} blocks at {D_DEEP} wide",
+         ranking_total),
     ]
 
-    for stem, model_id, label, build_arch, shape in architectures:
+    for stem, model_id, label, build_arch, shape, total in architectures:
+        # Reseeded before each, so a regenerated model matches an old one.
         torch.manual_seed(0)
-        raw_model = build_arch().eval()
-        print(f"  {label:<11}: {shape}, {parameters_of(raw_model):,} parameters")
+        model = build_arch().eval()
+        print(f"  {label:<11}: {shape}, {total:,} parameters")
 
         for suffix, rows in batches:
             name = f"{stem}{suffix}"
             path = os.path.join(out_dir, f"{name}.onnx")
-            batch = rows or 2
-            # The 64-bit scalers are exported as doubles, so a request carries the
-            # double the schema asks for and the graph does the narrowing.
-            example = (tuple(torch.randn(batch, 1) for _ in RAW_SCALARS_32)
-                       + tuple(torch.randn(batch, 1, dtype=torch.float64)
-                               for _ in RAW_SCALARS_64)
-                       + tuple(torch.randn(batch, w) for _, w in IDENTITIES)
-                       + tuple(torch.zeros(batch, 1, dtype=torch.int64)
-                               for _ in raw_strings))
-            export(raw_model, example, path, raw_input_names, rows=rows)
-            add_string_front_end(path, raw_vocabulary, rows=rows)
+            export(model, torch.randn(rows or 2, width), path, ["features"], rows=rows)
             dashed = suffix.replace("_", "-")
-            written[f"{name}_config.json"] = raw_config(
-                f"{model_id}{dashed}", f"{out_rel}/{name}.onnx", "cpu", rows=rows
+            written[f"{name}_config.json"] = vectorized_config(
+                rng, f"{model_id}{dashed}", f"{out_rel}/{name}.onnx", "cpu", rows=rows
             )
             # The candidate arm: the same file under a second name, so a roll-out can be
             # served without a second set of weights to export, copy and keep straight.
-            written[f"{name}_{CANDIDATE}_config.json"] = raw_config(
-                f"{model_id}{dashed}-{CANDIDATE}", f"{out_rel}/{name}.onnx", "cpu",
+            written[f"{name}_{CANDIDATE}_config.json"] = vectorized_config(
+                rng, f"{model_id}{dashed}-{CANDIDATE}", f"{out_rel}/{name}.onnx", "cpu",
                 rows=rows,
             )
-            described.append((f"raw {label} rows={rows or 'dynamic'}", path))
+            described.append((f"{label} rows={rows or 'dynamic'}", path))
 
     written["bench_service_config.json"] = service_config(
-        f"{out_rel}/bench_raw_model_config.json"
+        f"{out_rel}/bench_model_config.json"
     )
     written["bench_dcn_service_config.json"] = service_config(
-        f"{out_rel}/bench_raw_dcn_model_config.json"
+        f"{out_rel}/bench_dcn_model_config.json"
     )
     # The two-model configs: both loaded, traffic split between them. Separate from the
     # single-model configs above because most runs want one model, and a run that wants
@@ -1099,23 +613,15 @@ def main():
     # This pair is the interesting one: both architectures resident, half the traffic
     # each, so their latencies come from one session on one host with nothing else moving.
     written["bench_ab_service_config.json"] = service_config(
-        f"{out_rel}/bench_raw_model_config.json",
-        f"{out_rel}/bench_raw_dcn_model_config.json",
+        f"{out_rel}/bench_model_config.json",
+        f"{out_rel}/bench_dcn_model_config.json",
     )
     # And the roll-out shape: one model loaded twice, which is what two arms of the same
     # architecture cost.
     written["bench_same_ab_service_config.json"] = service_config(
-        f"{out_rel}/bench_raw_model_config.json",
-        f"{out_rel}/bench_raw_model_{CANDIDATE}_config.json",
+        f"{out_rel}/bench_model_config.json",
+        f"{out_rel}/bench_model_{CANDIDATE}_config.json",
     )
-    written["bench_string_vocabulary.json"] = vocabulary
-    # A raw model's configuration says nothing about features, so the load generator is
-    # told what to send by this instead -- see raw_feature_spec. One file for both
-    # architectures, because they take the same features.
-    written["bench_raw_feature_spec.json"] = raw_feature_spec()
-    # The named model needs one for the same reason: `model_inputs` declares each input's
-    # type but carries no transformation to read a range or a width from.
-    written["bench_named_feature_spec.json"] = named_feature_spec()
     for name, body in written.items():
         with open(os.path.join(out_dir, name), "w") as handle:
             json.dump(body, handle, indent=2)
@@ -1124,9 +630,9 @@ def main():
     print()
     for label, model_path in described:
         megabytes = os.path.getsize(model_path) / (1024 * 1024)
-        model_inputs, outputs = signature(model_path)
+        graph_inputs, outputs = signature(model_path)
         print(f"{label} -> {os.path.relpath(model_path, ROOT)} ({megabytes:.1f} MB)")
-        print(f"  inputs  : {summarise(model_inputs)}")
+        print(f"  inputs  : {summarise(graph_inputs)}")
         print(f"  outputs : {summarise(outputs)}")
     print(f"\nwrote {len(written)} files to {os.path.relpath(out_dir, ROOT)}")
 

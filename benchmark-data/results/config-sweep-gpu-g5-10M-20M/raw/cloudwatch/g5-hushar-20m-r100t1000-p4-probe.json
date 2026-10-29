@@ -1,0 +1,32 @@
+{
+  "InferenceTime": [
+    {
+      "timestamp": "2026-10-26T00:09:00Z",
+      "sample_count": 44400,
+      "average_us": 4727.749595,
+      "p50_us": 4697.908435,
+      "p95_us": 5236.39103,
+      "p99_us": 5299.171528
+    }
+  ],
+  "VectorizationTime": [
+    {
+      "timestamp": "2026-10-26T00:09:00Z",
+      "sample_count": 44400,
+      "average_us": 402.001329,
+      "p50_us": 392.106285,
+      "p95_us": 526.400083,
+      "p99_us": 590.571309
+    }
+  ],
+  "ToTensorTime": [
+    {
+      "timestamp": "2026-10-26T00:09:00Z",
+      "sample_count": 44400,
+      "average_us": 0.001689,
+      "p50_us": 0.0,
+      "p95_us": 0.0,
+      "p99_us": 0.0
+    }
+  ]
+}

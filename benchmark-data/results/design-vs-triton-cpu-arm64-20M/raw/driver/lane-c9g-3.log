@@ -1,0 +1,22 @@
+launched 2026-10-25T07:50:19Z for c9g-3
+2026-10-25T07:50:24Z preflight c9g-3: {'type': 'c9g.16xlarge', 'ami': 'ami-025d1d5c1b9b090aa', 'kernel': '6.18.54-121.166.amzn2023.aarch64', 'nproc': '64', 'providers': '0', 'ortso': '1.28.0', 'md5': '30f9c5330b808a34b55fe88048a20da6', 'tensorcfg': 'yes', 'tensorspec': 'yes', 'onnx': 'yes', 'docker': 'yes'}
+2026-10-25T07:50:25Z preflight c9g-3: both clients report slices
+2026-10-25T07:50:25Z preflight c9g-3: OK, c9g.16xlarge, 64 CPUs, CPU-only runtime, ami ami-025d1d5c1b9b090aa, kernel 6.18.54-121.166.amzn2023.aarch64, model md5 30f9c5330b808a34b55fe88048a20da6, docker present
+2026-10-25T07:50:25Z host=c9g-3 rev=ffba569-dirty run=design-vs-triton-cpu-arm64-20M phase=refine bucket set
+2026-10-25T07:50:25Z model bench_model.onnx size=20m md5=30f9c5330b808a34b55fe88048a20da6
+2026-10-25T07:50:25Z pinned hushar: 4x16 mb8 spin0
+2026-10-25T07:50:25Z pinned triton: 8x8 on intra, one call per request
+2026-10-25T07:50:25Z configurations were TUNED by PHASE=tune
+2026-10-25T07:50:25Z   arm A: hushar/features, 1 cell(s)
+2026-10-25T07:50:25Z   arm H: hushar/features, 1 cell(s)
+2026-10-25T07:50:25Z   arm T: triton/tensor, 1 cell(s)
+2026-10-25T07:50:25Z 3 cell(s) at most: H-r1t3500, T-r1t5500, A-r1t3500
+2026-10-25T07:50:25Z warmup=120s measured=900s in 3 slice(s) settle=60s -> 20.8 min/cell, at most 1.0 h
+2026-10-25T07:50:25Z c9g-3-H-r1t3500 start  hushar/features s8x8 mbrows spin0 64thr/64cpu 1rows x 3500tps = 3500 rows/s
+2026-10-25T08:07:40Z c9g-3-H-r1t3500 done   p50=2.96 p95=3.67 achieved=3500.0/3500 shed=0 srvcpu=58.9 clicpu=1.3 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-25T08:08:41Z c9g-3-T-r1t5500 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 1rows x 5500tps = 5500 rows/s
+2026-10-25T08:25:59Z c9g-3-T-r1t5500 done   p50=6.14 p95=19.64 achieved=5438.4/5500 shed=0 srvcpu=97.3 clicpu=0.7 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-25T08:27:00Z c9g-3-A-r1t3500 start  hushar/features s16x4 mbrows spin0 64thr/64cpu 1rows x 3500tps = 3500 rows/s
+2026-10-25T08:44:15Z c9g-3-A-r1t3500 done   p50=3.72 p95=4.91 achieved=3500.0/3500 shed=0 srvcpu=54.9 clicpu=1.3 sustained (3/3 slice(s) held) -- settling 60s
+2026-10-25T08:45:16Z host=c9g-3 SWEEP COMPLETE
+ALL DONE rc=0 2026-10-25T08:45:16Z

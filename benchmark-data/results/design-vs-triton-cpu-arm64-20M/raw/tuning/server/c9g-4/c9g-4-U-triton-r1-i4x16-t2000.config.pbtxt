@@ -1,0 +1,32 @@
+name: "bench_vectorized"
+backend: "onnxruntime"
+max_batch_size: 0
+
+input [
+  {
+    name: "features"
+    data_type: TYPE_FP32
+    dims: [-1, 690]
+  }
+]
+
+output [
+  {
+    name: "scores"
+    data_type: TYPE_FP32
+    dims: [-1, 5]
+  }
+]
+
+instance_group [
+  {
+    count: 4
+    kind: KIND_CPU
+  }
+]
+
+parameters { key: "execution_mode" value: { string_value: "0" } }
+parameters { key: "intra_op_thread_count" value: { string_value: "16" } }
+parameters { key: "inter_op_thread_count" value: { string_value: "1" } }
+parameters { key: "enable_mem_arena" value: { string_value: "1" } }
+parameters { key: "enable_mem_pattern" value: { string_value: "1" } }

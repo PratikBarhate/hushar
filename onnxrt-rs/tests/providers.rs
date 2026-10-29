@@ -53,9 +53,50 @@ fn report_enabled_accelerators() {
     );
 }
 
-/// Asserts a provider this build did not enable fails with `ProviderNotEnabled`
-/// naming the missing feature, distinctly from one the library lacks.
+/// Asserts each provider spelling reports whether it runs on a device of its own.
 ///
+/// Needs no library: this is a property of the parsed provider, and callers use it to
+/// decide what element types can reach the model. CoreML and OpenVINO are either one, so
+/// the units they were pointed at decide, and a custom name counts as a host provider
+/// because nothing about it says otherwise.
+#[test]
+fn providers_report_whether_they_run_off_host() {
+    for spelling in [
+        "cpu",
+        "xnnpack",
+        "xnnpack:4",
+        "coreml:cpu_only",
+        "openvino:cpu",
+        "openvino:CPU",
+        "QNNExecutionProvider",
+    ] {
+        let provider: ExecutionProvider = spelling.parse().expect("a known spelling");
+        assert!(
+            !provider.runs_off_host(),
+            "{spelling} runs ONNX Runtime's own kernels on the host"
+        );
+    }
+
+    for spelling in [
+        "tensorrt",
+        "trt:1",
+        "migraphx",
+        "migraphx:0",
+        "coreml",
+        "coreml:cpu_and_gpu",
+        "openvino:gpu",
+        "openvino:npu",
+    ] {
+        let provider: ExecutionProvider = spelling.parse().expect("a known spelling");
+        assert!(
+            provider.runs_off_host(),
+            "{spelling} executes on a device with memory of its own"
+        );
+    }
+}
+
+/// Asserts a provider this build did not enable fails with `ProviderNotEnabled`
+/// naming the missing feature, distinctly from one the library lacks.///
 /// Skips when this build enables every accelerator.
 #[test]
 fn a_disabled_accelerator_names_the_missing_feature() {
@@ -278,6 +319,122 @@ mod openvino_spellings {
         assert_eq!(
             described("openvino:cpu:threads=96:streams=2"),
             "OpenVINO(CPU, threads=96, streams=2)"
+        );
+    }
+}
+
+/// The configuration spellings, which need no TensorRT present to check.
+mod tensorrt_spellings {
+    use onnxrt_rs::ExecutionProvider;
+
+    fn parse(s: &str) -> (i32, Vec<(String, String)>) {
+        match s.parse::<ExecutionProvider>().expect("a TensorRT provider") {
+            ExecutionProvider::TensorRt { device_id, options } => (device_id, options),
+            other => panic!("{s:?} parsed as {other:?}"),
+        }
+    }
+
+    fn pairs(kv: &[(&str, &str)]) -> Vec<(String, String)> {
+        kv.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// Asserts a bare spelling is device 0 with ONNX Runtime's own defaults, and a
+    /// device id is still read as before.
+    #[test]
+    fn tensorrt_defaults_to_device_zero_with_no_options() {
+        assert_eq!(parse("tensorrt"), (0, Vec::new()));
+        assert_eq!(parse("trt"), (0, Vec::new()));
+        assert_eq!(parse("trt:1"), (1, Vec::new()));
+        assert_eq!(parse("TensorRT:0"), (0, Vec::new()));
+    }
+
+    /// Asserts the short spellings expand to the keys ONNX Runtime reads, in any
+    /// order and with or without a device id.
+    #[test]
+    fn the_short_spellings_expand_to_onnx_runtime_keys() {
+        assert_eq!(
+            parse("tensorrt:0:cache=/var/cache/trt"),
+            (
+                0,
+                pairs(&[
+                    ("trt_engine_cache_enable", "1"),
+                    ("trt_engine_cache_path", "/var/cache/trt"),
+                ])
+            )
+        );
+        assert_eq!(
+            parse("trt:fp16=1:1"),
+            (1, pairs(&[("trt_fp16_enable", "1")]))
+        );
+        assert_eq!(
+            parse("trt:fp16=off:workspace=1073741824:opt_level=3"),
+            (
+                0,
+                pairs(&[
+                    ("trt_fp16_enable", "0"),
+                    ("trt_max_workspace_size", "1073741824"),
+                    ("trt_builder_optimization_level", "3"),
+                ])
+            )
+        );
+        assert_eq!(
+            parse("trt:timing_cache=/tmp/timing"),
+            (
+                0,
+                pairs(&[
+                    ("trt_timing_cache_enable", "1"),
+                    ("trt_timing_cache_path", "/tmp/timing"),
+                ])
+            )
+        );
+    }
+
+    /// Asserts a `trt_*` key is passed through verbatim, so an option this crate does
+    /// not spell short is still reachable.
+    #[test]
+    fn a_trt_key_is_passed_through_verbatim() {
+        assert_eq!(
+            parse("tensorrt:trt_cuda_graph_enable=1:trt_dump_subgraphs=0"),
+            (
+                0,
+                pairs(&[("trt_cuda_graph_enable", "1"), ("trt_dump_subgraphs", "0"),])
+            )
+        );
+    }
+
+    /// Asserts a bad spelling is refused with an error naming the reason.
+    #[test]
+    fn a_bad_spelling_is_refused_with_a_reason() {
+        for (spelling, expected) in [
+            ("tensorrt:gpu0", "expected a device id"),
+            ("tensorrt:0:1", "two device ids"),
+            ("tensorrt:precision=fp16", "unknown TensorRT option"),
+            ("tensorrt:fp16=maybe", "expected 0 or 1"),
+            ("tensorrt:cache=", "has no value"),
+        ] {
+            let err = spelling
+                .parse::<ExecutionProvider>()
+                .expect_err("should be refused")
+                .to_string();
+            assert!(
+                err.contains(expected),
+                "{spelling} should mention {expected:?}: {err}"
+            );
+        }
+    }
+
+    /// Asserts the description, which the banner prints, names the device and every
+    /// option as ONNX Runtime received it.
+    #[test]
+    fn the_description_names_the_device_and_every_option() {
+        let described = |s: &str| s.parse::<ExecutionProvider>().unwrap().to_string();
+        assert_eq!(described("trt"), "TensorRT(device=0)");
+        assert_eq!(
+            described("tensorrt:1:cache=/c:fp16=1"),
+            "TensorRT(device=1, trt_engine_cache_enable=1, trt_engine_cache_path=/c, \
+             trt_fp16_enable=1)"
         );
     }
 }

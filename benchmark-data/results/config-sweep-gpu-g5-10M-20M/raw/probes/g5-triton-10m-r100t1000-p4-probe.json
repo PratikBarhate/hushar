@@ -1,0 +1,210 @@
+{
+  "id": "g5-triton-10m-r100t1000-p4-probe",
+  "phase": "probe",
+  "arm": "triton",
+  "stack": "triton",
+  "wire": "tensor",
+  "size": "10m",
+  "parameter_count": 9138693,
+  "layers": 2,
+  "macs_per_row": 53288960,
+  "rows": 100,
+  "tps": 1000,
+  "rows_per_sec": 100000,
+  "parallelism": 4,
+  "parallelism_kind": "instances",
+  "intra": null,
+  "wt": null,
+  "mini_batch": null,
+  "max_batch": 0,
+  "warmup": 45,
+  "duration": 90,
+  "segments": 3,
+  "settle": 20,
+  "precision": "fp32",
+  "engine_cache": null,
+  "banner": [
+    "model md5 5539c97131c896db6c58088d9f9b9ee3 as expected, 36571281 bytes",
+    "reusing /root/triton/plans/10m-5539c97131c8-r100-fp32.plan (36819524 bytes)",
+    "wrote /root/triton/models/bench_vectorized/config.pbtxt",
+    "  platform tensorrt_plan, max_batch_size 0, profile rows 100, fp32",
+    "  instances 4 KIND_GPU on gpu 0 -- 4 execution context(s) of one engine",
+    "  input features FP32 [-1, 690], output scores FP32 [-1, 5]",
+    "waiting for ready. ok",
+    "--- model",
+    " platform       tensorrt_plan",
+    " backend        tensorrt",
+    " max_batch_size 0",
+    " dynamic_batch  off",
+    " instances      4 KIND_GPU",
+    " intra_op       None",
+    " inter_op       None",
+    " exec_mode      None",
+    " spinning       1 (default)",
+    " inputs         1",
+    " outputs        ['scores']",
+    "  backend check: tensorrt (C++ libtriton_tensorrt.so)",
+    "  max_batch_size check: 0 as asked",
+    "  instance check: 4 as asked",
+    "  python-backend check: no stub processes (0)",
+    "triton up on grpc :8001"
+  ],
+  "summary": "triton benchmark [g5-triton-10m-r100t1000-p4-probe]\n  server    : 172.31.37.73:8001\n  model     : bench_vectorized (Triton C++ onnxruntime backend)\n  features  : 1 inputs per row, outputs ['scores']\n  offering  : 1000 req/s x 100 row(s), 512 in flight, 45s warmup + 90s measured\n  payloads  : 32 x 270 KiB, built in 0.6s\n  validated : {'scores': ([100, 5], 'FP32')}\n  warmup done, measuring\n\n  measured  : 90.0s\n  offered   : 1000 req/s\n  achieved  : 1000.0 req/s (100.0% of offered)\n  responses : ok 90000, failed 0, shed 0, dispatched 89999\n  latency   : p50 1.59  p95 1.78  p99 5.14  max 12.16  mean 1.65 ms\n  client cpu: 2.1% of 32 vCPU\n\n  reported as 3 slice(s) of 30s, under one continuous 90s load:\n  slice 1/3 : n=29999 achieved=999.97 p50=1.59 p95=1.75 p99=4.52 shed=0 failed=0\n  slice 2/3 : n=30000 achieved=1000.00 p50=1.59 p95=1.84 p99=5.57 shed=0 failed=0\n  slice 3/3 : n=30001 achieved=1000.03 p50=1.59 p95=1.79 p99=5.29 shed=0 failed=0\nJSON {\"label\": \"g5-triton-10m-r100t1000-p4-probe\", \"rows\": 100, \"offered\": 1000, \"achieved\": 1000.0, \"ok\": 90000, \"failed\": 0, \"shed\": 0, \"p50\": 1.59, \"p95\": 1.78, \"p99\": 5.14, \"mean\": 1.65, \"max\": 12.16, \"client_cpu\": 2.1, \"measured_secs\": 90.0, \"segments\": [{\"slice\": 1, \"seconds\": 30.0, \"n\": 29999, \"achieved\": 999.97, \"p50\": 1.59, \"p95\": 1.75, \"p99\": 4.52, \"shed\": 0, \"failed\": 0}, {\"slice\": 2, \"seconds\": 30.0, \"n\": 30000, \"achieved\": 1000.0, \"p50\": 1.59, \"p95\": 1.84, \"p99\": 5.57, \"shed\": 0, \"failed\": 0}, {\"slice\": 3, \"seconds\": 30.0, \"n\": 30001, \"achieved\": 1000.03, \"p50\": 1.59, \"p95\": 1.79, \"p99\": 5.29, \"shed\": 0, \"failed\": 0}]}\n",
+  "result": {
+    "offered": 1000,
+    "achieved": 1000.0,
+    "p50": 1.59,
+    "p95": 1.78,
+    "p99": 5.14,
+    "shed": 0,
+    "failed": 0,
+    "client_cpu": 2.1
+  },
+  "slices": [
+    {
+      "slice": 1,
+      "of": 3,
+      "n": 29999,
+      "achieved": 999.97,
+      "p50": 1.59,
+      "p95": 1.75,
+      "p99": 4.52,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 2,
+      "of": 3,
+      "n": 30000,
+      "achieved": 1000.0,
+      "p50": 1.59,
+      "p95": 1.84,
+      "p99": 5.57,
+      "shed": 0,
+      "failed": 0
+    },
+    {
+      "slice": 3,
+      "of": 3,
+      "n": 30001,
+      "achieved": 1000.03,
+      "p50": 1.59,
+      "p95": 1.79,
+      "p99": 5.29,
+      "shed": 0,
+      "failed": 0
+    }
+  ],
+  "verdict": {
+    "state": "sustained",
+    "sustained": true,
+    "slices_held": 3,
+    "slices_total": 3,
+    "broke_in_slice": null,
+    "whole_window_held": true
+  },
+  "sustained": true,
+  "cpu_report": "cpu    10.1 %   mean host utilisation, scheduler run time\ntick   6.9 %   the same window from /proc/stat, tick-based, for comparison\nmem    0.0 %   server process, 0.0 GiB resident\nhost   7.2 %   memory used including page cache\nover   90 sample(s), 0s to 91s of the sweep\n",
+  "client_cpu_report": "cpu    0.3 %   mean host utilisation, scheduler run time\ntick   2.1 %   the same window from /proc/stat, tick-based, for comparison\nmem    0.0 %   server process, 0.0 GiB resident\nhost   1.3 %   memory used including page cache\nover   92 sample(s), 0s to 92s of the sweep\n",
+  "server_cpu_pct": 10.1,
+  "client_cpu_pct": 0.3,
+  "gpu_sampler_report": "89 gpu sample(s) in /tmp/hushar-server/g-g5-triton-10m-r100t1000-p4-probe.log",
+  "gpu_sample_log": "raw/server/g5-1/g-g5-triton-10m-r100t1000-p4-probe.log",
+  "clean_slate_verified": true,
+  "cloudwatch_namespace": null,
+  "cloudwatch_model_id": null,
+  "window": {
+    "client_start": "2026-10-25T22:44:00Z",
+    "start": "2026-10-25T22:44:45Z",
+    "end": "2026-10-25T22:46:18Z",
+    "warmup_seconds": 45,
+    "duration_seconds": 90,
+    "minute_aligned": true,
+    "note": "one continuous 90s load reported as 3 slice(s); host, GPU and CloudWatch all cover 92s from the end of warm-up"
+  },
+  "wall": {
+    "cell_start": "2026-10-25T22:43:55Z",
+    "cell_end": "2026-10-25T22:46:18Z"
+  },
+  "platform": "tensorrt_plan",
+  "backend": "tensorrt",
+  "plan": "/root/triton/plans/10m-5539c97131c8-r100-fp32.plan",
+  "triton_image": "nvcr.io/nvidia/tritonserver:26.05-py3",
+  "dynamic_batching": null,
+  "batching_note": "max_batch_size 0, so one graph call per request at the engine's static [100, 690] profile -- the same shape hushar's mini batch produces",
+  "triton_server_side": {
+    "request": {
+      "window_mean_ms": 0.992,
+      "window_count": 89972,
+      "window_duration_ms": 89218.924,
+      "cumulative_quantiles_ms": {
+        "0.5": 0.909,
+        "0.9": 0.977,
+        "0.95": 0.998,
+        "0.99": 4.799,
+        "0.999": 10.544
+      }
+    },
+    "queue": {
+      "window_mean_ms": 0.052,
+      "window_count": 89972,
+      "window_duration_ms": 4662.057,
+      "cumulative_quantiles_ms": {
+        "0.5": 0.029,
+        "0.9": 0.035,
+        "0.95": 0.038,
+        "0.99": 0.989,
+        "0.999": 5.809
+      }
+    },
+    "compute_input": {
+      "window_mean_ms": 0.053,
+      "window_count": 89972,
+      "window_duration_ms": 4753.673,
+      "cumulative_quantiles_ms": {
+        "0.5": 0.052,
+        "0.9": 0.059,
+        "0.95": 0.063,
+        "0.99": 0.074,
+        "0.999": 0.123
+      }
+    },
+    "compute_infer": {
+      "window_mean_ms": 0.703,
+      "window_count": 89972,
+      "window_duration_ms": 63268.465,
+      "cumulative_quantiles_ms": {
+        "0.5": 0.684,
+        "0.9": 0.721,
+        "0.95": 0.724,
+        "0.99": 1.583,
+        "0.999": 2.223
+      }
+    },
+    "compute_output": {
+      "window_mean_ms": 0.123,
+      "window_count": 89972,
+      "window_duration_ms": 11083.171,
+      "cumulative_quantiles_ms": {
+        "0.5": 0.079,
+        "0.9": 0.099,
+        "0.95": 0.114,
+        "0.99": 1.51,
+        "0.999": 9.746
+      }
+    }
+  },
+  "host": "g5-1",
+  "instance": "g5.2xlarge",
+  "arch": "x86_64",
+  "cores": 8,
+  "conn": 512,
+  "sample_rate": "0.0",
+  "wire_note": "one 690-wide vector, identity transformation",
+  "model_file": "bench_model.onnx",
+  "model_md5": "5539c97131c896db6c58088d9f9b9ee3",
+  "model_size": "10m",
+  "onnxruntime": "1.28.3",
+  "rev": "ffba569-dirty",
+  "run": "config-sweep-gpu-g5-10M-20M"
+}

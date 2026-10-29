@@ -1,8 +1,8 @@
 # One inference request, end to end
 
 Follows a single request from the socket to the response, naming the function at each step.
-[configuration.md](configuration.md) covers the fields this reads; here it is what actually
-happens, in order.
+[api.md](api.md) is the contract the request arrives on and [configuration.md](configuration.md)
+covers the fields this reads; here it is what actually happens, in order.
 
 The worked example throughout is the real thing, taken from a running server:
 
@@ -32,7 +32,7 @@ A request is a **coffee order**.
 flowchart LR
   a["☕ order<br/>features"] --> b["📋 recipe card<br/>InputBuilder"] --> c["🥛 tray<br/>InputBatch"] --> d["⚙️ machine<br/>ONNX Runtime"] --> e["🏷️ tray back<br/>row_ids + scores"]
   d -.->|"jotted down"| f["📒 ledger page<br/>Accumulator"]
-  f -.->|"when full"| g["🗄️ archive<br/>S3 / CloudWatch / Kinesis"]
+  f -.->|"when full"| g["🗄️ archive<br/>S3 / disk"]
   style a fill:#fff3cd
   style c fill:#d4edda
   style d fill:#cfe2ff
@@ -108,16 +108,28 @@ sends its vector as one entry of that width.
 
 ```rust
 let scored = tokio::task::spawn_blocking(move || {
-    inference::scoring::score_features(backend.as_ref(), rows, &input_builder)
+    let session = model.sessions.acquire();
+    let scored = inference::scoring::score_features(
+        session.as_ref(),
+        &columns,
+        &input_builder,
+        mini_batch,
+        logging,
+    );
+    (scored, columns)
 })
 .await
 .map_err(|e| Status::internal(format!("inference task failed to complete: {e}")))?;
 ```
 
 Inference is CPU-bound and can run for milliseconds, so it leaves the async runtime. The
-blocking pool is capped at `threading.inference_concurrency` in
-[`main`](../hushar/src/main.rs) rather than tokio's default 512, which by default keeps
-roughly one inference in flight per core.
+blocking pool is capped at `threading.sessions_per_model` in
+[`main`](../hushar/src/main.rs) rather than tokio's default 512. On that thread the request
+leases one of the model's sessions from a
+[`SessionPool`](../hushar/src/inference/session_pool.rs) for exactly as long as it scores
+and returns it when the lease drops, so no two requests ever share one session's intra-op
+pool — however tokio's blocking threads come and go. Because the pool is as wide as there
+are sessions, the lease never waits.
 
 **ELI5:** the counter hands the order to the kitchen and goes back to taking orders.
 
@@ -131,33 +143,28 @@ own signature, and refuses any disagreement between them.
 
 ```mermaid
 flowchart TB
-  cfg["vectorization_config<br/><i>required</i>"] --> q{"which field?"}
-  q -->|"feature_order"| v["one input<br/>all features concatenated<br/>float or double"]
-  q -->|"model_inputs"| f["one input per feature<br/>each declared, each verbatim"]
-  style v fill:#d4edda
-  style f fill:#d4edda
+  cfg["vectorization_config<br/><i>required</i>"] --> v["feature_order"]
+  v --> o["one input<br/>all features concatenated<br/>float or double"]
+  style o fill:#d4edda
 ```
 
-One rule spans both, and it is the shape rather than the input's type:
+One rule, and it holds for every feature:
 
-> With **`feature_order`**, features are transformed and concatenated. With
-> **`model_inputs`**, every input is passed through from the request **verbatim** — and a
-> feature the row leaves out is refused by name, because a dense tensor has nowhere to put
-> an absence.
+> Features are transformed and concatenated in `feature_order`, so the model always
+> receives a numeric vector per row — and a feature the request leaves out contributes
+> its transformation's `default_val`.
 
-`resolve` settles each input's element type and its **width**, taking it from the model
+`resolve` settles the input's element type and its **width**, taking it from the model
 where the model fixes it and from the configuration where the model leaves the axis
-dynamic. Every input then has a definite width before any request arrives, and the result
+dynamic. The input then has a definite width before any request arrives, and the result
 is printed so a deployment mistake is visible at boot:
 
 ```
-hushar: model fraud-v3 loaded on onnxruntime/CPU (runtime 1.29.0)
-  inputs   : age FP32[1], city STRING[1], tags STRING[1]
+hushar: model fraud-v3 loaded on onnxruntime/CPU (runtime 1.28.0)
+  inputs   : features FP32[7]
   outputs  : score FP32[1]
-  features : 3 binding(s)
-             age FP32[1] <- feature "age", verbatim
-             city STRING[1] <- feature "city", verbatim
-             tags STRING[1] <- feature "tags", verbatim
+  features : 1 binding(s)
+             features FP32[7] <- [age, city, tags] transformed and concatenated
 ```
 
 → [configuration.md](configuration.md) for the fields. The mapping is declared rather than
@@ -172,15 +179,12 @@ not match, the shop does not open.
 ## Step 4 · Building the inputs
 
 [`score_features`](../hushar/src/inference/scoring.rs) →
-[`InputBuilder::build_padded`](../hushar/src/inference/input_builder.rs), once per model input.
+[`InputBuilder::build_padded`](../hushar/src/inference/input_builder.rs), once per chunk.
 
 ```mermaid
 flowchart TB
-  b["planned input"] --> s{"which source?"}
-  s -->|"Vectorised"| f["transform each feature<br/>and concatenate"]
-  s -->|"Feature"| p["read the column verbatim<br/>strict about the element type"]
+  b["planned input"] --> f["transform each feature<br/>and concatenate"]
   f --> t["check row width"]
-  p --> t
   t --> ts["InputBatch::push<br/>width derived"]
   style t fill:#d4edda
   style ts fill:#d4edda
@@ -193,16 +197,13 @@ afterwards; `into_wire` then moves each one straight back into the message it ar
 The engine gets one memcpy per input, and the log gets the caller's own values: `city` as
 `"london"`, not as the one-hot vector the model saw.
 
-| Route | Configured by | Missing feature |
-|---|---|---|
-| transformed | `feature_order` | falls back to the transformation's `default_val`, so a partial request still scores |
-| verbatim | `model_inputs` | refused, naming the input and the feature — a dense tensor has nowhere to put an absence. A column is present for the whole request or absent from it, so there is no per-row hole to report |
+A feature the request leaves out falls back to its transformation's `default_val`, so a
+partial request still scores. A column is present for the whole request or absent from it,
+so there is no per-row hole to report.
 
-Either route refuses a column type it cannot take rather than converting it: a float fed to
-an `INT64` input is refused, not rounded, and a `Float64` column fed to a
-`standardization32` feature is refused, not narrowed. The one widening allowed is
-lossless — `INT64` also accepts an integer. The error names the row, so a bad request is
-traceable.
+A transformation refuses a column type it cannot take rather than converting it: a
+`Float64` column fed to a `standardization32` feature is refused, not narrowed. The error
+names the row, so a bad request is traceable.
 
 The `FP64` route is not the `FP32` route widened — `Identity` and the 64-bit scalers
 implement [`transform_f64`](../hushar/src/inference/transformations.rs) directly.
@@ -227,27 +228,37 @@ trusts the tray.
 
 ## Step 5 · Into the engine
 
-[`OnnxRuntimeBackend::run`](../hushar/src/inference/onnx_backend.rs)
+[`InferenceBackend::run`](../hushar/src/inference/backend.rs) has two implementations:
+[`OnnxRuntimeBackend`](../hushar/src/inference/onnx_backend.rs) and
+[`NeuronBackend`](../hushar/src/inference/neuron_backend.rs).
 
-```rust
-let rows = inputs.rows();
-let mut owned: Vec<Feature> = inputs.into_features();
-let names: Vec<String> = owned.iter().map(|c| c.name.clone()).collect();
-// shape from the model's spec, because an engine checks rank
-// ...
-let produced = self.session.run_named(&by_name)?;
+```mermaid
+flowchart LR
+  b["InputBatch"] --> e{"backend"}
+  e -->|"ONNX Runtime"| o["borrow numeric buffers<br/>Session::run_named"]
+  e -->|"AWS Neuron"| n["lease device tensors<br/>Model::execute"]
+  o --> out["OutputBatch"]
+  n --> out
+  style o fill:#d4edda
+  style n fill:#fff3cd
 ```
 
-The trait takes `InputBatch` **by value**. That is load-bearing: owning the features is
-what lets [`to_input_value`](../hushar/src/inference/onnx_backend.rs) lend the engine `&mut`
-access to each buffer, so numeric tensors are wrapped rather than copied. Text must be
-copied — the C API has no borrowing form of `FillStringTensor`.
+The trait takes `InputBatch` **by value**. ONNX Runtime uses that ownership to lend numeric
+buffers directly to `CreateTensorWithDataAsOrtValue`; only strings copy. Neuron instead
+leases a preallocated input/output tensor set, copies fixed-size numeric buffers to device
+memory, executes the NEFF, and reads FP32 scores back. Several Neuron execution contexts
+allow one loaded replica to run split mini-batches without sharing mutable tensors.
 
-Coming back, [`from_owned_tensor`](../hushar/src/inference/onnx_backend.rs) reads each
-output into a `ScoreData` plus its row count, and `run` checks every declared output came
-back with the type it promised and one row per input row.
+Both implementations derive names, types, ranks and widths from the model itself and
+validate them before traffic. ORT accepts dynamic row axes. A NEFF is fixed and therefore
+requires matching `mini_batch_size` plus `is_fixed: true`.
 
-**ELI5:** the machine is handed the tray itself, not a photocopy.
+Coming back, each engine verifies every declared output has one row per input row and
+builds the same `ScoreData`/`OutputBatch`, so the request path after this point does not
+know which engine ran.
+
+**ELI5:** the same labelled tray reaches either kitchen; each kitchen uses its own
+cookware and returns the same labelled cup.
 
 ---
 
@@ -308,7 +319,7 @@ if logging == FeatureLogging::Record {
 
 Both calls are **synchronous and non-blocking**. Each takes a lock, appends, and returns;
 the request that fills a buffer additionally hands the whole batch to a spawned task. No
-request ever waits on S3, CloudWatch or Kinesis, and no thread is reserved away from
+request ever waits on S3, CloudWatch or the disk, and no thread is reserved away from
 serving to make that true.
 
 ```mermaid
@@ -316,7 +327,7 @@ flowchart LR
   h["request path"] -->|"record()"| acc["Accumulator<br/>lock, push, return"]
   acc -->|"full → spawn"| task["tokio task<br/>holds a permit"]
   task --> m1["stderr / CloudWatch"]
-  task --> l1["files / S3 / Kinesis"]
+  task --> l1["files / S3"]
   acc -->|"no permit free?<br/>report and drop the oldest"| drop["shed"]
   h -->|"not sampled"| skip["nothing recorded,<br/>nothing copied"]
   style drop fill:#fff3cd

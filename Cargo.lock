@@ -245,33 +245,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aws-sdk-kinesis"
-version = "1.118.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b4588cd46c9cccc9db00d363f3a8cf659ee2ae811a5278fd09a61fc63d22de6"
-dependencies = [
- "arc-swap",
- "aws-credential-types",
- "aws-runtime",
- "aws-smithy-async",
- "aws-smithy-eventstream",
- "aws-smithy-http",
- "aws-smithy-json",
- "aws-smithy-observability",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-schema",
- "aws-smithy-types",
- "aws-types",
- "bytes",
- "fastrand",
- "http 0.2.12",
- "http 1.5.0",
- "regex-lite",
- "tracing",
-]
-
-[[package]]
 name = "aws-sdk-s3"
 version = "1.144.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1617,12 +1590,11 @@ version = "0.1.0"
 dependencies = [
  "aws-config",
  "aws-sdk-cloudwatch",
- "aws-sdk-kinesis",
  "aws-sdk-s3",
  "chrono",
  "clap",
  "half",
- "libc",
+ "libnrt-rs",
  "mockall",
  "onnxrt-rs",
  "prost",
@@ -2178,7 +2150,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "onnxrt-rs"
-version = "0.1.0+onnxruntime.1.29.0"
+version = "0.1.0+onnxruntime.1.28.0"
 dependencies = [
  "bindgen",
  "half",

@@ -252,17 +252,24 @@ any machine, with no ONNX Runtime installed.
 
 | | |
 |---|---|
-| Version | v1.29.0, `ORT_API_VERSION` 29 |
+| Version | v1.28.0, `ORT_API_VERSION` 28 |
 | Files | `onnxruntime_c_api.h`, `onnxruntime_ep_c_api.h`, `onnxruntime_error_code.h` |
 | Licence | MIT, see `headers/LICENSE.onnxruntime` |
 
-The allowlist cuts an 8737-line header down to bindings that describe only the
+1.28 rather than the newest release, deliberately. `OrtApi` is append-only, so a runtime
+*newer* than the header answers `GetApi(28)` with a table whose pre-28 members are at the
+same offsets, while a runtime *older* than the requested version returns null and is
+refused. Binding to the oldest release the project needs therefore widens the set of hosts
+one build runs on: this one loads 1.28 and 1.29 alike. 1.29 adds two `OrtApi` entries and
+one `OrtEpApi` entry, all for weightless models, which nothing here calls.
+
+The allowlist cuts an 8682-line header down to bindings that describe only the
 API:
 
 ```mermaid
 flowchart LR
-    A["8737 lines<br/>onnxruntime_c_api.h"] --> B["bindgen<br/>allowlist Ort.* ONNX.*"]
-    B --> C["6423 lines<br/>src/bindings/ort.rs"]
+    A["8682 lines<br/>onnxruntime_c_api.h"] --> B["bindgen<br/>allowlist Ort.* ONNX.*"]
+    B --> C["6383 lines<br/>src/bindings/ort.rs"]
 ```
 
 ## 10. One symbol, then a table of function pointers
@@ -274,17 +281,17 @@ struct of function pointers.
 ```mermaid
 flowchart LR
     D["dlsym<br/>OrtGetApiBase"] --> B["OrtApiBase"]
-    B -->|"GetApi(29)"| T["OrtApi<br/>425 function pointers"]
+    B -->|"GetApi(28)"| T["OrtApi<br/>424 function pointers"]
     T --> F1["CreateEnv"]
     T --> F2["CreateSession"]
     T --> F3["Run"]
-    T --> F4["… 422 more"]
+    T --> F4["… 421 more"]
 ```
 
 So the whole runtime costs a single `dlopen` plus a single `dlsym`. The returned
 `&'static OrtApi` is cached in a `OnceLock`, and `Api` is a `Copy` handle to it.
 
-This design is also how version negotiation happens: `GetApi(29)` asks for a
+This design is also how version negotiation happens: `GetApi(28)` asks for a
 specific API version, and a runtime too old to provide it returns null rather than
 something subtly wrong.
 
@@ -324,7 +331,7 @@ by an 8-thread test.
 | committed == regenerated | byte-identical, checked on macOS arm64 and Linux x86-64 |
 | loads by SONAME with no env var | verified on Linux, versioned name only |
 | clean error when absent | verified, including the real reason from `dlerror` |
-| real inference, single and batch | verified against ONNX Runtime 1.29.0 |
+| real inference, single and batch | verified against ONNX Runtime 1.28.0 |
 | concurrent use of one session | verified, 8 threads |
 
 ---
@@ -477,12 +484,12 @@ Four distinct versions are in play. They are not interchangeable.
 ```mermaid
 flowchart TD
     subgraph Build["compile time"]
-        H["header: ORT_API_VERSION 29<br/>SDK: 2.34.10.0"]
-        C["crate: 0.1.0+onnxruntime.1.29.0"]
+        H["header: ORT_API_VERSION 28<br/>SDK: 2.34.10.0"]
+        C["crate: 0.1.0+onnxruntime.1.28.0"]
     end
     subgraph Run["run time"]
         S["SONAME: libonnxruntime.so.1<br/>the ABI contract"]
-        F["file: libonnxruntime.so.1.29.0<br/>one exact build"]
+        F["file: libonnxruntime.so.1.28.0<br/>one exact build"]
     end
     C -.->|"documents"| H
     H -->|"GetApi must succeed"| S

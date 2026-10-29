@@ -1,0 +1,56 @@
+{
+  "run": "config-sweep-gpu-g5-10M-20M",
+  "main": {
+    "cells": 20,
+    "sustained": 16,
+    "partial": 0,
+    "failed_load": 4,
+    "with_cloudwatch": 10,
+    "with_gpu_samples": 20
+  },
+  "probes": {
+    "cells": 12,
+    "sustained": 5,
+    "partial": 0,
+    "failed_load": 7,
+    "with_cloudwatch": 6,
+    "with_gpu_samples": 12
+  },
+  "by_arm": {
+    "hushar": {
+      "cells": 10,
+      "sustained": 8,
+      "partial": 0,
+      "failed_load": 2,
+      "with_cloudwatch": 10,
+      "with_gpu_samples": 10
+    },
+    "triton": {
+      "cells": 10,
+      "sustained": 8,
+      "partial": 0,
+      "failed_load": 2,
+      "with_cloudwatch": 0,
+      "with_gpu_samples": 10
+    }
+  },
+  "by_size": {
+    "10m": {
+      "cells": 8,
+      "sustained": 8,
+      "partial": 0,
+      "failed_load": 0,
+      "with_cloudwatch": 4,
+      "with_gpu_samples": 8
+    },
+    "20m": {
+      "cells": 12,
+      "sustained": 8,
+      "partial": 0,
+      "failed_load": 4,
+      "with_cloudwatch": 6,
+      "with_gpu_samples": 12
+    }
+  },
+  "preserved_attempt_failures": 0
+}

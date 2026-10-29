@@ -3,7 +3,7 @@
 
 //! Feature transformations that convert request data types into ML model inputs.
 //!
-//! - Embedding: maps string values to pre-trained vector embeddings
+//! - EmbeddingLookup: maps string values to vectors from a pre-defined table
 //! - Identity: passes through numerical values with minimal transformation
 //! - MinMaxScaling: scales numerical values to a specified range
 //! - OneHotEncoding: converts categorical values to one-hot encoded vectors
@@ -62,22 +62,28 @@ fn wrong_type(what: &str, got: FeatureSlice<'_>) -> crate::inference::InferenceE
     format!("Invalid data type for {what}: got {}", got.describe()).into()
 }
 
-/// Maps string values to vector embeddings using a pre-defined embedding table.
+/// Looks a string up in a pre-defined table and contributes the vector it finds.
 ///
-/// A string that is not in the table contributes `default_val`.
+/// The table's keys are the vocabulary and its values are the rows of an embedding
+/// table, so a lookup yields a vector directly and no index is ever materialized. The
+/// vectors are configuration rather than model weights.
+///
+/// A string that is not in the table contributes `default_val`. Every vector must
+/// therefore be as wide as `default_val`, since a row has to occupy the same width
+/// whether or not the string was found.
 ///
 /// # Fields
 ///
-/// * `default_val` - used when a string is not in the table
+/// * `default_val` - used when a string is not in the table, and the width of every row
 /// * `embeddings` - each string value to its vector
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct Embedding {
+pub struct EmbeddingLookup {
     pub default_val: Vec<f32>,
     pub embeddings: HashMap<String, Vec<f32>>,
 }
 
-impl Transformation for Embedding {
+impl Transformation for EmbeddingLookup {
     fn get_default_val(&self) -> &[f32] {
         &self.default_val
     }
@@ -97,16 +103,35 @@ impl Transformation for Embedding {
                 }
                 Ok(())
             }
-            other => Err(wrong_type("Embedding", other)),
+            other => Err(wrong_type("EmbeddingLookup", other)),
         }
     }
 
+    /// Also checks that the table is rectangular.
+    ///
+    /// Comparing every vector against `default_val` settles both rules at once: the
+    /// vectors agree with each other because they all agree with it. A ragged table
+    /// would otherwise emit rows of differing width and silently shift every feature
+    /// that follows this one in the vector.
     fn validate(&self, name: &str) -> Result<(), crate::inference::InferenceError> {
         if self.embeddings.is_empty() {
-            return Err(format!("Embedding for {}: embeddings must not be empty", name).into());
+            return Err(format!("EmbeddingLookup for {name}: embeddings must not be empty").into());
         }
         if self.default_val.is_empty() {
-            return Err(format!("Embedding for {}: default_val must not be empty", name).into());
+            return Err(
+                format!("EmbeddingLookup for {name}: default_val must not be empty").into(),
+            );
+        }
+        let width = self.default_val.len();
+        for (value, vector) in &self.embeddings {
+            if vector.len() != width {
+                return Err(format!(
+                    "EmbeddingLookup for {name}: every vector must be {width} wide, the width of \
+                     default_val, but {value:?} is {} wide",
+                    vector.len()
+                )
+                .into());
+            }
         }
         Ok(())
     }
@@ -347,7 +372,7 @@ impl Transformation for MinMaxScaling64 {
 /// # Fields
 ///
 /// * `default_val` - used for an unknown category
-/// * `categories` - the categories, which must be sorted
+/// * `categories` - the categories, sorted; validation refuses any other order
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct OneHotEncoding {
@@ -383,6 +408,12 @@ impl Transformation for OneHotEncoding {
         }
     }
 
+    /// Also checks the ordering that [`OneHotEncoding::transform`] relies on.
+    ///
+    /// The lookup is a binary search, so unsorted categories resolve to the wrong
+    /// position or to none at all, either of which encodes the wrong column without
+    /// reporting anything. Duplicates are refused by the same check: they would leave a
+    /// column that no value can ever reach.
     fn validate(&self, name: &str) -> Result<(), crate::inference::InferenceError> {
         if self.categories.is_empty() {
             return Err(
@@ -393,6 +424,13 @@ impl Transformation for OneHotEncoding {
             return Err(
                 format!("OneHotEncoding for {}: default_val must not be empty", name).into(),
             );
+        }
+        if !self.categories.is_sorted_by(|a, b| a < b) {
+            return Err(format!(
+                "OneHotEncoding for {name}: categories must be sorted and free of duplicates, \
+                 because the lookup is a binary search"
+            )
+            .into());
         }
         Ok(())
     }
@@ -651,7 +689,7 @@ mod tests {
         embeddings.insert("dog".to_string(), vec![0.4, 0.5, 0.6]);
 
         let default_val = vec![0.0, 0.0, 0.0];
-        let embedding = Embedding {
+        let embedding = EmbeddingLookup {
             embeddings,
             default_val: default_val.clone(),
         };
@@ -670,7 +708,7 @@ mod tests {
         embeddings.insert("dog".to_string(), vec![0.3, 0.4]);
 
         let default_val = vec![0.0, 0.0];
-        let embedding = Embedding {
+        let embedding = EmbeddingLookup {
             embeddings,
             default_val: default_val.clone(),
         };
@@ -687,14 +725,14 @@ mod tests {
         let mut embeddings = HashMap::new();
         embeddings.insert("cat".to_string(), vec![0.1, 0.2, 0.3]);
 
-        let embedding = Embedding {
+        let embedding = EmbeddingLookup {
             embeddings,
             default_val: vec![0.0, 0.0, 0.0],
         };
 
         assert!(embedding.validate("test_feature").is_ok());
 
-        let embedding = Embedding {
+        let embedding = EmbeddingLookup {
             embeddings: HashMap::new(),
             default_val: vec![0.0, 0.0, 0.0],
         };
@@ -704,12 +742,47 @@ mod tests {
         let mut embeddings = HashMap::new();
         embeddings.insert("cat".to_string(), vec![0.1, 0.2, 0.3]);
 
-        let embedding = Embedding {
+        let embedding = EmbeddingLookup {
             embeddings,
             default_val: vec![],
         };
 
         assert!(embedding.validate("test_feature").is_err());
+    }
+
+    /// Every vector has to be as wide as the default, so one row keeps one width.
+    #[test]
+    fn an_embedding_table_of_uneven_width_is_refused() {
+        let mut embeddings = HashMap::new();
+        embeddings.insert("cat".to_string(), vec![0.1, 0.2, 0.3]);
+        embeddings.insert("dog".to_string(), vec![0.4, 0.5]);
+
+        let ragged = EmbeddingLookup {
+            embeddings,
+            default_val: vec![0.0, 0.0, 0.0],
+        };
+
+        let err = ragged
+            .validate("test_feature")
+            .expect_err("one vector is narrower than the rest");
+        assert!(
+            err.to_string().contains("must be 3 wide"),
+            "the error should name the width a vector needs, got {err}"
+        );
+
+        let mut embeddings = HashMap::new();
+        embeddings.insert("cat".to_string(), vec![0.1, 0.2, 0.3]);
+
+        let narrow_default = EmbeddingLookup {
+            embeddings,
+            default_val: vec![0.0, 0.0],
+        };
+
+        assert!(
+            narrow_default.validate("test_feature").is_err(),
+            "a default narrower than the vectors is the same inconsistency, \
+             since an unknown string would contribute a shorter row"
+        );
     }
 
     /// Validation rejects an empty default value.
@@ -1101,6 +1174,53 @@ mod tests {
         assert!(one_hot.validate("test_feature").is_err());
     }
 
+    /// Validation refuses an order the binary search cannot read.
+    #[test]
+    fn unsorted_one_hot_categories_are_refused() {
+        let unsorted = OneHotEncoding {
+            categories: vec!["dog".to_string(), "cat".to_string()],
+            default_val: vec![0.0, 0.0],
+        };
+
+        let err = unsorted
+            .validate("test_feature")
+            .expect_err("the categories are out of order");
+        assert!(
+            err.to_string().contains("sorted"),
+            "the error should say the order is the problem, got {err}"
+        );
+
+        let duplicated = OneHotEncoding {
+            categories: vec!["cat".to_string(), "cat".to_string()],
+            default_val: vec![0.0, 0.0],
+        };
+
+        assert!(
+            duplicated.validate("test_feature").is_err(),
+            "a duplicate leaves a column that no value can reach"
+        );
+    }
+
+    /// The order this refuses is the order that would have encoded the wrong column.
+    ///
+    /// `dog` sits at index 0, but the search compares it against `cat` at the midpoint,
+    /// concludes `dog` must lie further right, and runs off the end.
+    #[test]
+    fn an_unsorted_lookup_would_have_encoded_the_wrong_column() {
+        let unsorted = OneHotEncoding {
+            categories: vec!["dog".to_string(), "cat".to_string()],
+            default_val: vec![9.0, 9.0],
+        };
+
+        assert_eq!(
+            unsorted
+                .apply(&V::Str(vec!["dog".to_string()]))
+                .expect("a row"),
+            vec![9.0, 9.0],
+            "a present category fell through to the default, which is why validate refuses this"
+        );
+    }
+
     /// Standardizes floats and integers against the configured distribution.
     #[test]
     fn test_standardization32_transform_float() {
@@ -1244,7 +1364,7 @@ mod tests {
     /// Every transformation errors on a feature type it cannot read.
     #[test]
     fn test_transform_invalid_data_types() {
-        let embedding = Embedding {
+        let embedding = EmbeddingLookup {
             embeddings: HashMap::new(),
             default_val: vec![0.0],
         };
@@ -1305,7 +1425,7 @@ mod tests {
         let mut embeddings = HashMap::new();
         embeddings.insert("cat".to_string(), vec![0.1, 0.2, 0.3]);
         let default_val = vec![0.0, 0.0, 0.0];
-        let t = Embedding {
+        let t = EmbeddingLookup {
             default_val: default_val.clone(),
             embeddings,
         };

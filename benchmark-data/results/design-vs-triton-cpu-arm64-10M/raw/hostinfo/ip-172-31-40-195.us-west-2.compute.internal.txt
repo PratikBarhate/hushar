@@ -1,0 +1,36 @@
+=== host ip-172-31-40-195.us-west-2.compute.internal
+=== host ===================================================
+role                 server
+hostname             ip-172-31-40-195.us-west-2.compute.internal
+instance type        c9g.16xlarge
+availability zone    us-west-2a
+private ipv4         172.31.40.195
+kernel               Linux 6.18.54-121.166.amzn2023.aarch64
+os                   Amazon Linux 2023.12.20261021
+
+=== cpu ====================================================
+model                unknown
+architecture         aarch64
+physical cores       64
+threads per core     1
+vcpus (nproc)        64
+simd                 asimd,sve,sve2
+numa nodes           2
+  node0 cpus           0-31
+  node1 cpus           32-63
+memory               124 GiB
+
+=== software ===============================================
+provider             unknown
+ORT_DYLIB_PATH       unknown
+NRT_DYLIB_PATH       unknown
+rustc                rustc 1.99.1 (58cf8f9c3 2026-10-13)
+bundle               ffba569-dirty
+instance-id    i-0bf65aec3e38f29ad
+instance-type  c9g.16xlarge
+ami-id         ami-025d1d5c1b9b090aa
+availability-zone us-west-2a
+os             Amazon Linux 2023.12.20261021 2023
+kernel         6.18.54-121.166.amzn2023.aarch64
+deploy_rev     ffba569-dirty
+deployed_at    2026-10-23T22:22:20Z

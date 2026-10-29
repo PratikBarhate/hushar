@@ -9,7 +9,7 @@
 //! # Layout
 //!
 //! * [`sys`] holds raw `bindgen` output generated from `headers/onnxruntime_c_api.h`
-//!   (ONNX Runtime v1.29.0, `ORT_API_VERSION` 29), vendored under its MIT licence. The
+//!   (ONNX Runtime v1.28.0, `ORT_API_VERSION` 28), vendored under its MIT licence. The
 //!   bindings are checked in, so the crate builds with no libclang and no ONNX Runtime
 //!   present. Regenerate with `--features bindgen`.
 //! * `libonnxruntime` is resolved at **run time** via `libloading`, never linked at
@@ -82,15 +82,22 @@ pub use tensor::{DataType, Element, InputValue, OwnedTensor, TensorView};
 ///
 /// A loaded runtime older than this cannot supply a compatible API table and
 /// [`Api::load`] will fail with [`Error::UnsupportedApiVersion`].
+///
+/// This is deliberately the *oldest* release the crate needs rather than the newest one
+/// available. `OrtApi` is append-only, so a newer runtime still answers `GetApi(28)` with
+/// a table whose first 28 versions' worth of members sit at the same offsets, while a
+/// runtime older than the requested version returns null and is refused outright.
+/// Binding low therefore widens the set of hosts this crate runs on at no cost, and it is
+/// what lets one build load ONNX Runtime 1.28 and 1.29 alike.
 pub const REQUIRED_API_VERSION: u32 = sys::ORT_API_VERSION;
 
 /// The ONNX Runtime release the checked-in bindings were generated from.
 ///
 /// This is the *compile-time* pairing, and it is also recorded as this crate's SemVer
-/// build metadata (`0.1.0+onnxruntime.1.29.0`). The version actually loaded is reported
+/// build metadata (`0.1.0+onnxruntime.1.28.0`). The version actually loaded is reported
 /// by [`Api::version`] and may legitimately differ: the runtime is resolved at run time,
 /// and any build offering [`REQUIRED_API_VERSION`] or newer will work.
-pub const BINDINGS_RUNTIME_VERSION: &str = "1.29.0";
+pub const BINDINGS_RUNTIME_VERSION: &str = "1.28.0";
 
 #[cfg(test)]
 mod tests {
@@ -112,8 +119,8 @@ mod tests {
     #[test]
     fn bindings_target_the_vendored_header_version() {
         assert_eq!(
-            REQUIRED_API_VERSION, 29,
-            "bindings should target ORT_API_VERSION 29 (ONNX Runtime 1.29.x)"
+            REQUIRED_API_VERSION, 28,
+            "bindings should target ORT_API_VERSION 28 (ONNX Runtime 1.28.x)"
         );
     }
 

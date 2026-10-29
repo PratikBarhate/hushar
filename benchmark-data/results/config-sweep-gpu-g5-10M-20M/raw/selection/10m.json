@@ -1,0 +1,68 @@
+{
+  "run": "config-sweep-gpu-g5-10M-20M",
+  "size": "10m",
+  "host": "g5-1",
+  "rev": "ffba569-dirty",
+  "top_load": {
+    "rows": 100,
+    "tps": 1000
+  },
+  "selection": {
+    "hushar": {
+      "parallelism": 2,
+      "parallelism_kind": "sessions",
+      "rule": "lowest p50 among sustained probes",
+      "probes": [
+        {
+          "parallelism": 1,
+          "p50": 4437.09,
+          "p95": 4493.43,
+          "achieved": 901.1,
+          "state": "failed"
+        },
+        {
+          "parallelism": 2,
+          "p50": 2.67,
+          "p95": 3.19,
+          "achieved": 1000.0,
+          "state": "sustained"
+        },
+        {
+          "parallelism": 4,
+          "p50": 2.69,
+          "p95": 3.22,
+          "achieved": 1000.0,
+          "state": "sustained"
+        }
+      ]
+    },
+    "triton": {
+      "parallelism": 4,
+      "parallelism_kind": "instances",
+      "rule": "lowest p50 among sustained probes",
+      "probes": [
+        {
+          "parallelism": 1,
+          "p50": 1.62,
+          "p95": 6.14,
+          "achieved": 1000.0,
+          "state": "sustained"
+        },
+        {
+          "parallelism": 2,
+          "p50": 1.62,
+          "p95": 1.89,
+          "achieved": 1000.0,
+          "state": "sustained"
+        },
+        {
+          "parallelism": 4,
+          "p50": 1.59,
+          "p95": 1.78,
+          "achieved": 1000.0,
+          "state": "sustained"
+        }
+      ]
+    }
+  }
+}

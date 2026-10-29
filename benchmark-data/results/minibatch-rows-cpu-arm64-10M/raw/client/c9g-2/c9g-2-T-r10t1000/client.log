@@ -1,0 +1,16 @@
+triton benchmark [c9g-2-T-r10t1000]
+  server    : 172.31.33.183:8001
+  model     : bench_vectorized (Triton C++ onnxruntime backend)
+  features  : 1 inputs per row, outputs ['scores']
+  offering  : 1000 req/s x 10 row(s), 4000 in flight, 120s warmup + 300s measured
+  payloads  : 32 x 27 KiB, built in 0.1s
+  validated : {'scores': ([10, 5], 'FP32')}
+  warmup done, measuring
+
+  measured  : 300.0s
+  offered   : 1000 req/s
+  achieved  : 1000.0 req/s (100.0% of offered)
+  responses : ok 300003, failed 0, shed 0, dispatched 300001
+  latency   : p50 2.07  p95 3.98  p99 11.73  max 39.25  mean 2.53 ms
+  client cpu: 0.1% of 32 vCPU
+JSON {"label": "c9g-2-T-r10t1000", "rows": 10, "offered": 1000, "achieved": 1000.0, "ok": 300003, "failed": 0, "shed": 0, "p50": 2.07, "p95": 3.98, "p99": 11.73, "mean": 2.53, "max": 39.25, "client_cpu": 0.1, "measured_secs": 300.0}

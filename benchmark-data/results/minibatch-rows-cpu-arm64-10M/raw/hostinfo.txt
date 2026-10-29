@@ -1,0 +1,82 @@
+
+======================================================================
+c9g-2    c9g.16xlarge   [Success] exit=0
+======================================================================
+=== host ip-172-31-33-183.us-west-2.compute.internal
+instance_type  c9g.16xlarge
+ami            ami-03276ef3c357204ce
+kernel         6.18.44-99.149.amzn2023.aarch64
+arch           aarch64
+os             Amazon Linux 2023.12.20260909
+nproc          64
+cpu_model      BIOS Model name: AWS Graviton5 BogoMIPS: 2000.00
+threads_core   Thread(s) per core: 1
+memtotal_kb    129539372
+nohz           CONFIG_NO_HZ_COMMON=y,CONFIG_NO_HZ_FULL=y,CONFIG_NO_HZ=y
+vcpu_acct      CONFIG_VIRT_CPU_ACCOUNTING=y,CONFIG_VIRT_CPU_ACCOUNTING_GEN=y
+rustc          rustc 1.98.1 (48a229cea 2026-09-01)
+ort_so         /root/ort-cpu-1.28.0/lib/libonnxruntime.so.1.28.0
+docker         Docker version 25.0.14, build 0bab007
+triton_image   sha256:26500747719873fb82a84130e8034c5dbfe2b12f1d9adb62e040276980dd398c arm64 16631635321
+
+======================================================================
+c9g-1    c9g.16xlarge   [Success] exit=0
+======================================================================
+=== host ip-172-31-46-43.us-west-2.compute.internal
+instance_type  c9g.16xlarge
+ami            ami-03276ef3c357204ce
+kernel         6.18.44-99.149.amzn2023.aarch64
+arch           aarch64
+os             Amazon Linux 2023.12.20260909
+nproc          64
+cpu_model      BIOS Model name: AWS Graviton5 BogoMIPS: 2000.00
+threads_core   Thread(s) per core: 1
+memtotal_kb    129539372
+nohz           CONFIG_NO_HZ_COMMON=y,CONFIG_NO_HZ_FULL=y,CONFIG_NO_HZ=y
+vcpu_acct      CONFIG_VIRT_CPU_ACCOUNTING=y,CONFIG_VIRT_CPU_ACCOUNTING_GEN=y
+rustc          rustc 1.98.1 (48a229cea 2026-09-01)
+ort_so         /root/ort-cpu-1.28.0/lib/libonnxruntime.so.1.28.0
+docker         Docker version 25.0.14, build 0bab007
+triton_image   sha256:26500747719873fb82a84130e8034c5dbfe2b12f1d9adb62e040276980dd398c arm64 16631635321
+
+======================================================================
+cl1      m9g.8xlarge    [Success] exit=0
+======================================================================
+=== host ip-172-31-41-235.us-west-2.compute.internal
+instance_type  m9g.8xlarge
+ami            ami-03276ef3c357204ce
+kernel         6.18.44-99.149.amzn2023.aarch64
+arch           aarch64
+os             Amazon Linux 2023.12.20260909
+nproc          32
+cpu_model      BIOS Model name: AWS Graviton5 BogoMIPS: 2000.00
+threads_core   Thread(s) per core: 1
+memtotal_kb    129510856
+nohz           CONFIG_NO_HZ_COMMON=y,CONFIG_NO_HZ_FULL=y,CONFIG_NO_HZ=y
+vcpu_acct      CONFIG_VIRT_CPU_ACCOUNTING=y,CONFIG_VIRT_CPU_ACCOUNTING_GEN=y
+rustc          rustc 1.98.1 (48a229cea 2026-09-01)
+ort_so         /root/ort-cpu-1.28.0/lib/libonnxruntime.so.1.28.0
+docker         
+triton_image
+
+======================================================================
+cl2      m9g.8xlarge    [Success] exit=0
+======================================================================
+=== host ip-172-31-43-197.us-west-2.compute.internal
+instance_type  m9g.8xlarge
+ami            ami-03276ef3c357204ce
+kernel         6.18.44-99.149.amzn2023.aarch64
+arch           aarch64
+os             Amazon Linux 2023.12.20260909
+nproc          32
+cpu_model      BIOS Model name: AWS Graviton5 BogoMIPS: 2000.00
+threads_core   Thread(s) per core: 1
+memtotal_kb    129510856
+nohz           CONFIG_NO_HZ_COMMON=y,CONFIG_NO_HZ_FULL=y,CONFIG_NO_HZ=y
+vcpu_acct      CONFIG_VIRT_CPU_ACCOUNTING=y,CONFIG_VIRT_CPU_ACCOUNTING_GEN=y
+rustc          rustc 1.98.1 (48a229cea 2026-09-01)
+ort_so         /root/ort-cpu-1.28.0/lib/libonnxruntime.so.1.28.0
+docker         
+triton_image
+
+OK on all 4 host(s)

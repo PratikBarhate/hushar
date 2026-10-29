@@ -1,0 +1,22 @@
+launched 2026-10-25T04:28:50Z for c9g-1
+2026-10-25T04:28:57Z preflight c9g-1: {'type': 'c9g.16xlarge', 'ami': 'ami-025d1d5c1b9b090aa', 'kernel': '6.18.54-121.166.amzn2023.aarch64', 'nproc': '64', 'providers': '0', 'ortso': '1.28.0', 'md5': '30f9c5330b808a34b55fe88048a20da6', 'tensorcfg': 'yes', 'tensorspec': 'yes', 'onnx': 'yes', 'docker': 'yes'}
+2026-10-25T04:28:57Z preflight c9g-1: both clients report slices
+2026-10-25T04:28:57Z preflight c9g-1: OK, c9g.16xlarge, 64 CPUs, CPU-only runtime, ami ami-025d1d5c1b9b090aa, kernel 6.18.54-121.166.amzn2023.aarch64, model md5 30f9c5330b808a34b55fe88048a20da6, docker present
+2026-10-25T04:28:57Z host=c9g-1 rev=ffba569-dirty run=design-vs-triton-cpu-arm64-20M phase=refine bucket set
+2026-10-25T04:28:57Z model bench_model.onnx size=20m md5=30f9c5330b808a34b55fe88048a20da6
+2026-10-25T04:28:57Z pinned hushar: 4x16 mb8 spin0
+2026-10-25T04:28:57Z pinned triton: 8x8 on intra, one call per request
+2026-10-25T04:28:57Z configurations were TUNED by PHASE=tune
+2026-10-25T04:28:57Z   arm H: hushar/features, 1 cell(s)
+2026-10-25T04:28:57Z   arm L: triton/tensor, 1 cell(s)
+2026-10-25T04:28:57Z   arm T: triton/tensor, 1 cell(s)
+2026-10-25T04:28:57Z 3 cell(s) at most: H-r100t130, T-r100t150, L-r100t130
+2026-10-25T04:28:57Z warmup=120s measured=900s in 3 slice(s) settle=60s -> 20.8 min/cell, at most 1.0 h
+2026-10-25T04:28:57Z c9g-1-H-r100t130 start  hushar/features s4x16 mb8 spin0 64thr/64cpu 100rows x 130tps = 13000 rows/s
+2026-10-25T04:46:16Z c9g-1-H-r100t130 done   p50=4065.26 p95=4086.66 achieved=127.8/130 shed=2016 srvcpu=89.9 clicpu=0.2 failed (0/3 slice(s) held) -- settling 60s
+2026-10-25T04:47:17Z c9g-1-T-r100t150 start  triton/tensor s8x8 mbrows spin1 64thr/64cpu 100rows x 150tps = 15000 rows/s
+2026-10-25T05:04:34Z c9g-1-T-r100t150 done   p50=4058.58 p95=4187.4 achieved=147.0/150 shed=2783 srvcpu=99.9 clicpu=0.1 failed (0/3 slice(s) held) -- settling 60s
+2026-10-25T05:05:35Z c9g-1-L-r100t130 start  triton/tensor s4x16 mbrows spin1 64thr/64cpu 100rows x 130tps = 13000 rows/s
+2026-10-25T05:22:51Z c9g-1-L-r100t130 done   p50=4741.41 p95=5346.09 achieved=103.1/130 shed=24418 srvcpu=96.9 clicpu=0.1 failed (0/3 slice(s) held) -- settling 60s
+2026-10-25T05:23:52Z host=c9g-1 SWEEP COMPLETE
+ALL DONE rc=0 2026-10-25T05:23:52Z

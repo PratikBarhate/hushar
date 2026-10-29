@@ -1,0 +1,76 @@
+hushar: model d20-c9g-3-features loaded on onnxruntime/CPU (runtime 1.28.0)
+  inputs   : features FP32[690]
+  outputs  : scores FP32[5]
+  features : 1 binding(s)
+             features FP32[690] <- 210 features transformed and concatenated [emb_review, emb_category, emb_sentiment, emb_region, oh_color, oh_size, oh_channel, oh_status, ... +202 more]
+  batch  : rows split into mini batches of 4, scored together, the last is however many remain
+hushar: metrics -> HusharBench [every 333 batches, 4 in flight]
+hushar: inference logs -> /root/hushar-bench-ffba569-dirty/inference-logs [local filesystem, 16 prefix shard(s), every 5000 batches, 4 in flight, logging no requests]
+hushar: threads -> 32 async, 4 concurrent inference(s) x 16 intra-op x 4 ONNX Runtime session(s) = 64 compute on 64 core(s)
+  spin   : idle intra-op and inter-op threads spin
+  note   : 4 spinning pools on 64 core(s) means an idle pool keeps burning time the busy ones need; add "session.force_spinning_stop": "1" to "threading.session_config" so a pool stops spinning when its Run() returns, or set "allow_spinning": false
+  admit  : 512 in flight per connection
+  pool   : 4 blocking thread(s) for 4 session(s) per model, each session with its own intra-op pool; a request leases an idle session while it scores
+hushar: listening on 0.0.0.0:8279
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+metrics: could not send 999 data points to CloudWatch namespace HusharBench: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out

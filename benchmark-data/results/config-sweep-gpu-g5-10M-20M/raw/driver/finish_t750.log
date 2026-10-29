@@ -1,0 +1,251 @@
+zsh:1: command not found: setsid
+
+== waiting for g5.2xlarge capacity  2026-10-26T18:45:12Z
+server  : ami-06a84c332fb06b778  Deep Learning Base OSS Nvidia Driver GPU AMI (Amazon Linux 2023) 20261023
+          from newest of 148 matching 'Deep Learning Base OSS Nvidia Driver GPU AMI (Amazon Linux 2023) *', created 2026-10-23T14:15:11Z, 3 days old
+          deprecated 2028-10-23T14:15:11Z
+client  : ami-0e7e8cbdc1a628256  al2023-ami-2023.12.20261026.1-kernel-6.18-arm64
+          from SSM parameter /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64, created 2026-10-24T00:49:58Z, 2 days old
+          deprecated 2027-01-22T00:50:00Z
+
+looking for hosts this run already owns
+attempt 1/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 2/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 3/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 4/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 5/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 6/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 7/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 8/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 9/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 10/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 11/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 12/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 13/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 14/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 15/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 16/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 17/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 18/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 19/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 20/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 21/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 22/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 23/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 24/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 25/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 26/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 27/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 28/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 29/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 30/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 31/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 32/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 33/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 34/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 35/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 36/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 37/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 38/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 39/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 40/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 41/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 42/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 43/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 44/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 45/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 46/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 47/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 48/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 49/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 50/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 51/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 52/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 53/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 54/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 55/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 56/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 57/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 58/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 59/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 60/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 61/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 62/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 63/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+attempt 64/720: no g5.2xlarge capacity in ['us-west-2a', 'us-west-2b', 'us-west-2c', 'us-west-2d'] (InsufficientInstanceCapacity, Unsupported); retrying in 120s
+g5-1 placed in us-west-2a (subnet-0cc468f8a7b87ca8d)
+g5-2 placed in us-west-2a
+cl1 placed in us-west-2a
+cl2 placed in us-west-2a
+
+recorded 4 host(s) in rig-state.json, 2 lane(s) in us-west-2a
+  cl1    m9g.8xlarge    i-0dfb1ea4104fdd723  172.31.41.211
+  cl2    m9g.8xlarge    i-0712b3d057956c7e1  172.31.44.110
+  g5-1   g5.2xlarge     i-0c23204386e5576e5  172.31.35.230
+  g5-2   g5.2xlarge     i-0e5b713e3fbbbd279  172.31.42.174
+
+  0/4 SSM online
+  2/4 SSM online
+  4/4 SSM online
+all hosts reachable over SSM
+
+== ssh keys  2026-10-26T20:59:39Z
+== lane cl1 -> g5-1
+cl1: Success exit=0 client-key-installed 
+g5-1: Success exit=0 server-key-installed 
+cl1 -> g5-1: Success exit=0 ssh-ok ip-172-31-35-230.us-west-2.compute.internal 8 Warning: Permanently added '172.31.35.230' (ED25519) to the list of known hosts.
+
+== lane cl2 -> g5-2
+cl2: Success exit=0 client-key-installed 
+g5-2: Success exit=0 server-key-installed 
+cl2 -> g5-2: Success exit=0 ssh-ok ip-172-31-42-174.us-west-2.compute.internal 8 Warning: Permanently added '172.31.42.174' (ED25519) to the list of known hosts.
+
+every lane can reach its server over SSH
+
+== deploy (20M only)  2026-10-26T21:00:12Z
+-> 4 host(s): g5-1, g5-2, cl1, cl2
+
+======================================================================
+cl1      m9g.8xlarge    [Success] exit=0
+======================================================================
+... 53 earlier line(s) elided
+
+== triton load generator
+ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.
+requests 2.25.1 requires urllib3<1.27,>=1.21.1, but you have urllib3 2.6.3 which is incompatible.
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+   grpcio 1.67.1 | numpy 2.0.2 | service_pb2 ok
+   triton_client.py compiles
+== DEPLOY OK ffba569-dirty client [20m:30f9c5330b808a34b55fe88048a20da6] ip-172-31-41-211.us-west-2.compute.internal aarch64 32 cpu
+--- stderr ---
+info: downloading installer
+info: profile set to minimal
+info: default host tuple is aarch64-unknown-linux-gnu
+info: syncing channel updates for stable-aarch64-unknown-linux-gnu
+info: latest update on 2026-10-15 for version 1.99.1 (58cf8f9c3 2026-10-13)
+info: downloading 3 components
+info: default toolchain set to stable-aarch64-unknown-linux-gnu
+
+======================================================================
+cl2      m9g.8xlarge    [Success] exit=0
+======================================================================
+... 53 earlier line(s) elided
+
+== triton load generator
+ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.
+requests 2.25.1 requires urllib3<1.27,>=1.21.1, but you have urllib3 2.6.3 which is incompatible.
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+   grpcio 1.67.1 | numpy 2.0.2 | service_pb2 ok
+   triton_client.py compiles
+== DEPLOY OK ffba569-dirty client [20m:30f9c5330b808a34b55fe88048a20da6] ip-172-31-44-110.us-west-2.compute.internal aarch64 32 cpu
+--- stderr ---
+info: downloading installer
+info: profile set to minimal
+info: default host tuple is aarch64-unknown-linux-gnu
+info: syncing channel updates for stable-aarch64-unknown-linux-gnu
+info: latest update on 2026-10-15 for version 1.99.1 (58cf8f9c3 2026-10-13)
+info: downloading 3 components
+info: default toolchain set to stable-aarch64-unknown-linux-gnu
+
+======================================================================
+g5-1     g5.2xlarge     [Success] exit=0
+======================================================================
+... 93 earlier line(s) elided
+   gpu_memory_mib=23028
+   gpu_compute_cap=8.6
+   kernel=6.12.111-136.204.amzn2023.x86_64
+   nproc=8
+   instance_type=g5.2xlarge
+   model_specs=20m:30f9c5330b808a34b55fe88048a20da6
+   plans=20m-30f9c5330b80-r100-fp32.plan 
+== DEPLOY OK ffba569-dirty server [20m:30f9c5330b808a34b55fe88048a20da6] ip-172-31-35-230.us-west-2.compute.internal x86_64 8 cpu
+--- stderr ---
+info: downloading installer
+info: profile set to minimal
+info: default host tuple is x86_64-unknown-linux-gnu
+info: syncing channel updates for stable-x86_64-unknown-linux-gnu
+info: latest update on 2026-10-15 for version 1.99.1 (58cf8f9c3 2026-10-13)
+info: downloading 3 components
+info: default toolchain set to stable-x86_64-unknown-linux-gnu
+
+======================================================================
+g5-2     g5.2xlarge     [Success] exit=0
+======================================================================
+... 94 earlier line(s) elided
+   gpu_memory_mib=23028
+   gpu_compute_cap=8.6
+   kernel=6.12.111-136.204.amzn2023.x86_64
+   nproc=8
+   instance_type=g5.2xlarge
+   model_specs=20m:30f9c5330b808a34b55fe88048a20da6
+   plans=20m-30f9c5330b80-r100-fp32.plan 
+== DEPLOY OK ffba569-dirty server [20m:30f9c5330b808a34b55fe88048a20da6] ip-172-31-42-174.us-west-2.compute.internal x86_64 8 cpu
+--- stderr ---
+info: downloading installer
+info: profile set to minimal
+info: default host tuple is x86_64-unknown-linux-gnu
+info: syncing channel updates for stable-x86_64-unknown-linux-gnu
+info: latest update on 2026-10-15 for version 1.99.1 (58cf8f9c3 2026-10-13)
+info: downloading 3 components
+info: default toolchain set to stable-x86_64-unknown-linux-gnu
+
+OK on all 4 host(s)
+
+== measuring g5-triton-20m-r100t750-p4  2026-10-26T21:05:06Z
+   rig g5-1=172.31.35.230;g5-2=172.31.42.174, cl1 -> g5-1
+-> 1 host(s): cl1
+
+======================================================================
+cl1      m9g.8xlarge    [Success] exit=0
+======================================================================
+cl1 -> g5-1, lane t750, specs [20m:30f9c5330b808a34b55fe88048a20da6], log /root/orchestrator-t750-g5-1.log
+  66924 python3 /root/sweep.py g5-1
+launched 2026-10-26T21:05:08Z for g5-1 phase=main specs=[20m:30f9c5330b808a34b55fe88048a20da6]
+
+===== 20m (2026-10-26T21:05:08Z) =====
+2026-10-26T21:05:09Z preflight g5-1: {'type': 'g5.2xlarge', 'ami': 'ami-06a84c332fb06b778', 'kernel': '6.12.111-136.204.amzn2023.x86_64', 'nproc': '8', 'gpu': 'NVIDIA_A10G', 'gpucount': '1', 'driver': '595.112.07', 'md5': '30f9c5330b808a34b55fe88048a20da6', 'hushar': 'yes', 'plans': '1', 'image': 'yes', 'gpusampler': 'yes', 'ortso': '1.28.3', 'trtso': '10.16.1', 'cudamaj': '13', 'trtmissing': '0'}
+2026-10-26T21:05:09Z preflight g5-1: OK -- g5.2xlarge, NVIDIA_A10G, driver 595.112.07, TensorRT 10.16.1 on CUDA 13, ONNX Runtime 1.28.3, 20m md5 30f9c5330b808a34b55fe88048a20da6
+2026-10-26T21:05:09Z run=config-sweep-gpu-g5-10M-20M rev=ffba569-dirty host=g5-1 size=20m arms=['triton'] phase=main loads=[(100, 750)] parallelism=(1, 2, 4) warmup=120s measured=300s/5slices settle=60s
+2026-10-26T21:05:09Z selection triton: instances=4 (pinned, no probe)
+2026-10-26T21:05:09Z g5-triton-20m-r100t750-p4 start  triton/tensor instances=4 100rows x 750tps = 75000 rows/s 120+300s
+
+OK on all 1 host(s)
+
+== waiting for the cell to appear in S3  2026-10-26T21:05:17Z
+   still waiting, 88 min of budget left
+   still waiting, 87 min of budget left
+   still waiting, 86 min of budget left
+   still waiting, 85 min of budget left
+   still waiting, 84 min of budget left
+   still waiting, 83 min of budget left
+   still waiting, 82 min of budget left
+   done: the cell is in S3
+-> 1 host(s): cl1
+
+======================================================================
+cl1      m9g.8xlarge    [Success] exit=0
+======================================================================
+2026-10-26T21:13:13Z g5-triton-20m-r100t750-p4 done   p50=3.36 p95=3.7 p99=5.15 achieved=750.0/750 shed=0 srvcpu=16.8 sustained (5/5 slice(s) held) -- settling 60s
+===== 20m done rc=0 (2026-10-26T21:14:14Z) =====
+ALL DONE rc=0 2026-10-26T21:14:14Z
+
+OK on all 1 host(s)
+
+== collect, report, verify  2026-10-26T21:14:19Z
+  },
+  "preserved_attempt_failures": 0
+}
+wrote /Users/pratbarh/workspace/hushar/benchmark-data/results/config-sweep-gpu-g5-10M-20M/summary.md (128 lines)
+716 checks, 0 failure(s)
+
+== terminating the rig (exit 0)  2026-10-26T21:14:27Z
+  g5-2   g5.2xlarge     i-0e5b713e3fbbbd279  running
+
+Everything a report needs is in S3: cells are written as they finish and hostinfo is captured by the deploy. Anything still only on a host is lost.
+terminating 4 instance(s)
+  deleted launch template hushar-bench-config-sweep-gpu-g5-10M-20M-g5-1
+ids cleared from rig-state.json; a later run must `launch`
+   reservations still alive: 0
+   cell in S3: yes
+
+== finished  2026-10-26T21:14:32Z
