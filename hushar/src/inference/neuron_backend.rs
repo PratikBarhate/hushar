@@ -9,7 +9,7 @@ use std::sync::Arc;
 use libnrt_rs::{DataType as NrtDataType, Model, Runtime, TensorInfo, TensorSet};
 
 use crate::inference::InferenceError;
-use crate::inference::backend::InferenceBackend;
+use crate::inference::backend::{ExecutionProfile, InferenceBackend};
 use crate::inference::batch::{
     ElementType, Feature, FeatureData, InputBatch, IoSpec, OutputBatch, ScoreData,
 };
@@ -29,7 +29,8 @@ struct ExecutionContext {
 /// Each core holds a complete model copy; this is data parallelism, not model sharding.
 /// Device tensors are allocated at startup and leased per call, round-robin across those
 /// copies. A request leases the logical replica while its mini batches borrow contexts,
-/// so two pieces can execute on two cores without exposing two service-level replicas.
+/// so two mini batches can execute on two cores without exposing two service-level
+/// replicas.
 pub(crate) struct NeuronBackend {
     // Contexts must drop before the models whose device tensors they target.
     contexts: SessionPool<ExecutionContext>,
@@ -181,6 +182,19 @@ impl fmt::Debug for NeuronBackend {
 impl InferenceBackend for NeuronBackend {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    /// A replica's execution contexts are its mini batches in flight.
+    ///
+    /// Configured as `backend.execution_contexts_per_replica` rather than derived: the
+    /// device, not the host, decides how many NEFF calls a replica carries at once.
+    fn profile(&self) -> ExecutionProfile {
+        ExecutionProfile::new(self.contexts.total())
+    }
+
+    /// A NEFF is compiled for exactly one row count, so it demands that one.
+    fn required_rows(&self) -> Option<usize> {
+        Some(self.batch_rows)
     }
 
     fn inputs(&self) -> &[IoSpec] {

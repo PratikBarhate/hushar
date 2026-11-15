@@ -3,13 +3,14 @@
 
 //! Leasing one reusable engine resource to one caller.
 //!
-//! The outer model pool holds interchangeable backend replicas. Neuron backends also use
-//! the same primitive for mutable device tensor sets. A lease returns its value on drop,
-//! including during unwinding, and waits rather than sharing when every value is busy.
+//! The outer model pool holds the model's sessions: a request leases one while it scores.
+//! Neuron backends also use the same primitive for mutable device tensor sets. A lease
+//! returns its value on drop, including during unwinding, and waits rather than sharing
+//! when every value is busy.
 //!
-//! For ONNX Runtime, each replica owns one session and its engine thread pool. A request
-//! takes an idle session for exactly as long as it scores, so two inferences never contend
-//! on one session while another remains idle.
+//! For ONNX Runtime, each session owns its engine thread pool. A request takes an idle
+//! session for exactly as long as it scores, so two inferences never contend on one
+//! session while another remains idle.
 //!
 //! The pool is per request rather than per thread on purpose. The earlier design gave each
 //! blocking thread a session for life, indexed by a counter, on the assumption that the
@@ -95,7 +96,11 @@ impl<T> SessionPool<T> {
     }
 
     /// Sessions currently idle.
-    #[cfg(test)]
+    ///
+    /// A gauge, so it is a sample rather than a guarantee: by the time a caller reads it
+    /// another thread may have taken or returned one. Useful for answering whether a
+    /// pool is ever empty under load, which is what tells an operator the lease is
+    /// starting to cost something.
     pub(crate) fn idle(&self) -> usize {
         self.idle
             .lock()

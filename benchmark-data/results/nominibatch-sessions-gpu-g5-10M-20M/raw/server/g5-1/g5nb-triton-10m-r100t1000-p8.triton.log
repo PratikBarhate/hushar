@@ -1,0 +1,95 @@
+
+=============================
+== Triton Inference Server ==
+=============================
+
+NVIDIA Release 26.05 (build 51748363)
+Triton Server Version 2.69.0
+
+Copyright (c) 2018-2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+I1107 03:45:19.874519 1 pinned_memory_manager.cc:277] "Pinned memory pool is created at '0x7f8d14000000' with size 268435456"
+I1107 03:45:19.874619 1 cuda_memory_manager.cc:107] "CUDA memory pool is created on device 0 with size 67108864"
+I1107 03:45:19.876244 1 model_lifecycle.cc:473] "loading: bench_vectorized:1"
+I1107 03:45:19.919609 1 tensorrt.cc:65] "TRITONBACKEND_Initialize: tensorrt"
+I1107 03:45:19.919651 1 tensorrt.cc:75] "Triton TRITONBACKEND API version: 1.19"
+I1107 03:45:19.919656 1 tensorrt.cc:81] "'tensorrt' TRITONBACKEND API version: 1.19"
+I1107 03:45:19.919667 1 tensorrt.cc:105] "backend configuration:\n{\"cmdline\":{\"auto-complete-config\":\"false\",\"backend-directory\":\"/opt/tritonserver/backends\",\"min-compute-capability\":\"6.000000\",\"default-max-batch-size\":\"4\"}}"
+I1107 03:45:19.919875 1 tensorrt.cc:231] "TRITONBACKEND_ModelInitialize: bench_vectorized (version 1)"
+I1107 03:45:19.920585 1 tensorrt.cc:297] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_0 (GPU device 0)"
+I1107 03:45:19.944152 1 logging.cc:46] "Loaded engine size: 35 MiB"
+I1107 03:45:19.987485 1 logging.cc:46] "[MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +19, now: CPU 0, GPU 53 (MiB)"
+I1107 03:45:19.987672 1 instance_state.cc:186] "Created instance bench_vectorized_0_0 on GPU 0 with stream priority 0 and optimization profile default[0];"
+I1107 03:45:19.987905 1 tensorrt.cc:297] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_1 (GPU device 0)"
+I1107 03:45:19.999112 1 logging.cc:46] "[MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +19, now: CPU 0, GPU 72 (MiB)"
+I1107 03:45:19.999251 1 instance_state.cc:186] "Created instance bench_vectorized_0_1 on GPU 0 with stream priority 0 and optimization profile default[0];"
+I1107 03:45:19.999410 1 tensorrt.cc:297] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_2 (GPU device 0)"
+I1107 03:45:20.010615 1 logging.cc:46] "[MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +19, now: CPU 0, GPU 91 (MiB)"
+I1107 03:45:20.010752 1 instance_state.cc:186] "Created instance bench_vectorized_0_2 on GPU 0 with stream priority 0 and optimization profile default[0];"
+I1107 03:45:20.010887 1 tensorrt.cc:297] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_3 (GPU device 0)"
+I1107 03:45:20.021957 1 logging.cc:46] "[MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +18, now: CPU 0, GPU 109 (MiB)"
+I1107 03:45:20.022095 1 instance_state.cc:186] "Created instance bench_vectorized_0_3 on GPU 0 with stream priority 0 and optimization profile default[0];"
+I1107 03:45:20.022227 1 tensorrt.cc:297] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_4 (GPU device 0)"
+I1107 03:45:20.033245 1 logging.cc:46] "[MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +19, now: CPU 0, GPU 128 (MiB)"
+I1107 03:45:20.033389 1 instance_state.cc:186] "Created instance bench_vectorized_0_4 on GPU 0 with stream priority 0 and optimization profile default[0];"
+I1107 03:45:20.033522 1 tensorrt.cc:297] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_5 (GPU device 0)"
+I1107 03:45:20.044516 1 logging.cc:46] "[MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +19, now: CPU 0, GPU 147 (MiB)"
+I1107 03:45:20.044651 1 instance_state.cc:186] "Created instance bench_vectorized_0_5 on GPU 0 with stream priority 0 and optimization profile default[0];"
+I1107 03:45:20.044797 1 tensorrt.cc:297] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_6 (GPU device 0)"
+I1107 03:45:20.055919 1 logging.cc:46] "[MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +19, now: CPU 0, GPU 166 (MiB)"
+I1107 03:45:20.056055 1 instance_state.cc:186] "Created instance bench_vectorized_0_6 on GPU 0 with stream priority 0 and optimization profile default[0];"
+I1107 03:45:20.056220 1 tensorrt.cc:297] "TRITONBACKEND_ModelInstanceInitialize: bench_vectorized_0_7 (GPU device 0)"
+I1107 03:45:20.067228 1 logging.cc:46] "[MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +18, now: CPU 0, GPU 184 (MiB)"
+I1107 03:45:20.067480 1 instance_state.cc:186] "Created instance bench_vectorized_0_7 on GPU 0 with stream priority 0 and optimization profile default[0];"
+I1107 03:45:20.067633 1 model_lifecycle.cc:849] "successfully loaded 'bench_vectorized'"
+I1107 03:45:20.067696 1 server.cc:639] 
++------------------+------+
+| Repository Agent | Path |
++------------------+------+
++------------------+------+
+
+I1107 03:45:20.067726 1 server.cc:666] 
++----------+-----------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Backend  | Path                                                      | Config                                                                                                                                                         |
++----------+-----------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| tensorrt | /opt/tritonserver/backends/tensorrt/libtriton_tensorrt.so | {"cmdline":{"auto-complete-config":"false","backend-directory":"/opt/tritonserver/backends","min-compute-capability":"6.000000","default-max-batch-size":"4"}} |
++----------+-----------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+I1107 03:45:20.067761 1 server.cc:709] 
++------------------+---------+--------+
+| Model            | Version | Status |
++------------------+---------+--------+
+| bench_vectorized | 1       | READY  |
++------------------+---------+--------+
+
+I1107 03:45:20.067934 1 metrics.cc:782] "Collecting CPU metrics"
+I1107 03:45:20.068037 1 tritonserver.cc:2598] 
++----------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Option                           | Value                                                                                                                                                                                                           |
++----------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| server_id                        | triton                                                                                                                                                                                                          |
+| server_version                   | 2.69.0                                                                                                                                                                                                          |
+| server_extensions                | classification sequence model_repository model_repository(unload_dependents) schedule_policy model_configuration system_shared_memory cuda_shared_memory binary_tensor_data parameters statistics trace logging |
+| model_repository_path[0]         | /models                                                                                                                                                                                                         |
+| model_control_mode               | MODE_NONE                                                                                                                                                                                                       |
+| strict_model_config              | 1                                                                                                                                                                                                               |
+| model_config_name                |                                                                                                                                                                                                                 |
+| rate_limit                       | OFF                                                                                                                                                                                                             |
+| pinned_memory_pool_byte_size     | 268435456                                                                                                                                                                                                       |
+| cuda_memory_pool_byte_size{0}    | 67108864                                                                                                                                                                                                        |
+| min_supported_compute_capability | 6.0                                                                                                                                                                                                             |
+| strict_readiness                 | 1                                                                                                                                                                                                               |
+| exit_timeout                     | 30                                                                                                                                                                                                              |
+| cache_enabled                    | 0                                                                                                                                                                                                               |
++----------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+I1107 03:45:20.070030 1 grpc_server.cc:2579] "Started GRPCInferenceService at 0.0.0.0:8001"
+I1107 03:45:20.070232 1 http_server.cc:4961] "Started HTTPService at 0.0.0.0:8000"
+I1107 03:45:20.111389 1 http_server.cc:400] "Started Metrics Service at 0.0.0.0:8002"

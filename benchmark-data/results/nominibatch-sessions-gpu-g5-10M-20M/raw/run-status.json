@@ -1,0 +1,56 @@
+{
+  "run": "nominibatch-sessions-gpu-g5-10M-20M",
+  "main": {
+    "cells": 24,
+    "sustained": 24,
+    "partial": 0,
+    "failed_load": 0,
+    "with_cloudwatch": 12,
+    "with_gpu_samples": 24
+  },
+  "probes": {
+    "cells": 0,
+    "sustained": 0,
+    "partial": 0,
+    "failed_load": 0,
+    "with_cloudwatch": 0,
+    "with_gpu_samples": 0
+  },
+  "by_arm": {
+    "hushar-tensor": {
+      "cells": 12,
+      "sustained": 12,
+      "partial": 0,
+      "failed_load": 0,
+      "with_cloudwatch": 12,
+      "with_gpu_samples": 12
+    },
+    "triton": {
+      "cells": 12,
+      "sustained": 12,
+      "partial": 0,
+      "failed_load": 0,
+      "with_cloudwatch": 0,
+      "with_gpu_samples": 12
+    }
+  },
+  "by_size": {
+    "10m": {
+      "cells": 12,
+      "sustained": 12,
+      "partial": 0,
+      "failed_load": 0,
+      "with_cloudwatch": 6,
+      "with_gpu_samples": 12
+    },
+    "20m": {
+      "cells": 12,
+      "sustained": 12,
+      "partial": 0,
+      "failed_load": 0,
+      "with_cloudwatch": 6,
+      "with_gpu_samples": 12
+    }
+  },
+  "preserved_attempt_failures": 0
+}

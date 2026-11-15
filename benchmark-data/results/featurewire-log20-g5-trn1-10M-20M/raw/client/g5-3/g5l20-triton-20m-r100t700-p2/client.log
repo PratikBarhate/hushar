@@ -1,0 +1,33 @@
+triton benchmark [g5l20-triton-20m-r100t700-p2]
+  server    : 172.31.28.189:8001
+  model     : bench_vectorized (Triton C++ onnxruntime backend)
+  features  : 1 inputs per row, outputs ['scores']
+  offering  : 700 req/s x 100 row(s), 512 in flight, 300s warmup + 900s measured
+  payloads  : 32 x 270 KiB, built in 0.6s
+  validated : {'scores': ([100, 5], 'FP32')}
+  warmup done, measuring
+
+  measured  : 900.0s
+  offered   : 700 req/s
+  achieved  : 700.0 req/s (100.0% of offered)
+  responses : ok 629997, failed 0, shed 0, dispatched 629995
+  latency   : p50 2.80  p95 3.19  p99 3.37  max 10.25  mean 2.84 ms
+  client cpu: 0.2% of 32 vCPU
+
+  reported as 15 slice(s) of 60s, under one continuous 900s load:
+  slice 1/15 : n=42000 achieved=700.00 p50=2.79 p95=3.17 p99=3.33 shed=0 failed=0
+  slice 2/15 : n=42000 achieved=700.00 p50=2.80 p95=3.19 p99=3.35 shed=0 failed=0
+  slice 3/15 : n=42000 achieved=700.00 p50=2.80 p95=3.19 p99=3.37 shed=0 failed=0
+  slice 4/15 : n=42000 achieved=700.00 p50=2.79 p95=3.19 p99=3.36 shed=0 failed=0
+  slice 5/15 : n=42000 achieved=700.00 p50=2.80 p95=3.19 p99=3.40 shed=0 failed=0
+  slice 6/15 : n=42000 achieved=700.00 p50=2.80 p95=3.19 p99=3.37 shed=0 failed=0
+  slice 7/15 : n=42000 achieved=700.00 p50=2.80 p95=3.19 p99=3.37 shed=0 failed=0
+  slice 8/15 : n=42000 achieved=700.00 p50=2.79 p95=3.19 p99=3.33 shed=0 failed=0
+  slice 9/15 : n=42000 achieved=700.00 p50=2.80 p95=3.19 p99=3.33 shed=0 failed=0
+  slice 10/15 : n=42000 achieved=700.00 p50=2.80 p95=3.19 p99=3.35 shed=0 failed=0
+  slice 11/15 : n=42000 achieved=700.00 p50=2.83 p95=3.22 p99=3.49 shed=0 failed=0
+  slice 12/15 : n=42000 achieved=700.00 p50=2.80 p95=3.19 p99=3.37 shed=0 failed=0
+  slice 13/15 : n=41996 achieved=699.93 p50=2.80 p95=3.18 p99=3.34 shed=0 failed=0
+  slice 14/15 : n=42000 achieved=700.00 p50=2.81 p95=3.17 p99=3.35 shed=0 failed=0
+  slice 15/15 : n=42001 achieved=700.02 p50=2.81 p95=3.17 p99=3.33 shed=0 failed=0
+JSON {"label": "g5l20-triton-20m-r100t700-p2", "rows": 100, "offered": 700, "achieved": 700.0, "ok": 629997, "failed": 0, "shed": 0, "p50": 2.8, "p95": 3.19, "p99": 3.37, "mean": 2.84, "max": 10.25, "client_cpu": 0.2, "measured_secs": 900.0, "segments": [{"slice": 1, "seconds": 60.0, "n": 42000, "achieved": 700.0, "p50": 2.79, "p95": 3.17, "p99": 3.33, "shed": 0, "failed": 0}, {"slice": 2, "seconds": 60.0, "n": 42000, "achieved": 700.0, "p50": 2.8, "p95": 3.19, "p99": 3.35, "shed": 0, "failed": 0}, {"slice": 3, "seconds": 60.0, "n": 42000, "achieved": 700.0, "p50": 2.8, "p95": 3.19, "p99": 3.37, "shed": 0, "failed": 0}, {"slice": 4, "seconds": 60.0, "n": 42000, "achieved": 700.0, "p50": 2.79, "p95": 3.19, "p99": 3.36, "shed": 0, "failed": 0}, {"slice": 5, "seconds": 60.0, "n": 42000, "achieved": 700.0, "p50": 2.8, "p95": 3.19, "p99": 3.4, "shed": 0, "failed": 0}, {"slice": 6, "seconds": 60.0, "n": 42000, "achieved": 700.0, "p50": 2.8, "p95": 3.19, "p99": 3.37, "shed": 0, "failed": 0}, {"slice": 7, "seconds": 60.0, "n": 42000, "achieved": 700.0, "p50": 2.8, "p95": 3.19, "p99": 3.37, "shed": 0, "failed": 0}, {"slice": 8, "seconds": 60.0, "n": 42000, "achieved": 700.0, "p50": 2.79, "p95": 3.19, "p99": 3.33, "shed": 0, "failed": 0}, {"slice": 9, "seconds": 60.0, "n": 42000, "achieved": 700.0, "p50": 2.8, "p95": 3.19, "p99": 3.33, "shed": 0, "failed": 0}, {"slice": 10, "seconds": 60.0, "n": 42000, "achieved": 700.0, "p50": 2.8, "p95": 3.19, "p99": 3.35, "shed": 0, "failed": 0}, {"slice": 11, "seconds": 60.0, "n": 42000, "achieved": 700.0, "p50": 2.83, "p95": 3.22, "p99": 3.49, "shed": 0, "failed": 0}, {"slice": 12, "seconds": 60.0, "n": 42000, "achieved": 700.0, "p50": 2.8, "p95": 3.19, "p99": 3.37, "shed": 0, "failed": 0}, {"slice": 13, "seconds": 60.0, "n": 41996, "achieved": 699.93, "p50": 2.8, "p95": 3.18, "p99": 3.34, "shed": 0, "failed": 0}, {"slice": 14, "seconds": 60.0, "n": 42000, "achieved": 700.0, "p50": 2.81, "p95": 3.17, "p99": 3.35, "shed": 0, "failed": 0}, {"slice": 15, "seconds": 60.0, "n": 42001, "achieved": 700.02, "p50": 2.81, "p95": 3.17, "p99": 3.33, "shed": 0, "failed": 0}]}

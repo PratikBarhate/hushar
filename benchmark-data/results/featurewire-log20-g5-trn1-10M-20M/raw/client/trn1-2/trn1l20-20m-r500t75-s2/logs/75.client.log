@@ -1,0 +1,38 @@
+hushar benchmark [cell @ 75 req/s]
+  server    : http://172.31.50.81:8279
+  model     : bench-model-neuron-20m-b500 on neuron
+  features  : 210 per row
+  asking    : whichever the server's split chooses
+  offering  : 75 req/s x 500 row(s), 300 in flight (4s of latency), 300s warmup + 900s measured, reported in 15 slices
+  payload   : 518488 bytes per request, 1037.0 bytes per row, 210 feature(s)
+  warmup done, measuring
+
+  bench-model-neuron-20m-b500 on neuron
+  ---------------------------------------------
+  achieved      :      75.0 req/s   (37500.0 rows/s)
+  offered       :        75 req/s
+  measured      :     67500 requests  (of 89999 that succeeded overall)
+  latency  p50  :     22.20 ms
+           p95  :     23.19 ms
+           p99  :     23.47 ms
+           max  :     33.58 ms
+           mean :     22.38 ms
+  failed        :         0
+  shed          :         0  (offered but never sent: 300 in flight was the cap)
+
+  reported as 15 slice(s) of 60s, under one continuous 900s load:
+  slice 1/15 : n=4500 achieved=75.00 p50=22.16 p95=23.18 p99=23.43 shed=0 failed=0
+  slice 2/15 : n=4500 achieved=75.00 p50=22.17 p95=23.16 p99=23.48 shed=0 failed=0
+  slice 3/15 : n=4500 achieved=75.00 p50=22.20 p95=23.24 p99=23.47 shed=0 failed=0
+  slice 4/15 : n=4500 achieved=75.00 p50=22.22 p95=23.18 p99=23.48 shed=0 failed=0
+  slice 5/15 : n=4500 achieved=75.00 p50=22.22 p95=23.19 p99=23.41 shed=0 failed=0
+  slice 6/15 : n=4500 achieved=75.00 p50=22.19 p95=23.08 p99=23.40 shed=0 failed=0
+  slice 7/15 : n=4500 achieved=75.00 p50=22.23 p95=23.24 p99=23.77 shed=0 failed=0
+  slice 8/15 : n=4500 achieved=75.00 p50=22.19 p95=23.18 p99=23.49 shed=0 failed=0
+  slice 9/15 : n=4500 achieved=75.00 p50=22.21 p95=23.18 p99=23.43 shed=0 failed=0
+  slice 10/15 : n=4500 achieved=75.00 p50=22.15 p95=23.18 p99=23.45 shed=0 failed=0
+  slice 11/15 : n=4500 achieved=75.00 p50=22.24 p95=23.22 p99=23.49 shed=0 failed=0
+  slice 12/15 : n=4500 achieved=75.00 p50=22.23 p95=23.15 p99=23.42 shed=0 failed=0
+  slice 13/15 : n=4500 achieved=75.00 p50=22.19 p95=23.21 p99=23.47 shed=0 failed=0
+  slice 14/15 : n=4500 achieved=75.00 p50=22.19 p95=23.22 p99=23.47 shed=0 failed=0
+  slice 15/15 : n=4500 achieved=75.00 p50=22.20 p95=23.19 p99=23.37 shed=0 failed=0

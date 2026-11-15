@@ -1,0 +1,30 @@
+{
+  "by_session_count": {
+    "4": 28,
+    "8": 28
+  },
+  "by_size": {
+    "10m": 28,
+    "20m": 28
+  },
+  "cells": 56,
+  "failed_load": 0,
+  "inference_log": {
+    "cells_logging": 56,
+    "cells_that_shed": 1,
+    "cells_with_write_failures": 0,
+    "objects_written": 4703,
+    "written_gib": 237.2
+  },
+  "partial": 1,
+  "phases": {
+    "main": 32,
+    "reference": 8,
+    "repeat": 16
+  },
+  "preserved_attempt_failures": 16,
+  "run": "minibatch-size-cpu-c9g-10M-20M",
+  "sustained": 55,
+  "with_cloudwatch": 56,
+  "with_server_samples": 56
+}

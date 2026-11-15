@@ -60,10 +60,11 @@
 #                inference, so 2 or 3 is plenty and the rest of the cores go to the engine
 #   PORT         8279
 #   BIND         0.0.0.0   the client is on another host, so this must not be loopback
-#   SESSIONS     1     backend replicas per model and the number of requests that run at
-#                once. For ONNX Runtime each replica is an independent session with its
-#                own thread pool. For Neuron each is a separate model load on consecutive
-#                NeuronCores. The blocking pool has this same width.
+#   SESSIONS     1     backend replicas per model, as threading.sessions_per_model. For
+#                ONNX Runtime each replica is an independent session with its own thread
+#                pool. For Neuron each is a separate model load on consecutive
+#                NeuronCores. Each serves one request at a time, so this is also the
+#                requests that run at once and the blocking pool's width
 #   ALLOW_SPINNING  unset  whether idle ONNX Runtime intra-op threads spin waiting for
 #                work. Unset leaves the runtime's own default, which is to spin. Set it
 #                to 0 whenever the execution provider brings a thread-pool of its own --
@@ -383,8 +384,11 @@ json.dump(service, open(service_out, "w"), indent=2)
   fi
 
   # The banner is the contract: it names the provider actually registered, which is not
-  # necessarily the one asked for if the host's library lacks it.
-  grep -E "loaded on|Neuron ->|inputs |outputs |features |A/B|threads ->|batch  :|ctx    :|share  :|admit  :|pool   :|spin   :|config :|cores  :|note   :|metrics ->|inference logs ->|listening" "$LOG" | sed 's/^/  /'
+  # necessarily the one asked for if the host's library lacks it. `plan`, `overlap` and
+  # `exec` arrived with backend-aware scheduling and MUST be here: the execution plan is
+  # the only place the server says whether it split a request and where the mini batches
+  # ran, and a caller that cannot see that line cannot tell a split from an unsplit run.
+  grep -E "loaded on|Neuron ->|inputs |outputs |features |A/B|threads ->|plan +:|overlap +:|exec +:|batch +:|ctx +:|share +:|admit +:|pool +:|spin +:|config +:|cores +:|note +:|metrics ->|inference logs ->|listening" "$LOG" | sed 's/^/  /'
   echo
   # hostname -I is Linux-only and returns nothing elsewhere, so fall back to instance
   # metadata and then to a placeholder rather than printing "http://:8279". The `|| true`

@@ -1,0 +1,98 @@
+{
+  "size": "20m",
+  "run": "nominibatch-sessions-gpu-g5-10M-20M",
+  "rev": "72e7c983",
+  "host": "g5-2",
+  "cache_root": "/root/trt-cache/20m",
+  "shapes": [
+    {
+      "rows": 100,
+      "engine_cache": "/root/trt-cache/20m/r100",
+      "engine_shape": [
+        100,
+        690
+      ],
+      "passes": [
+        {
+          "pass_": "first",
+          "seconds": 25.7,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 3.58,
+            "p95": 3.87,
+            "p99": 3.96,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 73012\n-rw-r--r--. 1 root root 74760148 Nov  7 00:46 TensorrtExecutionProvider_TRTKernel_graph_main_graph_9440120622150683309_0_0_sm86.engine\n-rw-r--r--. 1 root root       24 Nov  7 00:46 TensorrtExecutionProvider_TRTKernel_graph_main_graph_9440120622150683309_0_0_sm86.profile"
+        },
+        {
+          "pass_": "cached",
+          "seconds": 22.1,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 3.15,
+            "p95": 3.51,
+            "p99": 3.71,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 73012\n-rw-r--r--. 1 root root 74760148 Nov  7 00:46 TensorrtExecutionProvider_TRTKernel_graph_main_graph_9440120622150683309_0_0_sm86.engine\n-rw-r--r--. 1 root root       24 Nov  7 00:46 TensorrtExecutionProvider_TRTKernel_graph_main_graph_9440120622150683309_0_0_sm86.profile"
+        }
+      ],
+      "build_seconds": 25.7,
+      "cached_seconds": 22.1,
+      "speedup": 1.2
+    },
+    {
+      "rows": 500,
+      "engine_cache": "/root/trt-cache/20m/r500",
+      "engine_shape": [
+        500,
+        690
+      ],
+      "passes": [
+        {
+          "pass_": "first",
+          "seconds": 26.5,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 12.8,
+            "p95": 13.46,
+            "p99": 13.6,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 73064\n-rw-r--r--. 1 root root 74809492 Nov  7 00:47 TensorrtExecutionProvider_TRTKernel_graph_main_graph_9440120622150683309_0_0_sm86.engine\n-rw-r--r--. 1 root root       30 Nov  7 00:47 TensorrtExecutionProvider_TRTKernel_graph_main_graph_9440120622150683309_0_0_sm86.profile"
+        },
+        {
+          "pass_": "cached",
+          "seconds": 22.1,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 12.53,
+            "p95": 12.96,
+            "p99": 13.55,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 73064\n-rw-r--r--. 1 root root 74809492 Nov  7 00:47 TensorrtExecutionProvider_TRTKernel_graph_main_graph_9440120622150683309_0_0_sm86.engine\n-rw-r--r--. 1 root root       30 Nov  7 00:47 TensorrtExecutionProvider_TRTKernel_graph_main_graph_9440120622150683309_0_0_sm86.profile"
+        }
+      ],
+      "build_seconds": 26.5,
+      "cached_seconds": 22.1,
+      "speedup": 1.2
+    }
+  ],
+  "prime_arm": "hushar-tensor",
+  "prime_wire": "tensor",
+  "note": "One entry per engine SHAPE. With no mini batch the whole request is the call, so a shape is a ROW COUNT and one cache directory serves every session count at that row count -- a session count loads more copies of the same engine, it does not change the engine. Primed on the SAME WIRE the cells use, so no cell can pay for a TensorRT build inside its warm-up. build_seconds is a 20 s trickle against a cold cache, so it carries the TensorRT engine build; cached_seconds is the same trickle against a FRESH server that loaded the cache. The gap is the cost every cell would otherwise have paid inside its warm-up."
+}

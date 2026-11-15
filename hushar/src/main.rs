@@ -28,19 +28,26 @@ pub(crate) mod io;
 ///
 /// * `model_id` - from the model's own configuration; recorded on every inference log
 ///   batch and every metric, and returned in the response
-/// * `sessions` - interchangeable backend replicas. For ONNX Runtime each owns its own
-///   thread pool; for Neuron each is a separate model load on its configured core range.
-///   A request leases one for as long as it scores
+/// * `sessions` - interchangeable backend replicas. For ONNX Runtime each session owns
+///   its own thread pool; for Neuron each is a separate model load on its configured core
+///   range. A request leases one for as long as it scores
 /// * `input_builder` - how a feature payload becomes this model's inputs
-/// * `mini_batch` - how a request's rows are cut, when the configuration says to; the
-///   batches are scored at the same time. `None` runs each request as a single batch
+/// * `plan` - how this model's rows reach the engine, settled at startup from what the
+///   backend overlaps and what the configuration asks for. The single source of truth for
+///   whether a request is cut up, and into what
+/// * `overlap_width` - mini batches of one request that can be in flight, which is what
+///   the fan-out pool is sized from
+/// * `merger` - the queue that fills one engine call from several requests, when the plan
+///   is [`inference::ExecutionPlan::MergedRequests`]. `None` for every other plan
 /// * `backend` - backend-specific settings used to describe the loaded execution plan
 #[derive(Debug)]
 pub(crate) struct ServableModel {
     model_id: String,
-    sessions: inference::SessionPool<Arc<dyn InferenceBackend>>,
+    sessions: Arc<inference::SessionPool<Arc<dyn InferenceBackend>>>,
     input_builder: Arc<inference::input_builder::InputBuilder>,
-    mini_batch: Option<inference::scoring::MiniBatch>,
+    plan: inference::ExecutionPlan,
+    overlap_width: usize,
+    merger: Option<inference::merger::Merger>,
     backend: config::BackendConfig,
 }
 
@@ -143,30 +150,51 @@ impl Hushar for HusharService {
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         let input_builder = Arc::clone(&model.input_builder);
-        let mini_batch = model.mini_batch;
+        let plan = model.plan;
         let logging = if self.sampler.sample() {
             FeatureLogging::Record
         } else {
             FeatureLogging::Skip
         };
 
-        let scored = tokio::task::spawn_blocking(move || {
-            let session = model.sessions.acquire();
-            let scored = inference::scoring::score_features(
-                session.as_ref(),
-                &columns,
-                &input_builder,
-                mini_batch,
-                logging,
-            );
-            (scored, columns)
-        })
-        .await
-        .map_err(|e| Status::internal(format!("inference task failed to complete: {e}")))?;
-        let (scored, columns) = scored;
+        let began = std::time::Instant::now();
+        let (scored, columns) = match &model.merger {
+            // Merged: the rows queue for a call shared with other requests, so this
+            // request waits on channels rather than holding a session itself. The columns
+            // are shared with the merger for exactly as long as its calls run.
+            Some(merger) => {
+                let columns = Arc::new(columns);
+                let receivers = merger.submit(Arc::clone(&columns));
+                let scored = collect_merged(receivers).await;
+                let columns = Arc::into_inner(columns).ok_or_else(|| {
+                    Status::internal(
+                        "the merged call did not release this request's features".to_owned(),
+                    )
+                })?;
+                (scored, columns)
+            }
+            // Whole request, or cut into mini batches: scored on the blocking pool while
+            // this request holds one of the model's sessions.
+            None => tokio::task::spawn_blocking(move || {
+                let session = model.sessions.acquire();
+                let scored = inference::scoring::score_features(
+                    session.as_ref(),
+                    &columns,
+                    &input_builder,
+                    &plan,
+                    logging,
+                );
+                (scored, columns)
+            })
+            .await
+            .map_err(|e| Status::internal(format!("inference task failed to complete: {e}")))?,
+        };
 
         match scored {
-            Ok(batch) => {
+            Ok(mut batch) => {
+                // The request's own span, which is the figure `InferenceTime` cannot give
+                // once calls overlap or are shared between requests.
+                batch.timings.request_time = began.elapsed().as_micros();
                 self.metrics_sink.record(&model_id, &batch.timings);
 
                 let scores = to_score_type(batch.scores);
@@ -194,6 +222,51 @@ impl Hushar for HusharService {
             Err(e) => Err(Status::internal(e.to_string())),
         }
     }
+}
+
+/// Gathers one request's merged calls back into a single scored batch.
+///
+/// The receivers are in row order, so concatenating their scores restores the request.
+/// Stage timings are combined as the longest single call's, which matches how an
+/// overlapping mini batch is reported: a call's duration is not divisible among the
+/// requests that shared it.
+///
+/// An empty request has no calls and so no scores, which is what scoring it directly
+/// would also produce.
+async fn collect_merged(
+    receivers: Vec<tokio::sync::oneshot::Receiver<inference::merger::Reply>>,
+) -> Result<inference::scoring::ScoredBatch, inference::InferenceError> {
+    let mut scored = inference::scoring::ScoredBatch::empty();
+    let mut calls = 0u128;
+    let mut fill_total = 0u128;
+    for receiver in receivers {
+        let part = receiver
+            .await
+            .map_err(|_| "the merged call ended without answering this request")?
+            .map_err(inference::InferenceError::from)?;
+        inference::scoring::append_scores(&mut scored.scores, part.scores)?;
+        // A stage is the longest single call's, since a request's calls may overlap and
+        // each is shared with other requests.
+        scored.timings.vec_time = scored.timings.vec_time.max(part.timings.vec_time);
+        scored.timings.tensor_time = scored.timings.tensor_time.max(part.timings.tensor_time);
+        scored.timings.inference_time = scored
+            .timings
+            .inference_time
+            .max(part.timings.inference_time);
+        // The counts are this request's own totals across its calls, so they add. Queue
+        // depth is the worst it saw, which is the figure that says whether it waited.
+        scored.timings.engine_calls += part.timings.engine_calls;
+        scored.timings.ballast_rows += part.timings.ballast_rows;
+        scored.timings.queue_depth = scored.timings.queue_depth.max(part.timings.queue_depth);
+        calls += 1;
+        fill_total += part.timings.fill_percent;
+    }
+    // Fill belongs to a call rather than to a request, so a request riding several calls
+    // reports their mean.
+    if let Some(mean) = fill_total.checked_div(calls) {
+        scored.timings.fill_percent = mean;
+    }
+    Ok(scored)
 }
 
 /// Describes a model's inputs or outputs for the banner.
@@ -320,6 +393,18 @@ async fn load_model(
             size,
             is_fixed: model_config.is_fixed,
         });
+    // The fixed call shape the engine is loaded for. A merged call always presents
+    // exactly `max_rows`, padded when it is not full, which is the same contract
+    // `is_fixed` describes -- so a pinned graph or a NEFF loads against the merge width
+    // and `convert_specs` refuses a width that disagrees with it.
+    let load_batch = mini_batch.or_else(|| {
+        model_config
+            .merge
+            .map(|merge| inference::scoring::MiniBatch {
+                size: merge.max_rows,
+                is_fixed: true,
+            })
+    });
 
     let (model_location, model_store) = stores
         .resolve(&model_config.model_path)
@@ -335,13 +420,13 @@ async fn load_model(
             &backend.execution_provider,
             threading.parallelism(),
             &replica_options(threading),
-            mini_batch,
+            load_batch,
         ),
         config::BackendConfig::Neuron(backend) => io::load_neuron_replicas(
             &model_bytes,
             backend,
             threading.sessions_per_model(),
-            mini_batch,
+            load_batch,
             neuron_runtime,
         ),
     }
@@ -361,6 +446,15 @@ async fn load_model(
     .unwrap_or_else(|e| panic!("the {role} configuration does not fit the {role}: {e}"));
 
     let bindings = input_builder.describe();
+    let profile = backend.profile();
+    let plan = inference::ExecutionPlan::resolve(
+        profile,
+        backend.required_rows(),
+        mini_batch,
+        model_config.merge,
+        backend.name(),
+    )
+    .unwrap_or_else(|e| panic!("the {role} configuration cannot be served: {e}"));
     println!(
         "hushar: {role} {} loaded on {}\n  inputs   : {}\n  outputs  : {}\n  \
          features : {} binding(s)\n{}",
@@ -375,23 +469,44 @@ async fn load_model(
             .collect::<Vec<_>>()
             .join("\n"),
     );
-    if let Some(m) = mini_batch {
-        let tail = if m.is_fixed {
-            "the last is padded up to it"
-        } else {
-            "the last is however many remain"
-        };
+    if profile.overlaps() {
         println!(
-            "  batch  : rows split into mini batches of {}, scored together, {tail}",
-            m.size
+            "  overlap  : up to {} of a request's mini batches at once on its session",
+            profile.concurrent_mini_batches(),
+        );
+    } else {
+        println!(
+            "  overlap  : concurrent calls on one session serialise here, so splitting a \
+             request into mini batches would queue them rather than overlap them"
         );
     }
+    println!("  plan     : {} -- {}", plan.name(), plan.describe());
+
+    let overlap_width = profile.concurrent_mini_batches();
+
+    let sessions = Arc::new(inference::SessionPool::new(sessions));
+    let input_builder = Arc::new(input_builder);
+    let merger = match plan {
+        inference::ExecutionPlan::MergedRequests {
+            max_rows,
+            max_delay_micros,
+        } => Some(inference::merger::Merger::start(
+            Arc::clone(&sessions),
+            Arc::clone(&input_builder),
+            max_rows,
+            std::time::Duration::from_micros(max_delay_micros),
+            threading.sessions_per_model(),
+        )),
+        _ => None,
+    };
 
     ServableModel {
         model_id,
-        sessions: inference::SessionPool::new(sessions),
-        input_builder: Arc::new(input_builder),
-        mini_batch,
+        sessions,
+        input_builder,
+        plan,
+        overlap_width,
+        merger,
         backend: model_config.backend,
     }
 }
@@ -412,9 +527,13 @@ async fn build_metrics_sink(config: &config::MetricsConfig) -> Arc<dyn MetricsSi
                 namespace,
                 config.batch_size,
                 config.max_sends_in_flight,
+                config.detailed,
             ))
         }
-        None => Arc::new(io::metrics::StderrMetrics::new(config.batch_size)),
+        None => Arc::new(io::metrics::StderrMetrics::new(
+            config.batch_size,
+            config.detailed,
+        )),
     }
 }
 
@@ -634,11 +753,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     config_runtime.shutdown_background();
 
     let worker_threads = service_config.threading.worker_threads(num_cpus);
-    // The blocking pool is the backend replica count, so a request that reaches it always
-    // finds an idle ORT session or Neuron model replica to lease.
+    // The blocking pool is the session count, so a request that reaches it always finds
+    // an idle session to lease.
     //
     // NOTE that tokio uses this pool for its own blocking work as well -- notably DNS
-    // resolution behind the metric and log sinks -- so with one replica a lookup queues
+    // resolution behind the metric and log sinks -- so with one session a lookup queues
     // behind an inference. The sinks retry and are off the request path, so a delayed
     // lookup costs a late batch rather than a failed request.
     let blocking_threads = service_config.threading.sessions_per_model();
@@ -649,13 +768,19 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .enable_all()
         .build()?;
 
-    let splits_requests = control.mini_batch.is_some()
-        || candidate
-            .as_ref()
-            .is_some_and(|model| model.mini_batch.is_some());
-    if splits_requests {
+    // The fan-out pool is sized to what the loaded models overlap on one session: the
+    // host's cores for an ONNX Runtime session, a replica's execution contexts for
+    // Neuron. Spawning more mini batches than that would only move the wait inside the
+    // engine, where it cannot be seen. The calling thread takes one mini batch of each
+    // round itself, so the pool carries one fewer.
+    let fan_out_width = std::iter::once(control.as_ref())
+        .chain(candidate.iter().map(AsRef::as_ref))
+        .filter_map(|model| model.plan.mini_batch().map(|_| model.overlap_width))
+        .max()
+        .unwrap_or(0);
+    if fan_out_width > 0 {
         let fan_out_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(num_cpus)
+            .num_threads(fan_out_width.saturating_sub(1).max(1).min(num_cpus))
             .thread_name(|i| format!("hushar-fanout-{i}"))
             .build()?;
         if inference::scoring::init_fan_out(fan_out_pool).is_err() {
@@ -664,7 +789,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let models = 1 + usize::from(candidate.is_some());
-    let replicas = control.sessions.total();
+    // One session serves one request at a time, so the sessions are the request lanes:
+    // each costs a model copy and a thread pool.
+    let lanes = control.sessions.total();
     let loaded_models: Vec<&ServableModel> = std::iter::once(control.as_ref())
         .chain(candidate.iter().map(AsRef::as_ref))
         .collect();
@@ -676,10 +803,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let parallelism = service_config.threading.parallelism();
 
     if ort_models > 0 {
-        let sessions = replicas * ort_models;
+        let sessions = lanes * ort_models;
         let compute_threads = service_config.threading.compute_threads(sessions);
         println!(
-            "hushar: threads -> {worker_threads} async, {replicas} concurrent inference(s) x \
+            "hushar: threads -> {worker_threads} async, {lanes} concurrent request(s) x \
              {} {} x {sessions} ONNX Runtime session(s) = {compute_threads} compute on {num_cpus} core(s)",
             parallelism.width(),
             parallelism.pool_name(),
@@ -729,8 +856,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .session_config
             .get("session.force_spinning_stop")
             .is_some_and(|value| value == "1");
-        if replicas > 1 && service_config.threading.allow_spinning == Some(true) && !stops_when_idle
-        {
+        if lanes > 1 && service_config.threading.allow_spinning == Some(true) && !stops_when_idle {
             println!(
                 "  note   : {sessions} spinning pools on {num_cpus} core(s) means an idle pool \
                  keeps burning time the busy ones need; add \"session.force_spinning_stop\": \
@@ -743,8 +869,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if neuron_models > 0 {
         if ort_models == 0 {
             println!(
-                "hushar: threads -> {worker_threads} async, {replicas} concurrent inference(s), \
-                 Neuron execution is device-managed on {num_cpus} host core(s)"
+                "hushar: threads -> {worker_threads} async, {lanes} concurrent request(s), one \
+                 replica each, Neuron execution is device-managed on {num_cpus} host core(s)"
             );
         }
         for model in &loaded_models {
@@ -752,11 +878,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 continue;
             };
             let per_core = backend.replicas_per_neuron_core.max(1);
-            let ranges = replicas.div_ceil(per_core);
+            let ranges = lanes.div_ceil(per_core);
             let occupied = ranges * backend.neuron_cores_per_replica as usize;
             let last = backend.start_neuron_core as usize + occupied - 1;
             println!(
-                "hushar: Neuron -> model {}, {replicas} replica(s) on NeuronCore {}-{last}, \
+                "hushar: Neuron -> model {}, {lanes} replica(s) on NeuronCore {}-{last}, \
                  {} core(s) and {} execution context(s) per replica",
                 model.model_id,
                 backend.start_neuron_core,
@@ -776,7 +902,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                      holds its own copy of the weights"
                 );
             }
-            if let Some(batch) = model.mini_batch {
+            if let Some(batch) = model.plan.mini_batch() {
                 let contexts = backend.execution_contexts_per_replica;
                 println!(
                     "  ctx    : a request of N rows is ceil(N / {size}) execution(s) of {size} \
@@ -801,8 +927,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("  admit  : {connection_concurrency} in flight per connection");
     if neuron_models == 0 {
         println!(
-            "  pool   : {replicas} blocking thread(s) for {replicas} session(s) per model, each \
-             session with its own {} pool; a request leases an idle session while it scores{}",
+            "  pool   : {lanes} session(s) per model, one blocking thread each, every session \
+             with its own {} pool; a request leases an idle session while it scores{}",
             parallelism.pool_name(),
             if models > 1 {
                 format!(" -- from whichever of the {models} models it was routed to")
@@ -812,8 +938,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     } else {
         println!(
-            "  pool   : {replicas} blocking thread(s) per request lane; a request leases one \
-             backend replica while it scores{}",
+            "  pool   : {lanes} replica(s) per model, one blocking thread each; a request \
+             leases an idle replica while it scores{}",
             if models > 1 {
                 format!(" -- from whichever of the {models} models it was routed to")
             } else {
@@ -821,10 +947,19 @@ pub fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             },
         );
     }
-    if replicas == 1 {
+    if lanes == 1 {
         println!(
-            "  note   : one replica means one request at a time; raise \
+            "  note   : one request lane means one request at a time; raise \
              \"threading.sessions_per_model\" for concurrency, at one model load each"
+        );
+    }
+    // Every session should be idle before traffic arrives. A shortfall would mean a lease
+    // was taken and not returned during startup, which no later reading would reveal.
+    let idle_sessions = control.sessions.idle();
+    if idle_sessions != lanes {
+        println!(
+            "  note   : {idle_sessions} of {lanes} request lane(s) are idle before serving; \
+             every lane should be free at this point"
         );
     }
 
@@ -1074,10 +1209,11 @@ mod tests {
                 tokio::task::spawn_blocking(|| {
                     Ok(inference::scoring::ScoredBatch {
                         scores: inference::batch::ScoreData::F32(Vec::new()),
-                        timings: inference::InferenceMicros {
+                        timings: inference::RequestReport {
                             vec_time: 1,
                             tensor_time: 2,
                             inference_time: 3,
+                            ..inference::RequestReport::default()
                         },
                     })
                 })

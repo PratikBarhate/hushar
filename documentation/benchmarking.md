@@ -104,7 +104,7 @@ NeuronCore range, plus the concurrency and admission limit. Those lines are the 
 For Neuron, `SESSIONS` means model replicas rather than ORT sessions. On a two-core
 `trn1.2xlarge`, `SESSIONS=2` with one core per replica occupies both cores.
 `NEURON_EXECUTION_CONTEXTS` controls concurrent tensor sets inside each replica and matters
-when one request is split into several NEFF-sized pieces. `THREADS`, `INTER_THREADS`,
+when one request is split into several NEFF-sized mini batches. `THREADS`, `INTER_THREADS`,
 `ALLOW_SPINNING`, and `ORT_SESSION_CONFIG` are ORT-only.
 
 `CW_NAMESPACE` is what makes the report's **server-side** percentiles possible: timings go

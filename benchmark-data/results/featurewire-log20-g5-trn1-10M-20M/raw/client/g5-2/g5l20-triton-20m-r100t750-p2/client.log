@@ -1,0 +1,33 @@
+triton benchmark [g5l20-triton-20m-r100t750-p2]
+  server    : 172.31.39.61:8001
+  model     : bench_vectorized (Triton C++ onnxruntime backend)
+  features  : 1 inputs per row, outputs ['scores']
+  offering  : 750 req/s x 100 row(s), 512 in flight, 300s warmup + 900s measured
+  payloads  : 32 x 270 KiB, built in 0.6s
+  validated : {'scores': ([100, 5], 'FP32')}
+  warmup done, measuring
+
+  measured  : 900.0s
+  offered   : 750 req/s
+  achieved  : 750.0 req/s (100.0% of offered)
+  responses : ok 674998, failed 0, shed 0, dispatched 674995
+  latency   : p50 3.87  p95 7.72  p99 8.85  max 12.83  mean 4.61 ms
+  client cpu: 0.1% of 32 vCPU
+
+  reported as 15 slice(s) of 60s, under one continuous 900s load:
+  slice 1/15 : n=45001 achieved=750.02 p50=3.87 p95=7.89 p99=9.19 shed=0 failed=0
+  slice 2/15 : n=45000 achieved=750.00 p50=3.86 p95=7.61 p99=8.71 shed=0 failed=0
+  slice 3/15 : n=45000 achieved=750.00 p50=3.92 p95=7.87 p99=9.59 shed=0 failed=0
+  slice 4/15 : n=45000 achieved=750.00 p50=3.95 p95=8.00 p99=9.12 shed=0 failed=0
+  slice 5/15 : n=45000 achieved=750.00 p50=3.86 p95=7.61 p99=8.79 shed=0 failed=0
+  slice 6/15 : n=45000 achieved=750.00 p50=3.92 p95=7.88 p99=8.97 shed=0 failed=0
+  slice 7/15 : n=45000 achieved=750.00 p50=3.96 p95=7.94 p99=8.98 shed=0 failed=0
+  slice 8/15 : n=45000 achieved=750.00 p50=3.87 p95=7.75 p99=8.84 shed=0 failed=0
+  slice 9/15 : n=45000 achieved=750.00 p50=3.86 p95=7.68 p99=8.74 shed=0 failed=0
+  slice 10/15 : n=44996 achieved=749.93 p50=3.85 p95=7.28 p99=8.30 shed=0 failed=0
+  slice 11/15 : n=45000 achieved=750.00 p50=3.84 p95=7.15 p99=8.08 shed=0 failed=0
+  slice 12/15 : n=45000 achieved=750.00 p50=3.85 p95=7.31 p99=8.23 shed=0 failed=0
+  slice 13/15 : n=45000 achieved=750.00 p50=3.93 p95=7.73 p99=8.86 shed=0 failed=0
+  slice 14/15 : n=45000 achieved=750.00 p50=3.88 p95=7.76 p99=8.91 shed=0 failed=0
+  slice 15/15 : n=45001 achieved=750.02 p50=3.91 p95=7.76 p99=8.74 shed=0 failed=0
+JSON {"label": "g5l20-triton-20m-r100t750-p2", "rows": 100, "offered": 750, "achieved": 750.0, "ok": 674998, "failed": 0, "shed": 0, "p50": 3.87, "p95": 7.72, "p99": 8.85, "mean": 4.61, "max": 12.83, "client_cpu": 0.1, "measured_secs": 900.0, "segments": [{"slice": 1, "seconds": 60.0, "n": 45001, "achieved": 750.02, "p50": 3.87, "p95": 7.89, "p99": 9.19, "shed": 0, "failed": 0}, {"slice": 2, "seconds": 60.0, "n": 45000, "achieved": 750.0, "p50": 3.86, "p95": 7.61, "p99": 8.71, "shed": 0, "failed": 0}, {"slice": 3, "seconds": 60.0, "n": 45000, "achieved": 750.0, "p50": 3.92, "p95": 7.87, "p99": 9.59, "shed": 0, "failed": 0}, {"slice": 4, "seconds": 60.0, "n": 45000, "achieved": 750.0, "p50": 3.95, "p95": 8.0, "p99": 9.12, "shed": 0, "failed": 0}, {"slice": 5, "seconds": 60.0, "n": 45000, "achieved": 750.0, "p50": 3.86, "p95": 7.61, "p99": 8.79, "shed": 0, "failed": 0}, {"slice": 6, "seconds": 60.0, "n": 45000, "achieved": 750.0, "p50": 3.92, "p95": 7.88, "p99": 8.97, "shed": 0, "failed": 0}, {"slice": 7, "seconds": 60.0, "n": 45000, "achieved": 750.0, "p50": 3.96, "p95": 7.94, "p99": 8.98, "shed": 0, "failed": 0}, {"slice": 8, "seconds": 60.0, "n": 45000, "achieved": 750.0, "p50": 3.87, "p95": 7.75, "p99": 8.84, "shed": 0, "failed": 0}, {"slice": 9, "seconds": 60.0, "n": 45000, "achieved": 750.0, "p50": 3.86, "p95": 7.68, "p99": 8.74, "shed": 0, "failed": 0}, {"slice": 10, "seconds": 60.0, "n": 44996, "achieved": 749.93, "p50": 3.85, "p95": 7.28, "p99": 8.3, "shed": 0, "failed": 0}, {"slice": 11, "seconds": 60.0, "n": 45000, "achieved": 750.0, "p50": 3.84, "p95": 7.15, "p99": 8.08, "shed": 0, "failed": 0}, {"slice": 12, "seconds": 60.0, "n": 45000, "achieved": 750.0, "p50": 3.85, "p95": 7.31, "p99": 8.23, "shed": 0, "failed": 0}, {"slice": 13, "seconds": 60.0, "n": 45000, "achieved": 750.0, "p50": 3.93, "p95": 7.73, "p99": 8.86, "shed": 0, "failed": 0}, {"slice": 14, "seconds": 60.0, "n": 45000, "achieved": 750.0, "p50": 3.88, "p95": 7.76, "p99": 8.91, "shed": 0, "failed": 0}, {"slice": 15, "seconds": 60.0, "n": 45001, "achieved": 750.02, "p50": 3.91, "p95": 7.76, "p99": 8.74, "shed": 0, "failed": 0}]}

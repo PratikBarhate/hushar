@@ -16,9 +16,10 @@ use std::ops::Range;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use crate::inference::InferenceMicros;
+use crate::inference::RequestReport;
 use crate::inference::backend::InferenceBackend;
 use crate::inference::batch::{InputBatch, Output, ScoreData};
+use crate::inference::execution_plan::ExecutionPlan;
 use crate::inference::input_builder::{InputBuilder, RequestColumns};
 
 /// One scored batch.
@@ -33,20 +34,21 @@ use crate::inference::input_builder::{InputBuilder, RequestColumns};
 #[derive(Debug)]
 pub struct ScoredBatch {
     pub scores: ScoreData,
-    pub timings: InferenceMicros,
+    pub timings: RequestReport,
 }
 
 impl ScoredBatch {
     /// The result of scoring nothing.
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             scores: ScoreData::F32(Vec::new()),
-            timings: InferenceMicros {
-                vec_time: 0,
-                tensor_time: 0,
-                inference_time: 0,
-            },
+            timings: RequestReport::default(),
         }
+    }
+
+    /// Records how full this request's calls were.
+    pub(crate) fn set_fill(&mut self, kept: usize, sent: usize) {
+        self.timings.set_fill(kept, sent);
     }
 }
 
@@ -71,7 +73,7 @@ pub enum FeatureLogging {
 ///
 /// Constructed from the model configuration's `mini_batch_size` and `is_fixed`, which is
 /// where both are documented.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MiniBatch {
     pub size: usize,
     pub is_fixed: bool,
@@ -98,8 +100,11 @@ static FAN_OUT: OnceLock<rayon::ThreadPool> = OnceLock::new();
 
 /// Installs the mini-batch pool. Call once, before serving.
 ///
-/// Separate from rayon's global pool so its threads can be pinned to the compute cores
-/// and counted against them.
+/// Separate from rayon's global pool because the width is chosen rather than inherited:
+/// `main` sizes it to what the loaded engines can actually overlap and counts it against
+/// the thread budget, where rayon's global default would spawn one thread per core and be
+/// invisible to that arithmetic. No thread here is bound to a core -- the service sets no
+/// CPU affinity anywhere, and placement is left to the scheduler.
 ///
 /// # Errors
 ///
@@ -110,8 +115,8 @@ pub fn init_fan_out(pool: rayon::ThreadPool) -> Result<(), rayon::ThreadPool> {
 
 /// The installed pool, or a default built on first use.
 ///
-/// The default is unpinned and exists for a caller with no `main` to install one, such as
-/// the unit tests.
+/// The default takes rayon's own width and exists for a caller with no `main` to install
+/// one, such as the unit tests.
 fn fan_out() -> &'static rayon::ThreadPool {
     FAN_OUT.get_or_init(|| {
         rayon::ThreadPoolBuilder::new()
@@ -131,10 +136,10 @@ fn fan_out() -> &'static rayon::ThreadPool {
 ///
 /// # Arguments
 ///
-/// * `backend` - the engine to run
+/// * `session` - the engine every mini batch of this request runs on
 /// * `columns` - the request's rows, one column per feature
 /// * `builder` - the inputs, resolved against the model's signature at startup
-/// * `mini_batch` - how to cut the rows; `None` scores the whole request as one batch
+/// * `plan` - how to cut the rows, settled at startup
 /// * `logging` - whether the features are kept for the inference log
 ///
 /// # Returns
@@ -149,98 +154,112 @@ fn fan_out() -> &'static rayon::ThreadPool {
 /// mini batch panics -- a panic is turned into an error rather than unwinding into the
 /// pool.
 pub fn score_features(
-    backend: &dyn InferenceBackend,
+    session: &dyn InferenceBackend,
     columns: &RequestColumns,
     builder: &InputBuilder,
-    mini_batch: Option<MiniBatch>,
+    plan: &ExecutionPlan,
     logging: FeatureLogging,
 ) -> Result<ScoredBatch, crate::inference::InferenceError> {
     let total = columns.rows();
     if total == 0 {
         return Ok(ScoredBatch::empty());
     }
-    let (size, pad_to) = match mini_batch {
+    let (size, pad_to) = match plan.mini_batch() {
         Some(m) => (m.size.max(1), m.is_fixed.then(|| m.size.max(1))),
         None => (total, None),
     };
 
-    let mut chunks: Vec<Range<usize>> = Vec::with_capacity(total.div_ceil(size));
+    let mut mini_batches: Vec<Range<usize>> = Vec::with_capacity(total.div_ceil(size));
     let mut at = 0;
     while at < total {
         let end = (at + size).min(total);
-        chunks.push(at..end);
+        mini_batches.push(at..end);
         at = end;
     }
 
-    if chunks.len() == 1 {
+    if mini_batches.len() == 1 {
         let mut scored = empty_scored(total, logging);
-        let chunk = chunks.pop().unwrap_or(0..total);
-        score_chunk(
-            backend,
+        let rows = mini_batches.pop().unwrap_or(0..total);
+        score_mini_batch(
+            session,
             columns,
-            chunk,
+            rows,
             builder,
             pad_to,
             &mut scored,
             logging,
         )?;
+        scored.set_fill(total, total + scored.timings.ballast_rows as usize);
         return Ok(scored);
     }
 
-    let mine = chunks.pop().unwrap_or(0..total);
-    let scores_one =
-        |chunk: Range<usize>| -> Result<ScoredBatch, crate::inference::InferenceError> {
-            let mut part = empty_scored(chunk.end - chunk.start, logging);
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                score_chunk(
-                    backend,
-                    columns,
-                    chunk.clone(),
-                    builder,
-                    pad_to,
-                    &mut part,
-                    logging,
-                )
-            })) {
-                Ok(Ok(())) => Ok(part),
-                Ok(Err(e)) => Err(e),
-                Err(_) => Err(crate::inference::InferenceError::from(
-                    "a mini batch panicked while scoring",
-                )),
-            }
-        };
+    let at_once = session.profile().concurrent_mini_batches();
 
-    let mut slots: Vec<Option<Result<ScoredBatch, crate::inference::InferenceError>>> =
-        (0..chunks.len()).map(|_| None).collect();
-    let own = fan_out().in_place_scope(|scope| {
-        for (chunk, slot) in chunks.into_iter().zip(slots.iter_mut()) {
-            scope.spawn(|_| *slot = Some(scores_one(chunk)));
+    let scores_one = |rows: Range<usize>| -> Result<ScoredBatch, crate::inference::InferenceError> {
+        let mut part = empty_scored(rows.end - rows.start, logging);
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            score_mini_batch(
+                session,
+                columns,
+                rows.clone(),
+                builder,
+                pad_to,
+                &mut part,
+                logging,
+            )
+        })) {
+            Ok(Ok(())) => Ok(part),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(crate::inference::InferenceError::from(
+                "a mini batch panicked while scoring",
+            )),
         }
-        scores_one(mine)
-    });
+    };
 
+    // Mini batches are dispatched in rounds no wider than the engine can actually
+    // overlap. Spawning more than that would not run more at once; it would only queue
+    // them inside the engine, where the wait is invisible. The calling thread takes the
+    // first of each round, so a round of `n` occupies `n - 1` fan-out threads.
     let mut parts: Vec<Result<ScoredBatch, crate::inference::InferenceError>> =
-        Vec::with_capacity(slots.len() + 1);
-    for slot in slots {
-        parts.push(slot.unwrap_or_else(|| {
-            Err(crate::inference::InferenceError::from(
-                "a mini batch never reported a result",
-            ))
-        }));
+        Vec::with_capacity(mini_batches.len());
+    for round in mini_batches.chunks(at_once) {
+        let (first, rest) = round.split_first().expect("a round is never empty");
+        let mut spawned: Vec<Option<Result<ScoredBatch, crate::inference::InferenceError>>> =
+            (0..rest.len()).map(|_| None).collect();
+        let own = fan_out().in_place_scope(|scope| {
+            for (rows, slot) in rest.iter().cloned().zip(spawned.iter_mut()) {
+                scope.spawn(move |_| *slot = Some(scores_one(rows)));
+            }
+            scores_one(first.clone())
+        });
+        // The round's own mini batch is its first, so pushing it before the spawned ones
+        // keeps `parts` in request order without sorting anything.
+        parts.push(own);
+        for slot in spawned {
+            parts.push(slot.unwrap_or_else(|| {
+                Err(crate::inference::InferenceError::from(
+                    "a mini batch never reported a result",
+                ))
+            }));
+        }
     }
-    parts.push(own);
 
     let mut scored = empty_scored(total, logging);
     for part in parts {
         let part = part?;
         append_scores(&mut scored.scores, part.scores)?;
+        // A stage is the longest single mini batch's, since they overlap. The counts are
+        // the request's own totals, so they add.
         scored.timings.vec_time = scored.timings.vec_time.max(part.timings.vec_time);
         scored.timings.tensor_time = scored.timings.tensor_time.max(part.timings.tensor_time);
         scored.timings.inference_time = scored
             .timings
             .inference_time
             .max(part.timings.inference_time);
+        scored.timings.engine_calls += part.timings.engine_calls;
+        scored.timings.ballast_rows += part.timings.ballast_rows;
     }
+    scored.set_fill(total, total + scored.timings.ballast_rows as usize);
 
     Ok(scored)
 }
@@ -253,25 +272,21 @@ fn empty_scored(rows: usize, _logging: FeatureLogging) -> ScoredBatch {
     let _ = rows;
     ScoredBatch {
         scores: ScoreData::F32(Vec::new()),
-        timings: InferenceMicros {
-            vec_time: 0,
-            tensor_time: 0,
-            inference_time: 0,
-        },
+        timings: RequestReport::default(),
     }
 }
 
-/// Scores one batch, padding it up to `pad_to` first when that is set, and appends the
-/// real rows' results to `scored`.
+/// Scores one mini batch, padding it up to `pad_to` first when that is set, and appends
+/// the real rows' results to `scored`.
 ///
 /// Padding is added at the end of each input buffer rather than by appending rows, so no
 /// synthetic row is built and none can reach the response or the log. `pad_to` is `None`
 /// for a model whose row axis is dynamic.
 #[allow(clippy::too_many_arguments)]
-fn score_chunk(
+fn score_mini_batch(
     backend: &dyn InferenceBackend,
     columns: &RequestColumns,
-    chunk: Range<usize>,
+    rows: Range<usize>,
     builder: &InputBuilder,
     pad_to: Option<usize>,
     scored: &mut ScoredBatch,
@@ -279,15 +294,15 @@ fn score_chunk(
 ) -> Result<(), crate::inference::InferenceError> {
     let vec_start = Instant::now();
 
-    let real = chunk.end - chunk.start;
+    let real = rows.end - rows.start;
     let sent = pad_to.filter(|&size| real < size).unwrap_or(real);
 
-    let inputs = builder.build_padded(columns, chunk.clone(), sent)?;
+    let inputs = builder.build_padded(columns, rows.clone(), sent)?;
     let build_start = Instant::now();
 
     run_batch(
         backend,
-        &columns.row_ids()[chunk],
+        &columns.row_ids()[rows],
         inputs,
         sent,
         vec_start,
@@ -305,7 +320,7 @@ fn score_chunk(
 /// # Arguments
 ///
 /// * `backend` - the engine to run
-/// * `kept` - the chunk's slice of the request's row ids, cloned rather than moved
+/// * `kept` - the mini batch's slice of the request's row ids, cloned rather than moved
 ///   because the columns they came from are shared across mini batches
 /// * `inputs` - the built inputs, already padded to `sent` rows
 /// * `sent` - how many rows the engine was given, which is `kept.len()` plus any padding.
@@ -337,7 +352,6 @@ fn run_batch(
     let inference_start = Instant::now();
     let produced = backend.run(inputs)?;
     let inference_end = Instant::now();
-
     let primary = produced.first().ok_or("model returned no outputs at all")?;
     if produced.rows() != sent {
         return Err(format!(
@@ -368,6 +382,8 @@ fn run_batch(
     scored.timings.vec_time += (build_start - stage_start).as_micros();
     scored.timings.tensor_time += (inference_start - build_start).as_micros();
     scored.timings.inference_time += (inference_end - inference_start).as_micros();
+    scored.timings.engine_calls += 1;
+    scored.timings.ballast_rows += (sent - kept.len()) as u128;
 
     Ok(())
 }
@@ -393,7 +409,7 @@ pub fn to_score_type(scores: ScoreData) -> ScoreType {
 ///
 /// Fails if the accumulator and the batch disagree about precision, which would otherwise
 /// silently drop half a response.
-fn append_scores(
+pub(crate) fn append_scores(
     into: &mut ScoreData,
     from: ScoreData,
 ) -> Result<(), crate::inference::InferenceError> {
@@ -431,6 +447,7 @@ mod tests {
         SummingBackend,
     };
     use crate::inference::input_builder::test_support::{V, request, row};
+    use std::sync::Arc;
     use std::time::Duration;
 
     /// A builder for `backend`, from the given configuration JSON.
@@ -536,7 +553,7 @@ mod tests {
             &backend,
             &numeric_request(4, 3, 1.0),
             &builder,
-            None,
+            &WHOLE,
             FeatureLogging::Record,
         )
         .expect("scored");
@@ -559,7 +576,7 @@ mod tests {
             &backend,
             &numeric_request(4, 3, 1.0),
             &builder,
-            None,
+            &WHOLE,
             FeatureLogging::Record,
         )
         .expect("scored");
@@ -590,7 +607,7 @@ mod tests {
             row("a", &[("f0", V::f32(1.0)), ("f1", V::f32(1.0))]),
             row("b", &[("f0", V::f32(5.0)), ("f1", V::f32(5.0))]),
         ]);
-        let scored = score_features(&backend, &columns, &builder, None, FeatureLogging::Record)
+        let scored = score_features(&backend, &columns, &builder, &WHOLE, FeatureLogging::Record)
             .expect("scored");
 
         assert_eq!(columns.row_ids(), ["a".to_owned(), "b".to_owned()]);
@@ -608,7 +625,7 @@ mod tests {
             "a",
             &[("f0", V::f32(2.0)), ("ignored", V::str("kept anyway"))],
         )]);
-        let scored = score_features(&backend, &columns, &builder, None, FeatureLogging::Record)
+        let scored = score_features(&backend, &columns, &builder, &WHOLE, FeatureLogging::Record)
             .expect("scored");
 
         assert_eq!(scored.scores.as_f32(), vec![2.0]);
@@ -640,7 +657,7 @@ mod tests {
             &backend,
             &request(&[]),
             &builder,
-            None,
+            &WHOLE,
             FeatureLogging::Record,
         )
         .expect("nothing to do");
@@ -658,7 +675,7 @@ mod tests {
             &backend,
             &numeric_request(3, 2, 2.0),
             &builder,
-            None,
+            &WHOLE,
             FeatureLogging::Skip,
         )
         .expect("scored");
@@ -677,7 +694,7 @@ mod tests {
                 &backend,
                 &numeric_request(4, 2, 1.5),
                 &builder,
-                Some(fixed(3)),
+                &fixed(3),
                 FeatureLogging::Record,
             )
             .expect("scored")
@@ -689,7 +706,7 @@ mod tests {
                 &backend,
                 &numeric_request(4, 2, 1.5),
                 &builder,
-                Some(fixed(3)),
+                &fixed(3),
                 FeatureLogging::Skip,
             )
             .expect("scored")
@@ -714,7 +731,8 @@ mod tests {
             row("a", &[("age", V::f32(1.0)), ("tags", V::str("london"))]),
             row("b", &[("age", V::f32(2.0)), ("tags", V::str(&long_text))]),
         ]);
-        score_features(&backend, &columns, &builder, None, FeatureLogging::Record).expect("scored");
+        score_features(&backend, &columns, &builder, &WHOLE, FeatureLogging::Record)
+            .expect("scored");
 
         let (_, features) = columns.into_wire();
         assert_eq!(
@@ -734,7 +752,7 @@ mod tests {
             &backend,
             &numeric_request(1, 1, 1.0),
             &builder,
-            None,
+            &WHOLE,
             FeatureLogging::Record,
         )
         .expect_err("the engine failed");
@@ -751,7 +769,7 @@ mod tests {
             &backend,
             &numeric_request(1, 2, 1.5),
             &builder,
-            None,
+            &WHOLE,
             FeatureLogging::Record,
         )
         .expect("scored");
@@ -769,7 +787,7 @@ mod tests {
         let builder = builder_for(&backend, &vector_config(1, "double"));
 
         let columns = request(&[row("a", &[("f0", V::f64(0.1))])]);
-        let scored = score_features(&backend, &columns, &builder, None, FeatureLogging::Record)
+        let scored = score_features(&backend, &columns, &builder, &WHOLE, FeatureLogging::Record)
             .expect("scored");
         assert_eq!(double_row(&scored.scores, 1, 0), vec![0.1]);
         assert!(matches!(
@@ -788,7 +806,7 @@ mod tests {
             row("a", &[("f0", V::f64(0.25))]),
             row("b", &[("f0", V::f64(0.75))]),
         ]);
-        let scored = score_features(&backend, &columns, &builder, None, FeatureLogging::Record)
+        let scored = score_features(&backend, &columns, &builder, &WHOLE, FeatureLogging::Record)
             .expect("scored");
         assert_eq!(double_row(&scored.scores, 2, 0), vec![0.25]);
         assert_eq!(double_row(&scored.scores, 2, 1), vec![0.75]);
@@ -804,7 +822,7 @@ mod tests {
             &backend,
             &numeric_request(2, 2, 1.5),
             &builder,
-            None,
+            &WHOLE,
             FeatureLogging::Record,
         )
         .expect("scored");
@@ -813,19 +831,174 @@ mod tests {
         assert_eq!(scored.scores.as_f32(), vec![3.0, -3.0, 3.0, -3.0]);
     }
 
-    /// A padded split, which is what a pinned graph needs.
-    fn fixed(size: usize) -> MiniBatch {
-        MiniBatch {
-            size,
-            is_fixed: true,
+    /// A padded split on one shared session, which is what a pinned graph needs.
+    fn fixed(size: usize) -> ExecutionPlan {
+        ExecutionPlan::SharedSession {
+            mini_batch: MiniBatch {
+                size,
+                is_fixed: true,
+            },
         }
     }
 
-    /// A split whose last batch is however many rows remain.
-    fn dynamic(size: usize) -> MiniBatch {
-        MiniBatch {
-            size,
-            is_fixed: false,
+    /// Every request in one call, which is the default plan.
+    const WHOLE: ExecutionPlan = ExecutionPlan::WholeRequest;
+
+    /// A backend that records how many calls overlap, and the widest overlap it saw.
+    ///
+    /// Counts entries and exits around a sleep long enough that two genuinely concurrent
+    /// calls must be inside it at the same time.
+    #[derive(Debug)]
+    struct OverlapWatcher {
+        inner: SummingBackend,
+        in_flight: std::sync::Mutex<usize>,
+        widest: std::sync::Mutex<usize>,
+    }
+
+    impl OverlapWatcher {
+        fn new(profile: crate::inference::backend::ExecutionProfile) -> Self {
+            Self {
+                inner: SummingBackend::new(3, 1).with_profile(profile),
+                in_flight: std::sync::Mutex::new(0),
+                widest: std::sync::Mutex::new(0),
+            }
+        }
+
+        /// The most calls that were ever inside `run` together.
+        fn widest(&self) -> usize {
+            *self.widest.lock().expect("no test panics holding this")
+        }
+    }
+
+    impl InferenceBackend for OverlapWatcher {
+        fn name(&self) -> &str {
+            "test/overlap-watcher"
+        }
+        fn profile(&self) -> crate::inference::backend::ExecutionProfile {
+            self.inner.profile()
+        }
+        fn required_rows(&self) -> Option<usize> {
+            self.inner.required_rows()
+        }
+        fn inputs(&self) -> &[crate::inference::batch::IoSpec] {
+            self.inner.inputs()
+        }
+        fn outputs(&self) -> &[crate::inference::batch::IoSpec] {
+            self.inner.outputs()
+        }
+        fn run(
+            &self,
+            inputs: InputBatch,
+        ) -> Result<crate::inference::batch::OutputBatch, crate::inference::InferenceError>
+        {
+            {
+                let mut in_flight = self.in_flight.lock().expect("no panic");
+                *in_flight += 1;
+                let mut widest = self.widest.lock().expect("no panic");
+                *widest = (*widest).max(*in_flight);
+            }
+            std::thread::sleep(Duration::from_millis(30));
+            *self.in_flight.lock().expect("no panic") -= 1;
+            self.inner.run(inputs)
+        }
+    }
+
+    /// Asserts a backend that overlaps nothing never has two mini batches inside `run`
+    /// at the same time.
+    ///
+    /// This is the case a pinned graph on a device provider reaches: the mini batch is
+    /// the model's own call shape, so it cannot be refused, and running the calls
+    /// concurrently would only queue them where the wait cannot be seen.
+    #[test]
+    fn a_profile_of_one_never_runs_two_mini_batches_at_once() {
+        let backend =
+            OverlapWatcher::new(crate::inference::backend::ExecutionProfile::serialized());
+        let builder = builder_for(&backend, &vector_config(3, "float"));
+
+        let scored = score_features(
+            &backend,
+            &ramp_request(8, 3),
+            &builder,
+            &dynamic(1),
+            FeatureLogging::Record,
+        )
+        .expect("eight single-row mini batches");
+
+        assert_eq!(scored.scores.len(), 8, "every row is still scored");
+        assert_eq!(
+            backend.widest(),
+            1,
+            "a serializing backend must run its mini batches one at a time"
+        );
+    }
+
+    /// Asserts a backend that overlaps does run its mini batches at the same time, so the
+    /// cap bounds concurrency without removing it.
+    #[test]
+    fn an_overlapping_profile_runs_mini_batches_together_up_to_its_width() {
+        let backend = OverlapWatcher::new(crate::inference::backend::ExecutionProfile::new(2));
+        let builder = builder_for(&backend, &vector_config(3, "float"));
+
+        let scored = score_features(
+            &backend,
+            &ramp_request(8, 3),
+            &builder,
+            &dynamic(1),
+            FeatureLogging::Record,
+        )
+        .expect("eight single-row mini batches");
+
+        assert_eq!(scored.scores.len(), 8);
+        assert_eq!(
+            backend.widest(),
+            2,
+            "two is what this backend declared it overlaps, so two is what should run"
+        );
+    }
+
+    /// Asserts the plan decides, not the row count: the same request and backend give
+    /// one call under `WholeRequest` and several under a mini batch, with equal scores.
+    #[test]
+    fn the_plan_decides_how_many_calls_a_request_becomes() {
+        let whole_backend = RecordingBackend::new(3, 1);
+        let builder = builder_for(&whole_backend, &vector_config(3, "float"));
+        let whole = score_features(
+            &whole_backend,
+            &ramp_request(6, 3),
+            &builder,
+            &WHOLE,
+            FeatureLogging::Record,
+        )
+        .expect("one call");
+        assert_eq!(whole_backend.batches(), vec![6], "one call of every row");
+
+        let split_backend = RecordingBackend::new(3, 1);
+        let split = score_features(
+            &split_backend,
+            &ramp_request(6, 3),
+            &builder,
+            &dynamic(2),
+            FeatureLogging::Record,
+        )
+        .expect("three calls");
+        let mut sizes = split_backend.batches();
+        sizes.sort_unstable();
+        assert_eq!(sizes, vec![2, 2, 2], "three calls of two rows");
+
+        assert_eq!(
+            whole.scores.as_f32(),
+            split.scores.as_f32(),
+            "the plan changes the calls, never the scores"
+        );
+    }
+
+    /// A split on one shared session whose last batch is however many rows remain.
+    fn dynamic(size: usize) -> ExecutionPlan {
+        ExecutionPlan::SharedSession {
+            mini_batch: MiniBatch {
+                size,
+                is_fixed: false,
+            },
         }
     }
 
@@ -860,7 +1033,7 @@ mod tests {
             &backend,
             &ramp_request(6, 3),
             &builder,
-            Some(fixed(4)),
+            &fixed(4),
             FeatureLogging::Record,
         )
         .expect("six rows against a size of four");
@@ -882,7 +1055,7 @@ mod tests {
             &backend,
             &ramp_request(1, 3),
             &builder,
-            Some(fixed(4)),
+            &fixed(4),
             FeatureLogging::Record,
         )
         .expect("one row against a size of four");
@@ -901,7 +1074,7 @@ mod tests {
             &backend,
             &ramp_request(8, 3),
             &builder,
-            Some(fixed(4)),
+            &fixed(4),
             FeatureLogging::Record,
         )
         .expect("eight rows against a size of four");
@@ -927,7 +1100,7 @@ mod tests {
             &backend,
             &columns,
             &builder,
-            Some(fixed(4)),
+            &fixed(4),
             FeatureLogging::Record,
         )
         .expect("padding must not require features the caller never sent");
@@ -950,7 +1123,7 @@ mod tests {
             &backend,
             &ramp_request(5, 3),
             &builder,
-            Some(fixed(4)),
+            &fixed(4),
             FeatureLogging::Record,
         )
         .expect("five rows against a size of four");
@@ -974,7 +1147,7 @@ mod tests {
             &backend,
             &ramp_request(3, 3),
             &builder,
-            Some(fixed(1)),
+            &fixed(1),
             FeatureLogging::Record,
         )
         .expect("three rows against a size of one");
@@ -996,7 +1169,7 @@ mod tests {
             &backend,
             &ramp_request(6, 3),
             &builder,
-            Some(dynamic(4)),
+            &dynamic(4),
             FeatureLogging::Record,
         )
         .expect("six rows split into four and two");
@@ -1030,6 +1203,12 @@ mod tests {
             fn name(&self) -> &str {
                 "test/reverse-delay"
             }
+            fn profile(&self) -> crate::inference::backend::ExecutionProfile {
+                self.inner.profile()
+            }
+            fn required_rows(&self) -> Option<usize> {
+                self.inner.required_rows()
+            }
             fn inputs(&self) -> &[crate::inference::batch::IoSpec] {
                 self.inner.inputs()
             }
@@ -1060,7 +1239,7 @@ mod tests {
             &backend,
             &ramp_request(ROWS, 3),
             &builder,
-            Some(dynamic(1)),
+            &dynamic(1),
             FeatureLogging::Record,
         )
         .expect("sixteen single-row batches");
@@ -1087,7 +1266,7 @@ mod tests {
             &backend,
             &ramp_request(20, 3),
             &builder,
-            Some(dynamic(1)),
+            &dynamic(1),
             FeatureLogging::Record,
         )
         .expect("twenty single-row batches");
@@ -1114,7 +1293,7 @@ mod tests {
             &whole,
             &ramp_request(7, 3),
             &builder,
-            None,
+            &WHOLE,
             FeatureLogging::Skip,
         )
         .expect("scored whole");
@@ -1122,7 +1301,7 @@ mod tests {
             &split,
             &ramp_request(7, 3),
             &builder,
-            Some(dynamic(3)),
+            &dynamic(3),
             FeatureLogging::Skip,
         )
         .expect("scored in mini batches");
@@ -1152,7 +1331,7 @@ mod tests {
             &backend,
             &ramp_request(6, 3),
             &builder,
-            None,
+            &WHOLE,
             FeatureLogging::Record,
         )
         .expect("scored");
@@ -1171,7 +1350,7 @@ mod tests {
             &backend,
             &request(&[]),
             &builder,
-            Some(fixed(4)),
+            &fixed(4),
             FeatureLogging::Record,
         )
         .expect("nothing");
@@ -1183,14 +1362,14 @@ mod tests {
     /// A row's scores do not depend on what shared its batch: the same rows scored whole
     /// and in padded batches of two agree row for row.
     #[test]
-    fn chunking_and_padding_do_not_change_a_rows_scores() {
+    fn splitting_and_padding_do_not_change_a_rows_scores() {
         let dynamic = RecordingBackend::new(3, 1);
         let dynamic_builder = builder_for(&dynamic, &vector_config(3, "float"));
         let whole = score_features(
             &dynamic,
             &ramp_request(7, 3),
             &dynamic_builder,
-            None,
+            &WHOLE,
             FeatureLogging::Record,
         )
         .expect("scored");
@@ -1201,7 +1380,7 @@ mod tests {
             &pinned,
             &ramp_request(7, 3),
             &pinned_builder,
-            Some(fixed(2)),
+            &fixed(2),
             FeatureLogging::Record,
         )
         .expect("scored");
@@ -1244,5 +1423,167 @@ mod tests {
             to_score_type(ScoreData::F32(vec![0.5])).score_type,
             Some(Scores::FloatScores(_))
         ));
+    }
+
+    // ---- mini batches on one session -----------------------------------------------
+
+    /// A backend recording when each of its calls ran, so overlap is asserted rather than
+    /// inferred from a wall-clock total.
+    #[derive(Debug)]
+    struct WindowBackend {
+        inner: SummingBackend,
+        delay: Duration,
+        windows: Arc<std::sync::Mutex<Vec<(Instant, Instant)>>>,
+    }
+
+    impl WindowBackend {
+        fn new(
+            at_once: usize,
+            delay: Duration,
+            windows: Arc<std::sync::Mutex<Vec<(Instant, Instant)>>>,
+        ) -> Self {
+            Self {
+                inner: SummingBackend::new(3, 1)
+                    .with_profile(crate::inference::backend::ExecutionProfile::new(at_once)),
+                delay,
+                windows,
+            }
+        }
+    }
+
+    impl InferenceBackend for WindowBackend {
+        fn name(&self) -> &str {
+            "test/window"
+        }
+        fn profile(&self) -> crate::inference::backend::ExecutionProfile {
+            self.inner.profile()
+        }
+        fn required_rows(&self) -> Option<usize> {
+            self.inner.required_rows()
+        }
+        fn inputs(&self) -> &[crate::inference::batch::IoSpec] {
+            self.inner.inputs()
+        }
+        fn outputs(&self) -> &[crate::inference::batch::IoSpec] {
+            self.inner.outputs()
+        }
+        fn run(
+            &self,
+            inputs: InputBatch,
+        ) -> Result<crate::inference::batch::OutputBatch, crate::inference::InferenceError>
+        {
+            let started = Instant::now();
+            std::thread::sleep(self.delay);
+            let ended = Instant::now();
+            self.windows
+                .lock()
+                .expect("no test panics holding this")
+                .push((started, ended));
+            self.inner.run(inputs)
+        }
+    }
+
+    /// Asserts two mini batches of one request are really in flight together on one
+    /// session, rather than merely spawned and then serialized.
+    ///
+    /// The engine sleeps, so two calls that overlap in wall-clock time can only have run
+    /// at the same time. This is the property `concurrent_mini_batches` promises.
+    #[test]
+    fn mini_batches_on_one_session_overlap_in_time() {
+        let windows = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let backend = WindowBackend::new(2, Duration::from_millis(60), Arc::clone(&windows));
+        let builder = builder_for(&backend, &vector_config(3, "float"));
+
+        score_features(
+            &backend,
+            &ramp_request(4, 3),
+            &builder,
+            &dynamic(2),
+            FeatureLogging::Record,
+        )
+        .expect("two mini batches on one session");
+
+        let recorded = windows.lock().expect("no panic").clone();
+        assert_eq!(recorded.len(), 2, "two mini batches, two calls");
+        let (first_start, first_end) = recorded[0];
+        let (second_start, second_end) = recorded[1];
+        assert!(
+            first_start < second_end && second_start < first_end,
+            "the two calls must be in flight together, each took {:?} and {:?}",
+            first_end.duration_since(first_start),
+            second_end.duration_since(second_start),
+        );
+    }
+
+    /// Asserts a whole request is one call with nothing discarded, so the counts start
+    /// from an honest baseline.
+    #[test]
+    fn a_whole_request_reports_one_call_and_no_ballast() {
+        let backend = SummingBackend::new(3, 1);
+        let builder = builder_for(&backend, &vector_config(3, "float"));
+
+        let scored = score_features(
+            &backend,
+            &ramp_request(5, 3),
+            &builder,
+            &WHOLE,
+            FeatureLogging::Record,
+        )
+        .expect("one call");
+
+        assert_eq!(scored.timings.engine_calls, 1, "one call per request");
+        assert_eq!(
+            scored.timings.ballast_rows, 0,
+            "a dynamic axis takes the rows as they are"
+        );
+        assert_eq!(scored.timings.fill_percent, 100);
+    }
+
+    /// Asserts a split request counts every call it became, and a padded last mini batch
+    /// is reported as ballast rather than hidden.
+    #[test]
+    fn a_split_request_counts_its_calls_and_its_padding() {
+        let backend = SummingBackend::new(3, 1);
+        let builder = builder_for(&backend, &vector_config(3, "float"));
+
+        let dynamic_split = score_features(
+            &backend,
+            &ramp_request(5, 3),
+            &builder,
+            &dynamic(2),
+            FeatureLogging::Record,
+        )
+        .expect("three calls");
+        assert_eq!(
+            dynamic_split.timings.engine_calls, 3,
+            "five rows at two per call is three calls"
+        );
+        assert_eq!(
+            dynamic_split.timings.ballast_rows, 0,
+            "a short last mini batch is sent short, not padded"
+        );
+
+        let padded_split = score_features(
+            &backend,
+            &ramp_request(5, 3),
+            &builder,
+            &fixed(2),
+            FeatureLogging::Record,
+        )
+        .expect("three calls, the last padded");
+        assert_eq!(padded_split.timings.engine_calls, 3);
+        assert_eq!(
+            padded_split.timings.ballast_rows, 1,
+            "the last mini batch carried one row and was padded to two"
+        );
+        assert_eq!(
+            padded_split.timings.fill_percent, 83,
+            "five real rows of the six sent"
+        );
+        assert_eq!(
+            padded_split.scores.as_f32(),
+            dynamic_split.scores.as_f32(),
+            "and padding never changes a score"
+        );
     }
 }

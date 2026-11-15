@@ -160,6 +160,63 @@ impl InputBuilder {
         Ok(batch)
     }
 
+    /// Builds one input from the rows of several requests, `pad_to` rows tall.
+    ///
+    /// The rows land in the order the parts are given, so a caller can map a part back to
+    /// its own rows by running offset. Ballast fills whatever is left, exactly as
+    /// [`Self::build_padded`] writes it, so a merged call that is not full presents the
+    /// same shape as a full one.
+    ///
+    /// # Arguments
+    ///
+    /// * `parts` - each request's columns and the rows to take from it
+    /// * `pad_to` - rows the engine is given, which must be at least the parts' total
+    ///
+    /// # Errors
+    ///
+    /// Fails for the reasons [`Self::build_padded`] fails, naming the request's own row
+    /// id, and if `parts` carries more rows than `pad_to`.
+    pub(crate) fn build_many(
+        &self,
+        parts: &[(&RequestColumns, Range<usize>)],
+        pad_to: usize,
+    ) -> Result<InputBatch, InferenceError> {
+        let total: usize = parts
+            .iter()
+            .map(|(_, rows)| rows.end.saturating_sub(rows.start))
+            .sum();
+        if total > pad_to {
+            return Err(
+                format!("a merged call of {pad_to} rows was given {total} rows to carry").into(),
+            );
+        }
+
+        let data = match self.data_type {
+            VectorType::Float => {
+                let mut values = Vec::with_capacity(pad_to * self.width);
+                for (columns, rows) in parts {
+                    let bound = self.bind(columns)?;
+                    self.append_f32(&bound, columns, rows.clone(), &mut values)?;
+                }
+                pad_with(&mut values, pad_to * self.width, &self.default_row_f32());
+                FeatureData::F32(values)
+            }
+            VectorType::Double => {
+                let mut values = Vec::with_capacity(pad_to * self.width);
+                for (columns, rows) in parts {
+                    let bound = self.bind(columns)?;
+                    self.append_f64(&bound, columns, rows.clone(), &mut values)?;
+                }
+                pad_with(&mut values, pad_to * self.width, &self.default_row_f64());
+                FeatureData::F64(values)
+            }
+        };
+
+        let mut batch = InputBatch::new(pad_to);
+        batch.push(self.name.clone(), data)?;
+        Ok(batch)
+    }
+
     /// How the model's input is fed, for the startup banner.
     ///
     /// The features are named in full up to eight of them, and summarised beyond that.
@@ -230,6 +287,27 @@ impl InputBuilder {
         pad_to: usize,
     ) -> Result<Vec<f32>, InferenceError> {
         let mut values = Vec::with_capacity(pad_to * self.width);
+        self.append_f32(bound, columns, chunk, &mut values)?;
+        pad_with(&mut values, pad_to * self.width, &self.default_row_f32());
+        Ok(values)
+    }
+
+    /// Appends the rows in `chunk` onto `values`, transformed and concatenated.
+    ///
+    /// Separate from [`Self::values_f32`] so several requests' rows can be written into
+    /// one buffer and padded once at the end, which is what a merged call needs.
+    ///
+    /// # Errors
+    ///
+    /// Fails if a column runs short of the row asked for, if a transformation refuses a
+    /// value, or if a row does not produce the input's width.
+    fn append_f32(
+        &self,
+        bound: &Bound<'_>,
+        columns: &RequestColumns,
+        chunk: Range<usize>,
+        values: &mut Vec<f32>,
+    ) -> Result<(), InferenceError> {
         for row in chunk {
             let before = values.len();
             for (name, column, transformation) in bound {
@@ -238,20 +316,19 @@ impl InputBuilder {
                         let slice = data
                             .row(row, *width)
                             .ok_or_else(|| short_column(name, columns.row_id(row), row))?;
-                        transformation.transform(slice, &mut values).map_err(
-                            |e| -> InferenceError {
+                        transformation
+                            .transform(slice, values)
+                            .map_err(|e| -> InferenceError {
                                 format!("feature {name:?} in row {:?}: {e}", columns.row_id(row))
                                     .into()
-                            },
-                        )?;
+                            })?;
                     }
                     None => values.extend_from_slice(transformation.get_default_val()),
                 }
             }
             self.check_row(columns.row_id(row), values.len() - before)?;
         }
-        pad_with(&mut values, pad_to * self.width, &self.default_row_f32());
-        Ok(values)
+        Ok(())
     }
 
     /// The same, in double precision.
@@ -263,6 +340,23 @@ impl InputBuilder {
         pad_to: usize,
     ) -> Result<Vec<f64>, InferenceError> {
         let mut values = Vec::with_capacity(pad_to * self.width);
+        self.append_f64(bound, columns, chunk, &mut values)?;
+        pad_with(&mut values, pad_to * self.width, &self.default_row_f64());
+        Ok(values)
+    }
+
+    /// Appends the rows in `chunk` onto `values`, in double precision.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::append_f32`].
+    fn append_f64(
+        &self,
+        bound: &Bound<'_>,
+        columns: &RequestColumns,
+        chunk: Range<usize>,
+        values: &mut Vec<f64>,
+    ) -> Result<(), InferenceError> {
         for row in chunk {
             let before = values.len();
             for (name, column, transformation) in bound {
@@ -271,7 +365,7 @@ impl InputBuilder {
                         let slice = data
                             .row(row, *width)
                             .ok_or_else(|| short_column(name, columns.row_id(row), row))?;
-                        transformation.transform_f64(slice, &mut values).map_err(
+                        transformation.transform_f64(slice, values).map_err(
                             |e| -> InferenceError {
                                 format!("feature {name:?} in row {:?}: {e}", columns.row_id(row))
                                     .into()
@@ -283,8 +377,7 @@ impl InputBuilder {
             }
             self.check_row(columns.row_id(row), values.len() - before)?;
         }
-        pad_with(&mut values, pad_to * self.width, &self.default_row_f64());
-        Ok(values)
+        Ok(())
     }
 
     /// One ballast row: every transformation's default, concatenated.
@@ -603,7 +696,7 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{V, request, row};
+    use super::test_support::{Row, V, request, row};
     use super::*;
     use crate::inference::batch::ElementType;
 
@@ -999,6 +1092,261 @@ mod tests {
             described.contains("10 features transformed and concatenated")
                 && described.contains("f0, f1, f2, f3, f4, f5, f6, f7, ... +2 more"),
             "got {described}"
+        );
+    }
+
+    // ---- merging several requests into one call ------------------------------------
+
+    /// A builder taking two identity features into a 2-wide input.
+    fn merging_builder() -> InputBuilder {
+        InputBuilder::resolve(
+            config(
+                r#"{
+                    "feature_transformations": {
+                        "a": {"type": "identity", "default_val": [7.0]},
+                        "b": {"type": "identity", "default_val": [9.0]}
+                    },
+                    "feature_order": ["a", "b"]
+                }"#,
+            ),
+            &[spec("features", ElementType::F32, Some(2))],
+        )
+        .expect("2 = 1 + 1")
+    }
+
+    /// Asserts two requests' rows land in one buffer, in the order the parts are given.
+    #[test]
+    fn two_requests_merge_into_one_call_in_part_order() {
+        let builder = merging_builder();
+        let first = request(&[
+            row("a1", &[("a", V::f32(1.0)), ("b", V::f32(2.0))]),
+            row("a2", &[("a", V::f32(3.0)), ("b", V::f32(4.0))]),
+        ]);
+        let second = request(&[row("b1", &[("a", V::f32(5.0)), ("b", V::f32(6.0))])]);
+
+        let batch = builder
+            .build_many(&[(&first, 0..2), (&second, 0..1)], 3)
+            .expect("three rows into three");
+
+        assert_eq!(batch.rows(), 3);
+        assert_eq!(
+            batch.get("features").expect("features").data,
+            FeatureData::F32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            "the first request's rows come first, then the second's"
+        );
+    }
+
+    /// Asserts ballast fills a merged call that is not full, with the same defaults a
+    /// padded mini batch writes, so the engine always sees one shape.
+    #[test]
+    fn a_short_merged_call_is_filled_with_ballast() {
+        let builder = merging_builder();
+        let only = request(&[row("r1", &[("a", V::f32(1.0)), ("b", V::f32(2.0))])]);
+
+        let batch = builder
+            .build_many(&[(&only, 0..1)], 3)
+            .expect("one row into three");
+
+        assert_eq!(batch.rows(), 3, "the engine is given the full shape");
+        assert_eq!(
+            batch.get("features").expect("features").data,
+            FeatureData::F32(vec![1.0, 2.0, 7.0, 9.0, 7.0, 9.0]),
+            "the two ballast rows carry each transformation's default"
+        );
+    }
+
+    /// Asserts one part is byte-identical to the single-request path, so merging adds no
+    /// difference of its own.
+    #[test]
+    fn one_part_matches_build_padded_exactly() {
+        let builder = merging_builder();
+        let columns = request(&[
+            row("r1", &[("a", V::f32(1.0)), ("b", V::f32(2.0))]),
+            row("r2", &[("a", V::f32(3.0)), ("b", V::f32(4.0))]),
+        ]);
+
+        let padded = builder
+            .build_padded(&columns, 0..2, 4)
+            .expect("two rows padded to four");
+        let merged = builder
+            .build_many(&[(&columns, 0..2)], 4)
+            .expect("the same, as one part");
+
+        assert_eq!(
+            padded.get("features").expect("features").data,
+            merged.get("features").expect("features").data,
+            "one part must be exactly the single-request path"
+        );
+        assert_eq!(padded.rows(), merged.rows());
+    }
+
+    /// Asserts a part may contribute a slice of its rows rather than all of them, which
+    /// is what a request spanning two merged calls needs.
+    #[test]
+    fn a_part_can_contribute_a_slice_of_its_rows() {
+        let builder = merging_builder();
+        let columns = request(&[
+            row("r1", &[("a", V::f32(1.0)), ("b", V::f32(2.0))]),
+            row("r2", &[("a", V::f32(3.0)), ("b", V::f32(4.0))]),
+            row("r3", &[("a", V::f32(5.0)), ("b", V::f32(6.0))]),
+        ]);
+
+        let batch = builder
+            .build_many(&[(&columns, 1..3)], 2)
+            .expect("the last two rows");
+
+        assert_eq!(
+            batch.get("features").expect("features").data,
+            FeatureData::F32(vec![3.0, 4.0, 5.0, 6.0])
+        );
+    }
+
+    /// Asserts more rows than the call carries is refused rather than silently truncated.
+    #[test]
+    fn more_rows_than_the_call_carries_is_refused() {
+        let builder = merging_builder();
+        let columns = request(&[
+            row("r1", &[("a", V::f32(1.0)), ("b", V::f32(2.0))]),
+            row("r2", &[("a", V::f32(3.0)), ("b", V::f32(4.0))]),
+        ]);
+
+        let err = builder
+            .build_many(&[(&columns, 0..2)], 1)
+            .expect_err("two rows do not fit one");
+        let message = err.to_string();
+        assert!(
+            message.contains('2') && message.contains('1'),
+            "the refusal should carry both counts: {message}"
+        );
+    }
+
+    /// Asserts an absent feature contributes its default identically on both paths, so
+    /// merging changes nothing about how an incomplete request reads.
+    #[test]
+    fn a_missing_feature_reads_the_same_way_as_one_request() {
+        let builder = merging_builder();
+        let columns = request(&[
+            row("r1", &[("a", V::f32(1.0))]),
+            row("r2", &[("a", V::f32(3.0))]),
+        ]);
+
+        let padded = builder
+            .build_padded(&columns, 0..2, 2)
+            .expect("an absent feature takes its default");
+        let merged = builder
+            .build_many(&[(&columns, 0..2)], 2)
+            .expect("and the same when merged");
+
+        assert_eq!(
+            padded.get("features").expect("features").data,
+            FeatureData::F32(vec![1.0, 9.0, 3.0, 9.0]),
+            "b is absent from the request, so every row defaults it to 9"
+        );
+        assert_eq!(
+            padded.get("features").expect("features").data,
+            merged.get("features").expect("features").data,
+            "merging must not change how an incomplete request reads"
+        );
+    }
+
+    /// A 100-row and an 80-row request merged into one 256-row call, with the trailing
+    /// 76 rows carrying every transformation's default.
+    ///
+    /// The shape a merged call presents to a device: always `max_rows`, however full it
+    /// is, so a provider that compiles per shape builds one engine rather than one per
+    /// observed width.
+    #[test]
+    fn a_hundred_and_eighty_rows_merge_into_one_padded_call_of_256() {
+        let builder = merging_builder();
+        let first_ids: Vec<String> = (0..100).map(|i| format!("a{i}")).collect();
+        let second_ids: Vec<String> = (0..80).map(|i| format!("b{i}")).collect();
+        let first: Vec<Row<'_>> = first_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| {
+                row(
+                    id,
+                    &[("a", V::f32(i as f32)), ("b", V::f32(i as f32 + 1000.0))],
+                )
+            })
+            .collect();
+        let second: Vec<Row<'_>> = second_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| {
+                row(
+                    id,
+                    &[
+                        ("a", V::f32(i as f32 + 2000.0)),
+                        ("b", V::f32(i as f32 + 3000.0)),
+                    ],
+                )
+            })
+            .collect();
+        let hundred = request(&first);
+        let eighty = request(&second);
+
+        let batch = builder
+            .build_many(&[(&hundred, 0..100), (&eighty, 0..80)], 256)
+            .expect("180 rows into 256");
+
+        assert_eq!(batch.rows(), 256, "the engine is shown one shape");
+        let FeatureData::F32(values) = &batch.get("features").expect("features").data else {
+            panic!("a float builder produces float values");
+        };
+        assert_eq!(values.len(), 256 * 2, "256 rows of a 2-wide input");
+
+        assert_eq!(&values[0..2], &[0.0, 1000.0], "the first request leads");
+        assert_eq!(
+            &values[198..200],
+            &[99.0, 1099.0],
+            "its hundredth row is its last"
+        );
+        assert_eq!(
+            &values[200..202],
+            &[2000.0, 3000.0],
+            "the second request follows immediately"
+        );
+        assert_eq!(
+            &values[358..360],
+            &[2079.0, 3079.0],
+            "its eightieth row ends the real rows"
+        );
+
+        let ballast = &values[360..];
+        assert_eq!(ballast.len(), 76 * 2, "76 rows of ballast fill the rest");
+        assert!(
+            ballast.chunks(2).all(|row| row == [7.0, 9.0]),
+            "every ballast row is each transformation's default"
+        );
+    }
+
+    /// Asserts a double-precision builder merges as well, keeping its precision.
+    #[test]
+    fn merging_keeps_double_precision() {
+        let builder = InputBuilder::resolve(
+            config(
+                r#"{
+                    "data_type": "double",
+                    "feature_transformations": {"a": {"type": "identity", "default_val": [0.5]}},
+                    "feature_order": ["a"]
+                }"#,
+            ),
+            &[spec("features", ElementType::F64, Some(1))],
+        )
+        .expect("one double feature");
+
+        let first = request(&[row("r1", &[("a", V::f64(0.1))])]);
+        let second = request(&[row("r2", &[("a", V::f64(0.2))])]);
+
+        let batch = builder
+            .build_many(&[(&first, 0..1), (&second, 0..1)], 3)
+            .expect("two rows into three");
+
+        assert_eq!(
+            batch.get("features").expect("features").data,
+            FeatureData::F64(vec![0.1, 0.2, 0.5]),
+            "0.1 and 0.2 survive, and the ballast row is the default"
         );
     }
 }

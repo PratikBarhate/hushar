@@ -17,7 +17,7 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use crate::inference::InferenceMicros;
+use crate::inference::RequestReport;
 use crate::io::accumulator::Accumulator;
 
 /// Somewhere to send per-batch timings.
@@ -47,7 +47,7 @@ pub(crate) trait MetricsSink: Debug + Send + Sync {
     /// # Panics
     ///
     /// If called outside a tokio runtime, since the publish is spawned.
-    fn record(&self, model_id: &str, timings: &InferenceMicros);
+    fn record(&self, model_id: &str, timings: &RequestReport);
 
     /// Pushes anything buffered and waits for the sends already in the air.
     ///
@@ -55,8 +55,72 @@ pub(crate) trait MetricsSink: Debug + Send + Sync {
     async fn flush(&self);
 }
 
-/// Metric names for the three timings a batch produces, shared by every sink.
-const STAGES: [&str; 3] = ["VectorizationTime", "ToTensorTime", "InferenceTime"];
+/// One number a scored request reports, and the unit it is published in.
+#[derive(Debug, Clone, Copy)]
+struct Measure {
+    name: &'static str,
+    /// `true` for a duration, `false` for a count or percentage.
+    micros: bool,
+}
+
+/// Everything a scored request can report, in [`RequestReport`] field order.
+///
+/// The first [`BASIC_MEASURES`] have always been published. The rest are detailed and
+/// emitted only when the configuration asks, since they triple the data points per
+/// request.
+const MEASURES: [Measure; 9] = [
+    Measure {
+        name: "VectorizationTime",
+        micros: true,
+    },
+    Measure {
+        name: "ToTensorTime",
+        micros: true,
+    },
+    Measure {
+        name: "InferenceTime",
+        micros: true,
+    },
+    Measure {
+        name: "RequestTime",
+        micros: true,
+    },
+    Measure {
+        name: "LeaseWaitTime",
+        micros: true,
+    },
+    Measure {
+        name: "EngineCalls",
+        micros: false,
+    },
+    Measure {
+        name: "BallastRows",
+        micros: false,
+    },
+    Measure {
+        name: "CallFillPercent",
+        micros: false,
+    },
+    Measure {
+        name: "QueueDepth",
+        micros: false,
+    },
+];
+
+/// Measures published whatever the configuration says.
+///
+/// Holding this at three keeps an existing deployment's data-point volume, and its
+/// dashboards, exactly as they were.
+const BASIC_MEASURES: usize = 3;
+
+/// How many measures a sink publishes per request.
+fn published(detailed: bool) -> usize {
+    if detailed {
+        MEASURES.len()
+    } else {
+        BASIC_MEASURES
+    }
+}
 
 /// Data points `PutMetricData` accepts in one call.
 ///
@@ -66,12 +130,13 @@ const CLOUDWATCH_MAX_DATUMS: usize = 1000;
 /// The largest capacity that both fits one call and lands on a batch boundary.
 ///
 /// The accumulator sends on "at least capacity" rather than exactly capacity, and a
-/// batch contributes one data point per stage, so a capacity that is not a whole number
-/// of batches is first reached past the limit — and such a call is rejected whole.
-/// Rounding down keeps the buffer on a batch boundary, which also makes
-/// [`CloudWatchMetrics::batch_size`] the number of batches that really triggers a send.
-const CLOUDWATCH_MAX_BATCHED_DATUMS: usize =
-    CLOUDWATCH_MAX_DATUMS - CLOUDWATCH_MAX_DATUMS % STAGES.len();
+/// request contributes one data point per published measure, so a capacity that is not a
+/// whole number of requests is first reached past the limit — and such a call is rejected
+/// whole. Rounding down keeps the buffer on a request boundary, which also makes
+/// [`CloudWatchMetrics::batch_size`] the number of requests that really triggers a send.
+fn cloudwatch_max_batched_datums(per_request: usize) -> usize {
+    CLOUDWATCH_MAX_DATUMS - CLOUDWATCH_MAX_DATUMS % per_request.max(1)
+}
 
 /// Aggregates timings and writes periodic summaries to stderr.
 ///
@@ -81,23 +146,27 @@ const CLOUDWATCH_MAX_BATCHED_DATUMS: usize =
 #[derive(Debug)]
 pub(crate) struct StderrMetrics {
     every: usize,
+    detailed: bool,
     /// One aggregate per model, so two models are summarised separately.
     state: std::sync::Mutex<std::collections::BTreeMap<String, Aggregate>>,
 }
 
-/// Running totals between summaries: a batch count, and microseconds per stage.
+/// Running totals between summaries: a request count, and one total per measure.
 #[derive(Debug, Default)]
 struct Aggregate {
     batches: u64,
-    totals: [u128; 3],
+    totals: [u128; MEASURES.len()],
     max_inference: u128,
 }
 
 impl StderrMetrics {
     /// Summarises every `every` batches, counted per model. Zero is treated as one.
-    pub(crate) fn new(every: usize) -> Self {
+    ///
+    /// `detailed` adds the measures past the three stage timings.
+    pub(crate) fn new(every: usize, detailed: bool) -> Self {
         Self {
             every: every.max(1),
+            detailed,
             state: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         }
     }
@@ -108,18 +177,19 @@ impl StderrMetrics {
     }
 
     /// Writes one model's running totals to stderr, naming the model, and clears them.
-    fn emit(model_id: &str, state: &mut Aggregate) {
+    fn emit(model_id: &str, state: &mut Aggregate, per_request: usize) {
         if state.batches == 0 {
             return;
         }
         let n = u128::from(state.batches);
-        let means: Vec<String> = STAGES
+        let means: Vec<String> = MEASURES
             .iter()
             .zip(state.totals.iter())
-            .map(|(name, total)| format!("{name} {}", total / n))
+            .take(per_request)
+            .map(|(measure, total)| format!("{} {}", measure.name, total / n))
             .collect();
         eprintln!(
-            "metrics: {model_id} | {} batches | mean us: {} | max InferenceTime {}",
+            "metrics: {model_id} | {} batches | means: {} | max InferenceTime {}",
             state.batches,
             means.join(", "),
             state.max_inference
@@ -138,23 +208,23 @@ impl MetricsSink for StderrMetrics {
         self.every
     }
 
-    fn record(&self, model_id: &str, timings: &InferenceMicros) {
+    fn record(&self, model_id: &str, report: &RequestReport) {
         let mut models = self.lock();
         let state = models.entry(model_id.to_owned()).or_default();
         state.batches += 1;
-        state.totals[0] += timings.vec_time;
-        state.totals[1] += timings.tensor_time;
-        state.totals[2] += timings.inference_time;
-        state.max_inference = state.max_inference.max(timings.inference_time);
+        for (total, value) in state.totals.iter_mut().zip(report.values()) {
+            *total += value;
+        }
+        state.max_inference = state.max_inference.max(report.inference_time);
         if state.batches as usize >= self.every {
-            Self::emit(model_id, state);
+            Self::emit(model_id, state, published(self.detailed));
         }
     }
 
     async fn flush(&self) {
         let mut models = self.lock();
         for (model_id, state) in models.iter_mut() {
-            Self::emit(model_id, state);
+            Self::emit(model_id, state, published(self.detailed));
         }
     }
 }
@@ -229,6 +299,7 @@ fn calls(
 pub(crate) struct CloudWatchMetrics {
     writer: Arc<CloudWatchWriter>,
     accumulator: Accumulator<aws_sdk_cloudwatch::types::MetricDatum>,
+    detailed: bool,
 }
 
 impl CloudWatchMetrics {
@@ -250,16 +321,19 @@ impl CloudWatchMetrics {
         namespace: impl Into<String>,
         batches: usize,
         max_in_flight: usize,
+        detailed: bool,
     ) -> Self {
+        let per_request = published(detailed);
         let datums = batches
-            .saturating_mul(STAGES.len())
-            .clamp(STAGES.len(), CLOUDWATCH_MAX_BATCHED_DATUMS);
+            .saturating_mul(per_request)
+            .clamp(per_request, cloudwatch_max_batched_datums(per_request));
         Self {
             writer: Arc::new(CloudWatchWriter {
                 client,
                 namespace: namespace.into(),
             }),
             accumulator: Accumulator::new("metrics", datums, max_in_flight),
+            detailed,
         }
     }
 }
@@ -271,27 +345,30 @@ impl MetricsSink for CloudWatchMetrics {
     }
 
     fn batch_size(&self) -> usize {
-        self.accumulator.capacity() / STAGES.len()
+        self.accumulator.capacity() / published(self.detailed)
     }
 
-    fn record(&self, model_id: &str, timings: &InferenceMicros) {
-        let values = [
-            timings.vec_time,
-            timings.tensor_time,
-            timings.inference_time,
-        ];
+    fn record(&self, model_id: &str, report: &RequestReport) {
         let model = aws_sdk_cloudwatch::types::Dimension::builder()
             .name("ModelId")
             .value(model_id)
             .build();
-        let datums = STAGES.iter().zip(values).map(|(name, micros)| {
-            aws_sdk_cloudwatch::types::MetricDatum::builder()
-                .metric_name(*name)
-                .dimensions(model.clone())
-                .value(micros as f64)
-                .unit(aws_sdk_cloudwatch::types::StandardUnit::Microseconds)
-                .build()
-        });
+        let datums = MEASURES
+            .iter()
+            .zip(report.values())
+            .take(published(self.detailed))
+            .map(|(measure, value)| {
+                aws_sdk_cloudwatch::types::MetricDatum::builder()
+                    .metric_name(measure.name)
+                    .dimensions(model.clone())
+                    .value(value as f64)
+                    .unit(if measure.micros {
+                        aws_sdk_cloudwatch::types::StandardUnit::Microseconds
+                    } else {
+                        aws_sdk_cloudwatch::types::StandardUnit::Count
+                    })
+                    .build()
+            });
 
         let writer = Arc::clone(&self.writer);
         self.accumulator
@@ -310,11 +387,12 @@ impl MetricsSink for CloudWatchMetrics {
 mod tests {
     use super::*;
 
-    fn timings(vec: u128, tensor: u128, inference: u128) -> InferenceMicros {
-        InferenceMicros {
+    fn timings(vec: u128, tensor: u128, inference: u128) -> RequestReport {
+        RequestReport {
             vec_time: vec,
             tensor_time: tensor,
             inference_time: inference,
+            ..RequestReport::default()
         }
     }
 
@@ -328,7 +406,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_stderr_sink_aggregates_rather_than_logging_every_batch() {
-        let sink = StderrMetrics::new(3);
+        let sink = StderrMetrics::new(3, false);
         sink.record(MODEL, &timings(1, 2, 3));
         sink.record(MODEL, &timings(1, 2, 3));
         assert_eq!(batches(&sink, MODEL), 2, "still holding at two of three");
@@ -344,7 +422,7 @@ mod tests {
     /// Two models keep separate totals and maxima.
     #[tokio::test]
     async fn two_models_are_aggregated_separately() {
-        let sink = StderrMetrics::new(1000);
+        let sink = StderrMetrics::new(1000, false);
         sink.record("control", &timings(0, 0, 10));
         sink.record("control", &timings(0, 0, 30));
         sink.record("candidate", &timings(0, 0, 100));
@@ -367,7 +445,7 @@ mod tests {
     /// The summary interval is counted per model, not across all of them.
     #[tokio::test]
     async fn the_interval_is_counted_per_model() {
-        let sink = StderrMetrics::new(2);
+        let sink = StderrMetrics::new(2, false);
         sink.record("control", &timings(0, 0, 1));
         sink.record("candidate", &timings(0, 0, 1));
         assert_eq!(
@@ -391,7 +469,7 @@ mod tests {
     /// The maximum inference time is kept alongside the running totals.
     #[tokio::test]
     async fn the_maximum_is_kept_not_averaged_away() {
-        let sink = StderrMetrics::new(1000);
+        let sink = StderrMetrics::new(1000, false);
         sink.record(MODEL, &timings(0, 0, 5));
         sink.record(MODEL, &timings(0, 0, 900));
         sink.record(MODEL, &timings(0, 0, 7));
@@ -403,7 +481,7 @@ mod tests {
     /// Flushing emits an interval that has not filled yet.
     #[tokio::test]
     async fn flushing_emits_a_partial_interval() {
-        let sink = StderrMetrics::new(1000);
+        let sink = StderrMetrics::new(1000, false);
         sink.record(MODEL, &timings(1, 1, 1));
         sink.flush().await;
         assert_eq!(batches(&sink, MODEL), 0);
@@ -412,7 +490,7 @@ mod tests {
     /// Flushing emits every model's partial interval, not just the last one seen.
     #[tokio::test]
     async fn flushing_emits_every_model() {
-        let sink = StderrMetrics::new(1000);
+        let sink = StderrMetrics::new(1000, false);
         sink.record("control", &timings(1, 1, 1));
         sink.record("candidate", &timings(1, 1, 1));
         sink.flush().await;
@@ -422,13 +500,13 @@ mod tests {
     /// Flushing before any batch has been recorded is harmless.
     #[tokio::test]
     async fn flushing_nothing_is_harmless() {
-        StderrMetrics::new(10).flush().await;
-        assert_eq!(batches(&StderrMetrics::new(10), MODEL), 0);
+        StderrMetrics::new(10, false).flush().await;
+        assert_eq!(batches(&StderrMetrics::new(10, false), MODEL), 0);
     }
 
     #[tokio::test]
     async fn a_zero_interval_does_not_divide_by_zero() {
-        let sink = StderrMetrics::new(0);
+        let sink = StderrMetrics::new(0, false);
         sink.record(MODEL, &timings(1, 1, 1));
         assert_eq!(batches(&sink, MODEL), 0);
         assert_eq!(sink.batch_size(), 1);
@@ -436,7 +514,7 @@ mod tests {
     /// One sink records from several handlers at once, with no `&mut`.
     #[tokio::test]
     async fn a_sink_is_usable_from_several_handlers_at_once() {
-        let sink: Arc<dyn MetricsSink> = Arc::new(StderrMetrics::new(100));
+        let sink: Arc<dyn MetricsSink> = Arc::new(StderrMetrics::new(100, false));
         let mut handles = Vec::new();
         for _ in 0..4 {
             let sink = Arc::clone(&sink);
@@ -449,19 +527,56 @@ mod tests {
         }
         assert_eq!(sink.backend(), "stderr");
     }
-    /// Every stage has a metric name and no two stages share one.
+    /// Every measure has a metric name and no two share one.
     #[test]
-    fn every_stage_has_a_name_and_no_two_share_one() {
-        assert_eq!(STAGES.len(), 3);
-        let mut sorted = STAGES;
-        sorted.sort_unstable();
-        let mut deduped = sorted.to_vec();
+    fn every_measure_has_a_name_and_no_two_share_one() {
+        let mut names: Vec<&str> = MEASURES.iter().map(|m| m.name).collect();
+        names.sort_unstable();
+        let mut deduped = names.clone();
         deduped.dedup();
         assert_eq!(
             deduped.len(),
-            STAGES.len(),
-            "two stages share a metric name"
+            names.len(),
+            "two measures share a metric name"
         );
+    }
+
+    /// The three measures an existing deployment publishes keep their names and order,
+    /// so a dashboard written against them still reads.
+    #[test]
+    fn the_basic_measures_are_unchanged() {
+        assert_eq!(BASIC_MEASURES, 3);
+        let basic: Vec<&str> = MEASURES
+            .iter()
+            .take(BASIC_MEASURES)
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(
+            basic,
+            vec!["VectorizationTime", "ToTensorTime", "InferenceTime"]
+        );
+        assert!(
+            MEASURES.iter().take(BASIC_MEASURES).all(|m| m.micros),
+            "all three are durations"
+        );
+        assert_eq!(published(false), BASIC_MEASURES, "detail is off by default");
+        assert_eq!(published(true), MEASURES.len());
+    }
+
+    /// Detail multiplies the data points a request emits, which is why it is opt-in.
+    #[test]
+    fn detail_is_what_multiplies_the_data_points() {
+        assert_eq!(
+            MEASURES.len(),
+            9,
+            "nine measures is three times the basic volume"
+        );
+        for measure in MEASURES.iter().skip(BASIC_MEASURES) {
+            assert!(
+                !measure.name.is_empty(),
+                "a detailed measure still needs a name"
+            );
+        }
     }
 
     /// A CloudWatch sink with test credentials, for exercising buffering without sending.
@@ -476,6 +591,7 @@ mod tests {
             "HusharTest",
             batches,
             2,
+            false,
         )
     }
     /// Buffering holds three data points per batch and drains at the configured count.
@@ -500,14 +616,14 @@ mod tests {
     #[tokio::test]
     async fn the_configured_size_is_batches_on_both_sinks() {
         assert_eq!(offline_cloudwatch(100).batch_size(), 100);
-        assert_eq!(StderrMetrics::new(100).batch_size(), 100);
+        assert_eq!(StderrMetrics::new(100, false).batch_size(), 100);
     }
     /// A batch count beyond what one call accepts is capped, and the cap is reported.
     #[tokio::test]
     async fn a_batch_count_beyond_what_cloudwatch_accepts_is_capped() {
         assert_eq!(
             offline_cloudwatch(50_000).batch_size(),
-            CLOUDWATCH_MAX_BATCHED_DATUMS / STAGES.len(),
+            cloudwatch_max_batched_datums(BASIC_MEASURES) / BASIC_MEASURES,
             "1000 data points is 333 batches, whatever was asked for"
         );
         assert_eq!(offline_cloudwatch(0).batch_size(), 1, "zero sends eagerly");
@@ -522,7 +638,7 @@ mod tests {
             let capacity = sink.accumulator.capacity();
 
             assert!(
-                capacity.is_multiple_of(STAGES.len()),
+                capacity.is_multiple_of(BASIC_MEASURES),
                 "a capacity of {capacity} is not a whole number of batches, so the \
                  buffer would overshoot it"
             );
@@ -548,7 +664,7 @@ mod tests {
     fn an_over_long_batch_is_split_into_calls_the_api_accepts() {
         let datum = |i: usize| {
             aws_sdk_cloudwatch::types::MetricDatum::builder()
-                .metric_name(STAGES[i % STAGES.len()])
+                .metric_name(MEASURES[i % MEASURES.len()].name)
                 .value(i as f64)
                 .build()
         };

@@ -299,6 +299,64 @@ number taken without warmup on a GPU is meaningless.
 
 ---
 
+<a id="mini-batching-on-a-device-provider"></a>
+
+## Mini-batching on a device provider
+
+A device provider enqueues onto one stream per session, so two `Run()` calls on **one**
+session queue on the device rather than overlapping. Cutting a request into mini batches
+there makes it slower: the mini batches run one after another, and each pays the call's
+fixed cost again.
+
+```mermaid
+flowchart TB
+  subgraph bad["one device session, two mini batches"]
+    direction LR
+    b1["mini batch A"] --> bq[["one stream"]]
+    b2["mini batch B"] --> bq
+    bq --> bo["A then B — two fixed costs"]
+  end
+  subgraph good["one device session, one call"]
+    direction LR
+    g1["whole request"] --> gs[["one stream"]]
+    gs --> go["one fixed cost"]
+  end
+  style bad fill:#f8d7da
+  style good fill:#d4edda
+```
+
+So that configuration is refused at startup rather than discovered under load:
+
+```text
+model declares "mini_batch_size": 25 on onnxruntime/TensorRT, where concurrent calls on one
+session queue on the device rather than overlapping. The mini batches would run one after
+another and each would pay the call's fixed cost again, so the split is slower than not
+splitting. Remove "mini_batch_size" to score each request in one call, or configure
+"merge" to fill a call from several requests instead
+```
+
+Three ways forward, and the right one depends on what you are optimising:
+
+| Goal | Setting |
+|---|---|
+| most rows per second | drop `mini_batch_size`; add `merge` to fill calls from concurrent requests |
+| lowest latency for one request | drop `mini_batch_size`; one call of every row is already the fastest this device serves it |
+| the model's graph is pinned to a row count | keep `mini_batch_size` at that number with `is_fixed: true`; it is not refused, because the model leaves no choice |
+
+**On Neuron a request's mini batches do reach two cores.** One logical replica spanning two
+NeuronCores loads a complete NEFF copy on each and spreads its execution contexts across
+them:
+
+```json
+"backend": {
+  "type": "neuron",
+  "neuron_cores_per_replica": 2,
+  "execution_contexts_per_replica": 2
+}
+```
+
+---
+
 ## Threads
 
 Two independent numbers, and confusing them is the usual cause of a slow deployment:

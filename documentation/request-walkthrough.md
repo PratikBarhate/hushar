@@ -106,32 +106,74 @@ sends its vector as one entry of that width.
 
 ## Step 2 · Off the async worker
 
+What happens next depends on the model's **execution plan**, settled at startup. Three of
+the four plans score the request on the blocking pool; the fourth queues its rows for a
+call shared with other requests.
+
 ```rust
-let scored = tokio::task::spawn_blocking(move || {
-    let session = model.sessions.acquire();
-    let scored = inference::scoring::score_features(
-        session.as_ref(),
-        &columns,
-        &input_builder,
-        mini_batch,
-        logging,
-    );
-    (scored, columns)
-})
-.await
-.map_err(|e| Status::internal(format!("inference task failed to complete: {e}")))?;
+let (scored, columns) = match &model.merger {
+    // Merged requests: queue the rows and wait on channels.
+    Some(merger) => {
+        let columns = Arc::new(columns);
+        let receivers = merger.submit(Arc::clone(&columns));
+        let scored = collect_merged(receivers).await;
+        (scored, Arc::into_inner(columns).ok_or(/* ... */)?)
+    }
+    // Whole request, or cut into mini batches: score it here.
+    None => {
+        tokio::task::spawn_blocking(move || {
+            let session = model.sessions.acquire();
+            let scored = inference::scoring::score_features(
+                session.as_ref(),
+                &columns,
+                &input_builder,
+                &plan,
+                logging,
+            );
+            (scored, columns)
+        })
+        .await
+        .map_err(|e| Status::internal(format!("inference task failed to complete: {e}")))?
+    }
+};
 ```
 
+### The unmerged path
+
 Inference is CPU-bound and can run for milliseconds, so it leaves the async runtime. The
-blocking pool is capped at `threading.sessions_per_model` in
+blocking pool is capped at the model's **request lanes** — `sessions_per_model` — in
 [`main`](../hushar/src/main.rs) rather than tokio's default 512. On that thread the request
-leases one of the model's sessions from a
-[`SessionPool`](../hushar/src/inference/session_pool.rs) for exactly as long as it scores
-and returns it when the lease drops, so no two requests ever share one session's intra-op
-pool — however tokio's blocking threads come and go. Because the pool is as wide as there
-are sessions, the lease never waits.
+leases one session from the model's
+[`SessionPool`](../hushar/src/inference/session_pool.rs), and the lease is returned when it
+drops, so no two requests ever share a session — however tokio's blocking threads come and
+go. Because the pool is as wide as there are lanes, the lease never waits.
+
+The plan then decides how the rows reach the engine: one call, or several at once on the
+leased session.
 
 **ELI5:** the counter hands the order to the kitchen and goes back to taking orders.
+
+### The merged path
+
+```mermaid
+flowchart LR
+  r["this request"] --> q[["model's queue"]]
+  o["other requests"] --> q
+  q --> t["merger thread<br/>leases a session"]
+  t --> c[["one call"]]
+  c --> s["scatter: each caller<br/>its own rows"]
+  s --> r
+  style c fill:#cfe2ff
+```
+
+Here the request holds no session of its own. Its rows join a queue, a merger thread fills
+one call from whatever is waiting, and each caller is handed back the slice of the output
+that belongs to its rows. The request's features are shared with the merger for exactly as
+long as its calls run, and released before the reply, which is why the handler can take
+them back for the inference log.
+
+A request larger than `merge.max_rows` spans consecutive calls and awaits one reply per
+call, concatenating them in row order.
 
 ---
 

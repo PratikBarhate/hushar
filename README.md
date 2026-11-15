@@ -7,7 +7,7 @@
 `हुशार` is मराठी [ Marāṭhī ] for *intelligent*.
 
 [Quick start](#quick-start) &nbsp;·&nbsp; [The contract](#features-in-scores-out)
-&nbsp;·&nbsp; [Docs](#documentation)
+&nbsp;·&nbsp; [Performance](#performance) &nbsp;·&nbsp; [Docs](#documentation)
 
 </div>
 
@@ -86,6 +86,44 @@ Anything that speaks protobuf can build the payload, in any language with a gene
 client and nothing else to install. [api.md](documentation/api.md) is the full contract;
 the definitions are in [`schemas/protos`](schemas/protos/structs.proto).
 
+## Performance
+
+Latency in milliseconds at a rate each host sustained for 15 minutes, with feature
+processing on the wire and the inference log sampling a fifth of requests. The accelerator
+rows score a whole request in one call, because concurrent calls on one of their sessions
+queue on the device. The CPU rows split a request into mini batches, where they overlap.
+
+| accelerator | chip | instance | model | rows x TPS | p50 | p95 | p99 | device busy |
+|---|---|---|---|--:|--:|--:|--:|--:|
+| CPU | Graviton | c9g.16xlarge | 10M | 100 x 250 | 7.35 | 9.82 | 11.67 | -- |
+| CPU | Graviton | c9g.16xlarge | 10M | 500 x 50 | 17.64 | 21.57 | 22.72 | -- |
+| CPU | Graviton | c9g.16xlarge | 20M | 100 x 100 | 14.16 | 16.50 | 22.30 | -- |
+| CPU | Graviton | c9g.16xlarge | 20M | 500 x 20 | 38.02 | 42.79 | 45.42 | -- |
+| GPU | A10G | g5.2xlarge | 10M | 100 x 1000 | 2.63 | 3.14 | 3.50 | 66.3% |
+| GPU | A10G | g5.2xlarge | 10M | 500 x 200 | 7.37 | 8.32 | 8.79 | 59.5% |
+| GPU | A10G | g5.2xlarge | 20M | 100 x 700 | 4.14 | 5.20 | 5.73 | 96.0% |
+| GPU | A10G | g5.2xlarge | 20M | 500 x 150 | 11.86 | 13.44 | 15.66 | 98.9% |
+| Trainium | Trainium1 | trn1.2xlarge | 10M | 100 x 1000 | 3.48 | 4.30 | 5.07 | 75.2% |
+| Trainium | Trainium1 | trn1.2xlarge | 10M | 500 x 200 | 11.98 | 13.39 | 14.12 | 76.5% |
+| Trainium | Trainium1 | trn1.2xlarge | 20M | 100 x 450 | 5.10 | 5.73 | 6.18 | 81.8% |
+| Trainium | Trainium1 | trn1.2xlarge | 20M | 500 x 80 | 22.20 | 23.21 | 23.46 | 74.5% |
+
+`device busy` is the accelerator's own occupancy, not its saturation: nvidia-smi's
+`utilization.gpu` and Neuron's `neuroncore_utilization` report the share of each sample
+period in which the device was executing something, so a higher number does not mean more
+work done. On CPU the host is the device. The A10G drew 185-191 W at 10M against 277-289 W
+at 20M, which tracks the work more honestly.
+
+**10M and 20M are parameter counts of the same transformer**, and the arithmetic does not
+scale with them: one row is 53.3M multiply-accumulates at 10M and 129.0M at 20M, because
+depth grows while the entry layer stays fixed. What the models are, where their parameters
+sit, and why a matched parameter count is not matched work is in
+[benchmark-models.md](scripts/benchmark-models.md).
+
+Full grids, including the mini-batch sweep that produced the CPU rows and a comparison
+against Triton, are in [benchmark-data/results](benchmark-data/results/README.md). How a
+run is set up and recorded is in [benchmarking.md](documentation/benchmarking.md).
+
 ## Where things live
 
 ```
@@ -111,7 +149,9 @@ documentation/     the docs below
 | | [configuration.md](documentation/configuration.md) | every config field, CLI flag, transformation and data type |
 | | [hardware.md](documentation/hardware.md) | choosing an execution provider, build features, building a runtime that is not prebuilt |
 | | [threads-and-cores.md](documentation/threads-and-cores.md) | thread pools, how many of each, and which cores they run on |
-| **Measure it** | [benchmarking.md](documentation/benchmarking.md) | a two-host run on real instances, and how a run is recorded |
+| **Measure it** | [benchmark-data/results](benchmark-data/results/README.md) | the full grids behind the table above |
+| | [benchmark-models.md](scripts/benchmark-models.md) | what the benchmark models are, and their arithmetic per row |
+| | [benchmarking.md](documentation/benchmarking.md) | a two-host run on real instances, and how a run is recorded |
 | **Read it** | [request-walkthrough.md](documentation/request-walkthrough.md) | one request, socket to response, function by function |
 | | [bindgen.md](documentation/bindgen.md) | why the FFI bindings are checked in and the library loaded at run time |
 

@@ -1,0 +1,23 @@
+hushar benchmark [reachability]
+  server    : http://172.31.28.189:8279
+  model     : bench-vectorized on cpu
+  features  : 210 per row
+  asking    : whichever the server's split chooses
+  offering  : 5 req/s x 100 row(s), 4 in flight (pinned), 0s warmup + 2s measured
+  payload   : 108888 bytes per request, 1088.9 bytes per row, 210 feature(s)
+
+  bench-vectorized on cpu
+  ---------------------------------------------
+  achieved      :       2.0 req/s   (200.0 rows/s)
+  offered       :         5 req/s
+  measured      :         4 requests  (of 4 that succeeded overall)
+  latency  p50  :   5467.06 ms
+           p95  :   8732.20 ms
+           p99  :   8732.20 ms
+           max  :   8732.20 ms
+           mean :   6035.02 ms
+  failed        :         0
+  shed          :         6  (offered but never sent: 4 in flight was the cap)
+
+  NOTE: 60% of the offered rate was shed, so 5 req/s is above what this
+  configuration sustains. The latencies above are for the requests that ran.

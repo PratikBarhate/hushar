@@ -1,0 +1,67 @@
+{
+  "availability_zone": "us-west-2b",
+  "hosts": {
+    "cl1": {
+      "ami": "ami-0d2beaff07e79c24e",
+      "arch": "arm64",
+      "id": "i-0b04a0e3d5a26cd51",
+      "instance": "m9g.8xlarge",
+      "ip": "172.31.24.104",
+      "role": "client",
+      "subnet": "subnet-00c62a1237179cad1"
+    },
+    "cl2": {
+      "ami": "ami-0d2beaff07e79c24e",
+      "arch": "arm64",
+      "id": "i-06eb30576d00b3b61",
+      "instance": "m9g.8xlarge",
+      "ip": "172.31.24.236",
+      "role": "client",
+      "subnet": "subnet-00c62a1237179cad1"
+    },
+    "g5-1": {
+      "ami": "ami-02a0c27a7983d4910",
+      "arch": "x86_64",
+      "id": "i-0229aeb38c49c91bb",
+      "instance": "g5.2xlarge",
+      "ip": "172.31.24.24",
+      "role": "server",
+      "subnet": "subnet-00c62a1237179cad1"
+    },
+    "g5-2": {
+      "ami": "ami-02a0c27a7983d4910",
+      "arch": "x86_64",
+      "id": "i-03ef48adb3a30d477",
+      "instance": "g5.2xlarge",
+      "ip": "172.31.18.195",
+      "role": "server",
+      "subnet": "subnet-00c62a1237179cad1"
+    }
+  },
+  "images": {
+    "client": {
+      "age_days_at_launch": 7.1,
+      "ami": "ami-0d2beaff07e79c24e",
+      "architecture": "arm64",
+      "created": "2026-10-30T13:58:08Z",
+      "name": "al2023-ami-2023.12.20261102.0-kernel-6.18-arm64",
+      "source": "SSM parameter /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    "server": {
+      "age_days_at_launch": -0.0,
+      "ami": "ami-02a0c27a7983d4910",
+      "architecture": "x86_64",
+      "created": "2026-11-06T16:29:04Z",
+      "name": "Deep Learning Base OSS Nvidia Driver GPU AMI (Amazon Linux 2023) 20261106",
+      "source": "newest of 150 matching 'Deep Learning Base OSS Nvidia Driver GPU AMI (Amazon Linux 2023) *'"
+    }
+  },
+  "lanes": [
+    "g5-1",
+    "g5-2"
+  ],
+  "launched": "2026-11-07T00:26:58Z",
+  "rig_set": "main",
+  "run": "nominibatch-sessions-gpu-g5-10M-20M",
+  "subnet": "subnet-00c62a1237179cad1"
+}

@@ -143,15 +143,19 @@ pub struct MetricsConfig {
     pub batch_size: usize,
     #[serde(default = "default_max_sends_in_flight")]
     pub max_sends_in_flight: usize,
+    #[serde(default)]
+    pub detailed: bool,
 }
 
 impl Default for MetricsConfig {
-    /// Absent `metrics` is stderr at the default batch size.
+    /// Absent `metrics` is stderr at the default batch size, reporting the three stage
+    /// timings and nothing more.
     fn default() -> Self {
         Self {
             cloudwatch_namespace: None,
             batch_size: default_metrics_batch_size(),
             max_sends_in_flight: default_max_sends_in_flight(),
+            detailed: false,
         }
     }
 }
@@ -171,8 +175,9 @@ impl Default for MetricsConfig {
 ///                           not work -- what is admitted past the next number queues.
 ///   worker_threads          async only -- sockets, HTTP/2 framing, spawning sends.
 ///                           Near-zero CPU, because inference never runs here.
-///   sessions_per_model      how many inferences run at once: one blocking thread per
-///                           ONNX Runtime session or Neuron model replica.
+///   sessions_per_model      ONNX Runtime sessions or Neuron model replicas loaded.
+///                           Each serves one request at a time, so this is also the
+///                           requests in flight.
 ///   intra_op_threads        ONNX Runtime threads inside one operator, caller included.
 ///                           Not used by Neuron.
 /// ```
@@ -189,8 +194,9 @@ impl Default for MetricsConfig {
 /// session's intra-op pool -- the contention the pools exist to avoid. A sweep over 16, 32
 /// and 64 concurrent inferences against 4 sessions moved the median by under 4 %, so the
 /// knob was not buying anything to justify the ways it could be set wrong. The blocking
-/// pool is now exactly as wide as there are sessions, so a request always finds an idle
-/// session to lease and the thread budget is one multiplication.
+/// pool is still derived rather than configured: it is `sessions_per_model`, so the
+/// sessions are always exactly accounted for and the thread budget is still one
+/// multiplication.
 ///
 /// # Fields
 ///
@@ -220,12 +226,17 @@ impl Default for MetricsConfig {
 ///   bounds the spin to half a millisecond, `"session.force_spinning_stop": "1"` stops it
 ///   the moment a session's last `Run()` returns. Absent means none. The runtime accepts a
 ///   key it does not know without complaint, so the banner prints exactly what was sent
-/// * `sessions_per_model` - backend replicas and therefore concurrent inferences. Default
-///   1.
+/// * `sessions_per_model` - backend replicas and therefore model copies, each serving one
+///   request at a time. Default 1
 ///
 /// An ONNX Runtime replica is an independent session with its own thread pool. A Neuron
 /// replica is a separate model load on consecutive NeuronCores. Either costs one model
 /// copy per replica.
+///
+/// How far one request's mini batches spread is not configured here. An ONNX Runtime
+/// session on a host provider overlaps as many as the host has cores; a device provider
+/// serializes them; a Neuron replica overlaps its `execution_contexts_per_replica`. The
+/// backend reports it — see [`ExecutionProfile`](crate::inference::backend::ExecutionProfile).
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ThreadingConfig {
@@ -357,9 +368,8 @@ impl ThreadingConfig {
 
     /// Sessions to load each model into, never zero.
     ///
-    /// Per model, so the total is `models × this`. This is also the width of tokio's
-    /// blocking pool, so it is the number of inferences that can run at once: one thread
-    /// per session.
+    /// Per model, so the total is `models × this`. Each session serves one request at a
+    /// time, so this is also tokio's blocking-pool width and the requests in flight.
     pub fn sessions_per_model(&self) -> usize {
         self.sessions_per_model.max(1)
     }
@@ -1094,11 +1104,29 @@ mod tests {
         );
     }
 
+    /// Asserts the sessions are the requests in flight: one session serves one request at
+    /// a time, so the count is also the blocking pool's width.
+    #[test]
+    fn the_sessions_are_the_requests_in_flight() {
+        let json = r#"{"model_config_path": "/tmp/m.json",
+                       "threading": {"sessions_per_model": 4},
+                       "inference_log": {"uri": "/tmp/logs"}}"#;
+        let config = HusharServiceConfig::from_json(json).expect("valid");
+        assert_eq!(config.threading.sessions_per_model(), 4);
+        assert_eq!(ThreadingConfig::default().sessions_per_model(), 1);
+    }
+
     /// Asserts the removed placement fields are now rejected outright rather than
     /// silently ignored, so a configuration written for the old shape fails loudly.
     #[test]
     fn the_removed_threading_fields_are_refused() {
-        for field in ["worker_cores", "compute_cores", "inference_concurrency"] {
+        for field in [
+            "worker_cores",
+            "compute_cores",
+            "inference_concurrency",
+            "sessions_per_request",
+            "concurrency_per_session",
+        ] {
             let json = format!(
                 r#"{{"model_config_path": "/tmp/m.json",
                       "threading": {{"{field}": "0-1"}},

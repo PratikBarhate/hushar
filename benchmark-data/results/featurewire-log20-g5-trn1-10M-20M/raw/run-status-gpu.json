@@ -1,0 +1,64 @@
+{
+  "run": "featurewire-log20-g5-trn1-10M-20M",
+  "accelerator": "a10g",
+  "main": {
+    "cells": 12,
+    "sustained": 11,
+    "partial": 0,
+    "failed_load": 1,
+    "with_cloudwatch": 6,
+    "with_gpu_samples": 12
+  },
+  "probes": {
+    "cells": 0,
+    "sustained": 0,
+    "partial": 0,
+    "failed_load": 0,
+    "with_cloudwatch": 0,
+    "with_gpu_samples": 0
+  },
+  "by_arm": {
+    "hushar": {
+      "cells": 6,
+      "sustained": 5,
+      "partial": 0,
+      "failed_load": 1,
+      "with_cloudwatch": 6,
+      "with_gpu_samples": 6
+    },
+    "triton": {
+      "cells": 6,
+      "sustained": 6,
+      "partial": 0,
+      "failed_load": 0,
+      "with_cloudwatch": 0,
+      "with_gpu_samples": 6
+    }
+  },
+  "by_size": {
+    "10m": {
+      "cells": 4,
+      "sustained": 4,
+      "partial": 0,
+      "failed_load": 0,
+      "with_cloudwatch": 2,
+      "with_gpu_samples": 4
+    },
+    "20m": {
+      "cells": 8,
+      "sustained": 7,
+      "partial": 0,
+      "failed_load": 1,
+      "with_cloudwatch": 4,
+      "with_gpu_samples": 8
+    }
+  },
+  "inference_log": {
+    "cells_logging": 6,
+    "cells_that_shed": 1,
+    "cells_with_write_failures": 0,
+    "objects_written": 4021,
+    "written_gib": 205.5
+  },
+  "preserved_attempt_failures": 0
+}

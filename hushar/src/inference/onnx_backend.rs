@@ -10,13 +10,13 @@ use std::fmt;
 use std::sync::Arc;
 
 use onnxrt_rs::{
-    Api, DataType as OrtDataType, Environment, ExecutionMode, ExecutionProvider,
-    GraphOptimizationLevel, InputValue, OwnedTensor, Session, SessionBuilder,
+    Api, CoreMlComputeUnits, DataType as OrtDataType, Environment, ExecutionMode,
+    ExecutionProvider, GraphOptimizationLevel, InputValue, OwnedTensor, Session, SessionBuilder,
 };
 
 use crate::config::Parallelism;
 use crate::inference::InferenceError;
-use crate::inference::backend::InferenceBackend;
+use crate::inference::backend::{ExecutionProfile, InferenceBackend};
 use crate::inference::batch::{
     ElementType, Feature, FeatureData, InputBatch, IoSpec, OutputBatch, ScoreData,
 };
@@ -40,6 +40,8 @@ pub(crate) struct OnnxRuntimeBackend {
     inputs: Vec<IoSpec>,
     outputs: Vec<IoSpec>,
     name: String,
+    profile: ExecutionProfile,
+    required_rows: Option<usize>,
 }
 
 impl OnnxRuntimeBackend {
@@ -56,9 +58,17 @@ impl OnnxRuntimeBackend {
     /// * `mini_batch` - how the deployment cuts a request's rows, when the model
     ///   configuration says to. A padded batch is what allows a model with a pinned
     ///   leading dimension to load at all; see [`convert_specs`].
+    /// * `parallelism` - which of ONNX Runtime's thread pools carries this session's width,
+    ///   and how wide. Sets the execution mode to match, since inter-op threads are built
+    ///   and never given work under the sequential executor. A width of `0` leaves that
+    ///   pool at the runtime's own default.
+    /// * `mini_batch` - how the deployment cuts a request's rows, when the model
+    ///   configuration says to. A padded batch is what allows a model with a pinned
+    ///   leading dimension to load at all; see [`convert_specs`].
     /// * `session_options` - ONNX Runtime's string-keyed session settings, applied after
-    ///   the thread count because an affinity list is validated against it. See
-    ///   [`onnxrt_rs::SessionBuilder::config_entry`].
+    ///   the thread count because the runtime validates a caller-supplied
+    ///   `intra_op_thread_affinities` list against it. The service itself sets no
+    ///   affinity. See [`onnxrt_rs::SessionBuilder::config_entry`].
     ///
     /// # Errors
     ///
@@ -106,10 +116,13 @@ impl OnnxRuntimeBackend {
         }
         let session = builder.build_from_memory(model_bytes)?;
 
-        let inputs = convert_specs("input", &session.input_specs()?, mini_batch)?;
+        let input_specs = session.input_specs()?;
+        let required_rows = pinned_rows(&input_specs);
+        let inputs = convert_specs("input", &input_specs, mini_batch)?;
         let outputs = convert_specs("output", &session.output_specs()?, mini_batch)?;
 
         let name = format!("onnxruntime/{provider} (runtime {})", api.version());
+        let profile = session_profile(provider);
 
         Ok(Self {
             session,
@@ -118,8 +131,66 @@ impl OnnxRuntimeBackend {
             inputs,
             outputs,
             name,
+            profile,
+            required_rows,
         })
     }
+}
+
+/// The row count a pinned graph demands, from the inputs' leading axis.
+///
+/// A negative leading dimension is a dynamic batch axis and takes any row count.
+/// [`convert_specs`] has already refused a configuration that disagrees with a pinned
+/// one, so any pinned input carries the same number and the first is enough.
+fn pinned_rows(specs: &[onnxrt_rs::TensorSpec]) -> Option<usize> {
+    specs
+        .iter()
+        .filter_map(|spec| spec.shape.first().copied())
+        .find(|dim| *dim >= 0)
+        .and_then(|dim| usize::try_from(dim).ok())
+}
+
+/// Whether a provider runs the graph on a device rather than on the calling thread.
+///
+/// This is the fact that decides whether mini batching one session buys anything. A
+/// device provider enqueues onto one stream per session, so two `Run` calls on one
+/// session serialize there however many threads call in. A host provider runs the graph
+/// on the calling thread, so two calls are genuinely parallel.
+///
+/// `Custom` is treated as a host provider. The alternative would refuse a mini-batch
+/// configuration that works today on a provider this enum does not model, so the
+/// permissive reading is the compatible one and the banner prints it.
+fn runs_on_device(provider: &ExecutionProvider) -> bool {
+    match provider {
+        ExecutionProvider::Cpu
+        | ExecutionProvider::Xnnpack { .. }
+        | ExecutionProvider::Custom { .. } => false,
+        ExecutionProvider::CoreMl { compute_units, .. } => {
+            *compute_units != CoreMlComputeUnits::CpuOnly
+        }
+        ExecutionProvider::OpenVino { device_type, .. } => !device_type.eq_ignore_ascii_case("cpu"),
+        ExecutionProvider::TensorRt { .. } | ExecutionProvider::MiGraphx { .. } => true,
+    }
+}
+
+/// How many of one session's `run` calls overlap, from its provider.
+///
+/// A device provider enqueues onto one stream per session, so its calls serialize however
+/// many threads call in. A host provider runs the graph on the calling thread, so the
+/// bound is the host's cores.
+///
+/// Not divided by the session's pool width, though that reads plausibly. The pool belongs
+/// to the session and every call on it shares the pool, so concurrent calls overlap by
+/// sharing rather than by claiming cores of their own. Dividing capped a request at 4
+/// mini batches in flight on 64 cores at `intra_op_threads: 16`, throttling the 20- and
+/// 50-mini-batch splits that `benchmark-data/results/minibatch-size-cpu-c9g-10M-20M`
+/// measured as fastest.
+fn session_profile(provider: &ExecutionProvider) -> ExecutionProfile {
+    if runs_on_device(provider) {
+        return ExecutionProfile::serialized();
+    }
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    ExecutionProfile::new(cores)
 }
 
 impl fmt::Debug for OnnxRuntimeBackend {
@@ -137,6 +208,15 @@ impl fmt::Debug for OnnxRuntimeBackend {
 impl InferenceBackend for OnnxRuntimeBackend {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn profile(&self) -> ExecutionProfile {
+        self.profile
+    }
+
+    /// The row count a pinned ONNX graph demands, or `None` for a dynamic batch axis.
+    fn required_rows(&self) -> Option<usize> {
+        self.required_rows
     }
 
     fn inputs(&self) -> &[IoSpec] {
@@ -908,7 +988,7 @@ mod tests {
             &backend,
             &columns,
             &builder,
-            None,
+            &crate::inference::execution_plan::ExecutionPlan::WholeRequest,
             crate::inference::scoring::FeatureLogging::Record,
         )
         .expect("the batch should score");
@@ -982,10 +1062,12 @@ mod tests {
                 &backend,
                 &columns,
                 &builder,
-                Some(crate::inference::scoring::MiniBatch {
-                    size: 2,
-                    is_fixed: true,
-                }),
+                &crate::inference::execution_plan::ExecutionPlan::SharedSession {
+                    mini_batch: crate::inference::scoring::MiniBatch {
+                        size: 2,
+                        is_fixed: true,
+                    },
+                },
                 crate::inference::scoring::FeatureLogging::Record,
             )
             .unwrap_or_else(|e| panic!("{count} rows against a pinned graph: {e}"));
@@ -1017,5 +1099,107 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    /// Host cores, read the same way [`session_profile`] reads them.
+    fn cores() -> usize {
+        std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+    }
+
+    fn openvino(device_type: &str) -> ExecutionProvider {
+        ExecutionProvider::OpenVino {
+            device_type: device_type.to_owned(),
+            num_of_threads: None,
+            num_streams: None,
+        }
+    }
+
+    /// Every provider this enum models, classified. The device ones are what make a
+    /// mini-batch split pointless on a single session.
+    #[test]
+    fn device_providers_serialize_and_host_providers_do_not() {
+        let device = [
+            ExecutionProvider::tensor_rt(0),
+            ExecutionProvider::migraphx(0),
+            ExecutionProvider::core_ml(),
+            ExecutionProvider::core_ml_with(CoreMlComputeUnits::CpuAndGpu),
+            ExecutionProvider::core_ml_with(CoreMlComputeUnits::CpuAndNeuralEngine),
+            openvino("GPU"),
+            openvino("NPU"),
+            openvino("AUTO:GPU,CPU"),
+        ];
+        for provider in device {
+            assert!(
+                runs_on_device(&provider),
+                "{} runs the graph on a device",
+                provider.name()
+            );
+            assert_eq!(
+                session_profile(&provider),
+                ExecutionProfile::serialized(),
+                "{} enqueues onto one stream per session",
+                provider.name()
+            );
+        }
+
+        let host = [
+            ExecutionProvider::Cpu,
+            ExecutionProvider::xnnpack(),
+            ExecutionProvider::core_ml_with(CoreMlComputeUnits::CpuOnly),
+            openvino("CPU"),
+            openvino("cpu"),
+        ];
+        for provider in host {
+            assert!(
+                !runs_on_device(&provider),
+                "{} runs the graph on the calling thread",
+                provider.name()
+            );
+        }
+    }
+
+    /// A provider the enum does not model keeps today's behaviour rather than being
+    /// refused, which is the compatible reading of an unknown name.
+    #[test]
+    fn an_unmodelled_provider_is_assumed_to_overlap() {
+        let provider = ExecutionProvider::Custom {
+            name: "QNN".to_owned(),
+            options: Vec::new(),
+        };
+        assert!(!runs_on_device(&provider));
+    }
+
+    /// On a host provider the graph runs on the calling thread, so the host's cores are
+    /// the bound and the session's own pool width does not enter into it.
+    ///
+    /// The width used to divide the cores. That capped a request at
+    /// `cores / intra_op_threads` mini batches in flight, which throttled exactly the
+    /// deep splits `benchmark-data/results/minibatch-size-cpu-c9g-10M-20M` measured as
+    /// fastest, so the division is gone.
+    #[test]
+    fn a_host_providers_overlap_is_the_core_count() {
+        let profile = session_profile(&ExecutionProvider::Cpu);
+        assert_eq!(
+            profile.concurrent_mini_batches(),
+            cores(),
+            "every core can carry one of a request's mini batches"
+        );
+    }
+
+    /// A device provider serializes its calls whatever the host looks like, which is what
+    /// refuses a split on it.
+    #[test]
+    fn a_device_providers_overlap_is_one() {
+        let profile = session_profile(&ExecutionProvider::TensorRt {
+            device_id: 0,
+            options: Vec::new(),
+        });
+        assert_eq!(profile, ExecutionProfile::serialized());
+        assert!(!profile.overlaps());
     }
 }

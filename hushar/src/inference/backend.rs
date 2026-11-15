@@ -13,6 +13,52 @@ use std::fmt::Debug;
 use crate::inference::InferenceError;
 use crate::inference::batch::{InputBatch, IoSpec, OutputBatch};
 
+/// How many of a request's mini batches one leased unit runs at once.
+///
+/// Reported per backend, so this describes one ONNX Runtime session or one Neuron
+/// replica. A request leases one unit, so this is the whole bound on how far its rows can
+/// be spread.
+///
+/// ```text
+/// ONNX Runtime, host provider    the host's cores    a call runs on its calling thread
+/// ONNX Runtime, device provider  1                   one stream per session
+/// AWS Neuron                     execution contexts  configured per replica
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExecutionProfile {
+    concurrent_mini_batches: usize,
+}
+
+impl ExecutionProfile {
+    /// A unit overlapping `concurrent` mini batches, floored at one.
+    ///
+    /// The only way to build a profile, so every reader can rely on the floor.
+    pub(crate) fn new(concurrent: usize) -> Self {
+        Self {
+            concurrent_mini_batches: concurrent.max(1),
+        }
+    }
+
+    /// A unit whose concurrent `run` calls serialize, such as one ONNX Runtime session on
+    /// a device execution provider.
+    pub(crate) fn serialized() -> Self {
+        Self::new(1)
+    }
+
+    /// Mini batches of one request this unit runs at once, never fewer than one.
+    ///
+    /// `1` means concurrent [`InferenceBackend::run`] calls serialize, so cutting a
+    /// request into mini batches would queue them rather than overlap them.
+    pub(crate) fn concurrent_mini_batches(self) -> usize {
+        self.concurrent_mini_batches
+    }
+
+    /// Whether mini batching can overlap anything on one leased unit.
+    pub(crate) fn overlaps(self) -> bool {
+        self.concurrent_mini_batches > 1
+    }
+}
+
 /// An inference engine.
 ///
 /// Implementations must be usable from many request threads at once through a shared
@@ -22,6 +68,20 @@ pub(crate) trait InferenceBackend: Debug + Send + Sync {
     /// Engine and device, for logs and metric dimensions, such as
     /// `"onnxruntime/CoreML(ALL)"`.
     fn name(&self) -> &str;
+
+    /// How this backend overlaps concurrent [`Self::run`] calls.
+    ///
+    /// Read once at startup to choose the scheduling plan, so it must not vary with load.
+    fn profile(&self) -> ExecutionProfile;
+
+    /// The row count this backend demands per call, when its graph is pinned to one.
+    ///
+    /// `None` accepts any row count. `Some(n)` accepts only `n`, so a request of any
+    /// other size must be cut into mini batches of `n` with the last padded. That makes
+    /// the mini batch a requirement of the model rather than a scheduling choice, which
+    /// is the difference between a split that cannot be avoided and one that buys
+    /// nothing.
+    fn required_rows(&self) -> Option<usize>;
 
     /// What the model takes, read from the model rather than configured.
     fn inputs(&self) -> &[IoSpec];
@@ -46,6 +106,10 @@ pub(crate) mod test_support {
     use std::sync::Mutex;
     use std::time::Duration;
 
+    /// A generous default, so a test fanning out many mini batches still runs them at
+    /// once rather than in rounds.
+    pub(crate) const TEST_CONCURRENCY: usize = 64;
+
     /// Builds a single-output batch, for a test backend's result.
     fn one(rows: usize, name: &str, data: ScoreData) -> Result<OutputBatch, InferenceError> {
         let mut batch = OutputBatch::new(rows);
@@ -63,6 +127,7 @@ pub(crate) mod test_support {
         outputs: Vec<IoSpec>,
         input_width: usize,
         output_width: usize,
+        profile: ExecutionProfile,
     }
 
     impl SummingBackend {
@@ -74,7 +139,14 @@ pub(crate) mod test_support {
                 outputs: vec![IoSpec::new("scores", ElementType::F32, Some(output_width))],
                 input_width,
                 output_width,
+                profile: ExecutionProfile::new(TEST_CONCURRENCY),
             }
+        }
+
+        /// The same backend reporting `profile`, for testing a scheduler decision.
+        pub(crate) fn with_profile(mut self, profile: ExecutionProfile) -> Self {
+            self.profile = profile;
+            self
         }
 
         /// The name this backend expects its input to be called.
@@ -107,6 +179,14 @@ pub(crate) mod test_support {
             "test/slow"
         }
 
+        fn profile(&self) -> ExecutionProfile {
+            self.inner.profile()
+        }
+
+        fn required_rows(&self) -> Option<usize> {
+            self.inner.required_rows()
+        }
+
         fn inputs(&self) -> &[IoSpec] {
             self.inner.inputs()
         }
@@ -125,6 +205,14 @@ pub(crate) mod test_support {
     impl InferenceBackend for SummingBackend {
         fn name(&self) -> &str {
             "test/summing"
+        }
+
+        fn profile(&self) -> ExecutionProfile {
+            self.profile
+        }
+
+        fn required_rows(&self) -> Option<usize> {
+            None
         }
 
         fn inputs(&self) -> &[IoSpec] {
@@ -192,6 +280,14 @@ pub(crate) mod test_support {
             "test/recording"
         }
 
+        fn profile(&self) -> ExecutionProfile {
+            self.inner.profile()
+        }
+
+        fn required_rows(&self) -> Option<usize> {
+            self.inner.required_rows()
+        }
+
         fn inputs(&self) -> &[IoSpec] {
             self.inner.inputs()
         }
@@ -235,6 +331,14 @@ pub(crate) mod test_support {
     impl InferenceBackend for MultiOutputBackend {
         fn name(&self) -> &str {
             "test/multi-output"
+        }
+
+        fn profile(&self) -> ExecutionProfile {
+            ExecutionProfile::new(TEST_CONCURRENCY)
+        }
+
+        fn required_rows(&self) -> Option<usize> {
+            None
         }
 
         fn inputs(&self) -> &[IoSpec] {
@@ -289,6 +393,14 @@ pub(crate) mod test_support {
             "test/double"
         }
 
+        fn profile(&self) -> ExecutionProfile {
+            ExecutionProfile::new(TEST_CONCURRENCY)
+        }
+
+        fn required_rows(&self) -> Option<usize> {
+            None
+        }
+
         fn inputs(&self) -> &[IoSpec] {
             &self.inputs
         }
@@ -323,6 +435,14 @@ pub(crate) mod test_support {
     impl InferenceBackend for FailingBackend {
         fn name(&self) -> &str {
             "test/failing"
+        }
+
+        fn profile(&self) -> ExecutionProfile {
+            ExecutionProfile::new(TEST_CONCURRENCY)
+        }
+
+        fn required_rows(&self) -> Option<usize> {
+            None
         }
 
         fn inputs(&self) -> &[IoSpec] {
@@ -443,5 +563,48 @@ mod tests {
         assert_eq!(backend.inputs()[0].element_type, ElementType::F32);
         assert_eq!(backend.inputs()[0].width, Some(4));
         assert_eq!(backend.outputs()[0].width, Some(2));
+    }
+
+    /// A serializing unit is the one case that gates a scheduling decision.
+    #[test]
+    fn a_serialized_profile_overlaps_nothing() {
+        let profile = ExecutionProfile::serialized();
+        assert_eq!(profile.concurrent_mini_batches(), 1);
+        assert!(
+            !profile.overlaps(),
+            "one mini batch at a time is what refuses a split"
+        );
+    }
+
+    /// The Neuron shape: a replica's execution contexts are its mini batches in flight.
+    ///
+    /// `NeuronBackend::profile` is `ExecutionProfile::new(contexts.total())`, and
+    /// constructing the backend itself needs a Neuron host, so the figure is asserted
+    /// here with the number named.
+    #[test]
+    fn a_unit_overlaps_as_many_mini_batches_as_it_reports() {
+        let four_contexts = ExecutionProfile::new(4);
+        assert_eq!(four_contexts.concurrent_mini_batches(), 4);
+        assert!(four_contexts.overlaps());
+    }
+
+    /// A count of zero would describe a unit that can serve nothing.
+    #[test]
+    fn a_profile_is_never_below_one() {
+        assert_eq!(ExecutionProfile::new(0), ExecutionProfile::serialized());
+    }
+
+    /// The scheduler reads the profile off a trait object, so it must survive erasure.
+    #[test]
+    fn a_profile_is_readable_through_the_trait_object() {
+        let serialized: Box<dyn InferenceBackend> =
+            Box::new(SummingBackend::new(3, 1).with_profile(ExecutionProfile::serialized()));
+        assert!(!serialized.profile().overlaps());
+
+        let overlapping: Box<dyn InferenceBackend> = Box::new(SummingBackend::new(3, 1));
+        assert!(
+            overlapping.profile().overlaps(),
+            "the test default fans out, so existing fan-out tests still run at once"
+        );
     }
 }

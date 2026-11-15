@@ -14,7 +14,7 @@ how a Trainium device runs a model.
 flowchart LR
   client([client]) --> door["admission<br/><code>connection_concurrency</code>"]
   door --> async["async workers<br/><code>worker_threads</code>"]
-  async --> slots["inference slots<br/><code>sessions_per_model</code>"]
+  async --> slots["request lanes<br/><code>sessions_per_model</code>"]
   slots --> backend{backend}
   backend --> ort["ONNX Runtime session<br/>CPU thread pool"]
   backend --> neuron["Neuron model replica<br/>NeuronCore + contexts"]
@@ -89,6 +89,71 @@ The unit depends on the backend:
 The default is `1`, which means one request can run at a time for each model. Raise it for
 throughput only after deciding how much parallelism each backend unit needs.
 
+A request leases one session for exactly as long as it scores, and the blocking pool is as
+wide as there are sessions, so the lease never waits:
+
+```text
+sessions_per_model: 4
+
+  [session 0] [session 1] [session 2] [session 3]
+       ▲            ▲
+   request A    request B      two idle, ready for the next two
+
+  capacity = 4 requests in flight, which is also the blocking pool's width
+```
+
+The banner reports it:
+
+```text
+  pool   : 4 session(s) per model, one blocking thread each, every session with its own
+           intra-op pool; a request leases an idle session while it scores
+```
+
+### What a backend can overlap
+
+Whether splitting a request helps depends on what the backend does with two model calls
+at once. The startup banner reports it per model, as one number:
+
+```text
+  overlap  : up to 64 of a request's mini batches at once on its session
+```
+
+```mermaid
+flowchart LR
+  subgraph o["overlaps"]
+    direction TB
+    c1["CPU session<br/>graph runs on the calling thread"] --> c2["two calls, two cores"]
+  end
+  subgraph s["serialises"]
+    direction TB
+    d1["device session<br/>one stream per session"] --> d2["two calls, one queue"]
+  end
+  style o fill:#d4edda
+  style s fill:#f8d7da
+```
+
+| backend | mini batches at once on one session |
+|---|---|
+| ONNX Runtime, CPU or XNNPACK | the host's cores |
+| ONNX Runtime, TensorRT, MIGraphX, CoreML, OpenVINO on a device | 1 |
+| AWS Neuron | `execution_contexts_per_replica` |
+
+Nothing configures this; the backend reports it. **`1 at once` means a split cannot
+help** — the mini batches would queue on one stream and each would repeat the call's
+fixed cost — so the service refuses `mini_batch_size` there rather than serving it
+slowly. The banner says so in words as well.
+
+On CPU the pool width does not enter into it. A session's `intra_op_threads` pool is
+shared by every call on that session, so concurrent calls overlap by sharing the pool
+rather than by claiming cores of their own; dividing the cores by the width only capped
+the split. On a 64-core host at `intra_op_threads: 16` that cap was 4 mini-batches in
+flight, which throttled the 20- and 50-mini-batch splits
+[the c9g campaign](../benchmark-data/results/minibatch-size-cpu-c9g-10M-20M/summary.md)
+measured as fastest.
+
+A provider this service does not model is assumed to overlap, so that a configuration
+working today keeps working. The banner prints the assumption.
+
 ### Rows and mini-batches
 
 Rows per request are part of the parallelism decision. `mini_batch_size` divides a request
@@ -104,7 +169,7 @@ flowchart LR
   b2 --> join
 ```
 
-Splitting can expose more parallel work, but every piece repeats call and transfer
+Splitting can expose more parallel work, but every mini batch repeats call and transfer
 overhead. Benchmark the request sizes used in production rather than assuming that
 smaller batches are faster.
 
@@ -340,6 +405,57 @@ contexts per replica. Each request became two concurrent batch-50 calls. A follo
 same load measured the context rule directly: one context per replica added about 0.13 ms of
 inference time, and four contexts were indistinguishable from two. That result is specific
 to the compiled model and load; use it as a tuning example, not a default.
+
+## The three execution plans
+
+Every model resolves to exactly one plan at startup, from what its backend can overlap and
+what the configuration asks for. The banner names it:
+
+```text
+  plan     : merged requests -- rows from concurrent requests merged into one call of
+             256 rows, waiting at most 500 us to fill it, padded when it is short
+```
+
+```mermaid
+flowchart TB
+  s["startup:<br/>backend profile + model config"] --> p{plan}
+  p -->|"no mini_batch_size, no merge"| w["<b>whole request</b><br/>one call per request"]
+  p -->|"mini_batch_size, calls overlap"| ss["<b>shared session</b><br/>mini batches on one session"]
+  p -->|"merge"| mr["<b>merged requests</b><br/>one call from several requests"]
+  style w fill:#e2e3e5
+  style ss fill:#d4edda
+  style mr fill:#cfe2ff
+```
+
+| Plan | One request becomes | Good for |
+|---|---|---|
+| whole request | one call of all its rows | a device already filled by one call |
+| shared session | several calls at once on one session | CPU, where concurrent calls genuinely overlap |
+| merged requests | part of a call shared with other requests | throughput, where filling a call is what the device rewards |
+
+A `mini_batch_size` on a backend whose calls serialize is refused at startup rather than
+served slowly; see [hardware.md](hardware.md).
+
+### Choosing between splitting and merging
+
+The two are opposite moves and cannot be combined; the configuration refuses both at once.
+Which one helps depends on what is scarce:
+
+```mermaid
+flowchart TB
+  q{"what happens to<br/>one more call?"}
+  q -->|"it runs alongside the rest<br/>(CPU session with capacity)"| split["<b>split</b><br/>mini_batch_size<br/>spends idle capacity on one request's latency"]
+  q -->|"it queues behind them<br/>(device session, or saturated)"| merge["<b>merge</b><br/>merge.max_rows<br/>spreads one call's fixed cost over more rows"]
+  style split fill:#cfe2ff
+  style merge fill:#d4edda
+```
+
+A call costs roughly the same whether it carries 50 rows or 100, because much of it is
+fixed. Splitting divides a request and pays that fixed cost once per mini batch, buying
+latency when there is somewhere idle for the mini batches to run. Merging fills a call so
+more rows share one fixed cost, buying throughput when calls are already queueing.
+
+Neither is a default. Measure the request shape and rate you actually serve.
 
 ## Recognizing common bottlenecks
 

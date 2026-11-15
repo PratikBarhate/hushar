@@ -71,7 +71,7 @@ pub struct OnnxRuntimeConfig {
 /// A request leases one logical replica while it scores, and each of its
 /// `ceil(rows / mini_batch_size)` fixed executions leases one tensor set from it. After
 /// providing at least one context per core, the useful context count is therefore the
-/// executions one request produces: fewer serialize pieces, more are never leased.
+/// executions one request produces: fewer serialize mini batches, more are never leased.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NeuronConfig {
     pub start_neuron_core: i32,
@@ -124,6 +124,31 @@ enum RawBackendConfig {
         #[serde(default = "default_execution_contexts")]
         execution_contexts_per_replica: usize,
     },
+}
+
+/// Merging the rows of concurrent requests into one engine call.
+///
+/// The opposite of `mini_batch_size`, and refused alongside it: merging fills a call so
+/// its fixed cost is spread over more rows, where cutting a request divides a call and
+/// pays that cost again per mini batch.
+///
+/// Every merged call is padded to exactly `max_rows`, so the engine is shown one shape.
+/// A provider that compiles per shape would otherwise build an engine for every width it
+/// happened to see.
+///
+/// # Fields
+///
+/// * `max_rows` - rows in one merged call. A request larger than this spans consecutive
+///   calls. Must be greater than zero
+/// * `max_delay_micros` - how long a merged call waits for more requests before running
+///   short. This is added to the latency of a request that arrives first, so it trades a
+///   wait against a fuller call
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergeConfig {
+    pub max_rows: usize,
+    #[serde(default)]
+    pub max_delay_micros: u64,
 }
 
 /// One model, and how to serve it.
@@ -184,7 +209,8 @@ enum RawBackendConfig {
 ///
 /// Splitting trades more total work for lower latency because each batch repeats per-call
 /// overhead. With ONNX Runtime, pair it with `threading.intra_op_threads: 1`; with Neuron,
-/// `backend.execution_contexts_per_replica` bounds how many pieces run concurrently.
+/// `backend.execution_contexts_per_replica` bounds how many mini batches run
+/// concurrently.
 ///
 /// **`is_fixed` is what a pinned graph needs.** A model exported with its leading
 /// dimension fixed can only be given batches of that one size, so it needs
@@ -203,6 +229,7 @@ pub struct ModelConfig {
     pub backend: BackendConfig,
     pub mini_batch_size: Option<usize>,
     pub is_fixed: bool,
+    pub merge: Option<MergeConfig>,
     pub vectorization_config: VectorizationConfig,
 }
 
@@ -221,6 +248,7 @@ struct RawModelConfig {
     mini_batch_size: Option<usize>,
     #[serde(default)]
     is_fixed: bool,
+    merge: Option<MergeConfig>,
     vectorization_config: Option<serde_json::Value>,
 }
 
@@ -315,6 +343,29 @@ impl ModelConfig {
             .into());
         }
 
+        if raw.mini_batch_size.is_some() && raw.merge.is_some() {
+            return Err(format!(
+                "model {:?} sets both \"mini_batch_size\" and \"merge\", which are opposite \
+                 moves: merging fills one call from several requests so its fixed cost is \
+                 spread over more rows, and a mini batch cuts one request up and pays that \
+                 cost again per batch. Keep \"mini_batch_size\" to split requests, or keep \
+                 \"merge\" to fill calls from them.",
+                raw.model_id
+            )
+            .into());
+        }
+
+        if let Some(merge) = raw.merge
+            && merge.max_rows == 0
+        {
+            return Err(format!(
+                "model {:?} declares \"merge.max_rows\": 0, so a merged call would carry no \
+                 rows. Give the rows one engine call should take.",
+                raw.model_id
+            )
+            .into());
+        }
+
         let Some(value) = raw.vectorization_config else {
             return Err(format!(
                 "model {:?} has no \"vectorization_config\", so nothing says how its \
@@ -336,6 +387,7 @@ impl ModelConfig {
             backend,
             mini_batch_size: raw.mini_batch_size,
             is_fixed: raw.is_fixed,
+            merge: raw.merge,
             vectorization_config,
         })
     }
@@ -696,5 +748,78 @@ mod tests {
             ModelConfig::from_json(&json)
                 .unwrap_or_else(|e| panic!("{backend} takes a float vector: {e}"));
         }
+    }
+
+    /// Asserts the two batching policies cannot both be configured.
+    ///
+    /// They are opposite moves, so a model that asked for both would have no coherent
+    /// call shape. The refusal names both fields, as the `backend` and
+    /// `execution_provider` refusal beside it does.
+    #[test]
+    fn mini_batching_and_merging_cannot_both_be_set() {
+        let json = r#"{"model_id":"m","model_path":"/models/m",
+                       "mini_batch_size":50,
+                       "merge":{"max_rows":256,"max_delay_micros":300},
+                       "vectorization_config":{"feature_order":["a"]}}"#;
+        let err = ModelConfig::from_json(json).expect_err("the two are opposites");
+        let message = err.to_string();
+        for field in ["mini_batch_size", "merge"] {
+            assert!(
+                message.contains(field),
+                "the refusal should name {field}: {message}"
+            );
+        }
+        assert!(
+            message.contains("opposite"),
+            "the refusal should say why, not just that: {message}"
+        );
+    }
+
+    /// Asserts a merge block alone is accepted and carries both of its numbers.
+    #[test]
+    fn a_merge_block_is_read_with_its_window() {
+        let json = r#"{"model_id":"m","model_path":"/models/m",
+                       "merge":{"max_rows":256,"max_delay_micros":300},
+                       "vectorization_config":{"feature_order":["a"]}}"#;
+        let config = ModelConfig::from_json(json).expect("merging alone is valid");
+        let merge = config.merge.expect("the block was set");
+        assert_eq!(merge.max_rows, 256);
+        assert_eq!(merge.max_delay_micros, 300);
+        assert_eq!(config.mini_batch_size, None);
+    }
+
+    /// Asserts the window may be left out, which runs a merged call as soon as it can.
+    #[test]
+    fn a_merge_window_defaults_to_no_wait() {
+        let json = r#"{"model_id":"m","model_path":"/models/m",
+                       "merge":{"max_rows":128},
+                       "vectorization_config":{"feature_order":["a"]}}"#;
+        let config = ModelConfig::from_json(json).expect("the window is optional");
+        assert_eq!(config.merge.expect("set").max_delay_micros, 0);
+    }
+
+    /// Asserts a merged call of no rows is refused rather than serving nothing.
+    #[test]
+    fn a_merged_call_of_zero_rows_is_refused() {
+        let json = r#"{"model_id":"m","model_path":"/models/m",
+                       "merge":{"max_rows":0},
+                       "vectorization_config":{"feature_order":["a"]}}"#;
+        let err = ModelConfig::from_json(json).expect_err("zero rows carries nothing");
+        assert!(
+            err.to_string().contains("merge.max_rows"),
+            "the refusal should name the field: {err}"
+        );
+    }
+
+    /// Asserts a model with neither batching field is left alone, which is the default
+    /// every existing configuration has.
+    #[test]
+    fn neither_batching_field_is_the_default() {
+        let json = r#"{"model_id":"m","model_path":"/models/m",
+                       "vectorization_config":{"feature_order":["a"]}}"#;
+        let config = ModelConfig::from_json(json).expect("valid");
+        assert_eq!(config.mini_batch_size, None);
+        assert_eq!(config.merge, None);
+        assert!(!config.is_fixed);
     }
 }

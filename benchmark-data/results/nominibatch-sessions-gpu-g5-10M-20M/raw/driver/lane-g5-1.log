@@ -1,0 +1,43 @@
+launched 2026-11-07T00:45:49Z for g5-1 phase=all specs=[10m:5539c97131c896db6c58088d9f9b9ee3]
+
+===== 10m (2026-11-07T00:45:49Z) =====
+2026-11-07T00:45:50Z preflight g5-1: {'type': 'g5.2xlarge', 'ami': 'ami-02a0c27a7983d4910', 'kernel': '6.12.113-138.209.amzn2023.x86_64', 'nproc': '8', 'gpu': 'NVIDIA_A10G', 'gpucount': '1', 'driver': '595.112.07', 'md5': '5539c97131c896db6c58088d9f9b9ee3', 'hushar': 'yes', 'plans': '100,500', 'image': 'yes', 'gpusampler': 'yes', 'ortso': '1.28.3', 'trtso': '10.16.1', 'cudamaj': '13', 'trtlinked': '10.16.1', 'trtmissing': '0'}
+2026-11-07T00:45:50Z preflight g5-1: OK -- g5.2xlarge, NVIDIA_A10G, driver 595.112.07, TensorRT 10.16.1 on CUDA 13 (hushar links 10.16.1), ONNX Runtime 1.28.3, 10m md5 5539c97131c896db6c58088d9f9b9ee3
+2026-11-07T00:45:50Z run=nominibatch-sessions-gpu-g5-10M-20M rev=72e7c983 host=g5-1 size=10m arms=['hushar-tensor', 'triton'] phase=all loads=[(100, 1000), (500, 200)] sessions={100: [2, 4, 8], 500: [2, 4, 8]} shapes=[100, 500] triton_parallelism={100: [2, 4, 8], 500: [2, 4, 8]} warmup=300s measured=900s/15slices settle=60s plan=whole request (no mini batch)
+2026-11-07T00:45:50Z prime 10m: 2 engine shape(s) [100, 500] on the tensor wire
+2026-11-07T00:46:31Z prime 10m r100 first pass: rc=0 25s {'offered': 2, 'achieved': 2.0, 'p50': 2.55, 'p95': 2.79, 'p99': 3.48, 'shed': 0, 'failed': 0}
+2026-11-07T00:47:10Z prime 10m r100 cached pass: rc=0 22s {'offered': 2, 'achieved': 2.0, 'p50': 2.56, 'p95': 3.01, 'p99': 3.08, 'shed': 0, 'failed': 0}
+2026-11-07T00:47:57Z prime 10m r500 first pass: rc=0 26s {'offered': 2, 'achieved': 2.0, 'p50': 8.76, 'p95': 9.26, 'p99': 10.12, 'shed': 0, 'failed': 0}
+2026-11-07T00:48:37Z prime 10m r500 cached pass: rc=0 22s {'offered': 2, 'achieved': 2.0, 'p50': 8.71, 'p95': 9.15, 'p99': 9.24, 'shed': 0, 'failed': 0}
+2026-11-07T00:48:51Z prime 10m r100: build 25.3s -> cached 22.1s
+2026-11-07T00:48:51Z prime 10m r500: build 26.0s -> cached 22.1s
+2026-11-07T00:48:51Z selection hushar-tensor: sessions {100: [2, 4, 8], 500: [2, 4, 8]} (no probe)
+2026-11-07T00:48:51Z selection triton: instances {100: [2, 4, 8], 500: [2, 4, 8]} (no probe)
+2026-11-07T00:48:51Z main: 12 cell(s) -- 100x1000 s2 [hushar-tensor], 100x1000 s4 [hushar-tensor], 100x1000 s8 [hushar-tensor], 500x200 s2 [hushar-tensor], 500x200 s4 [hushar-tensor], 500x200 s8 [hushar-tensor], 100x1000 i2 [triton], 100x1000 i4 [triton], 100x1000 i8 [triton], 500x200 i2 [triton], 500x200 i4 [triton], 500x200 i8 [triton]
+2026-11-07T00:48:51Z g5nb-hushar-tensor-10m-r100t1000-p2 start  hushar/tensor sessions=2 100rows x 1000tps = 100000 rows/s 300+900s
+2026-11-07T01:10:13Z g5nb-hushar-tensor-10m-r100t1000-p2 done   p50=2.48 p95=2.93 p99=3.27 achieved=1000.0/1000 shed=0 srvcpu=21.9 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-07T01:11:14Z g5nb-hushar-tensor-10m-r100t1000-p4 start  hushar/tensor sessions=4 100rows x 1000tps = 100000 rows/s 300+900s
+2026-11-07T01:32:13Z g5nb-hushar-tensor-10m-r100t1000-p4 done   p50=2.53 p95=3.02 p99=3.4 achieved=1000.0/1000 shed=0 srvcpu=22.2 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-07T01:33:14Z g5nb-hushar-tensor-10m-r100t1000-p8 start  hushar/tensor sessions=8 100rows x 1000tps = 100000 rows/s 300+900s
+2026-11-07T01:54:13Z g5nb-hushar-tensor-10m-r100t1000-p8 done   p50=2.5 p95=2.96 p99=3.33 achieved=1000.0/1000 shed=0 srvcpu=22.2 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-07T01:55:14Z g5nb-hushar-tensor-10m-r500t200-p2 start  hushar/tensor sessions=2 500rows x 200tps = 100000 rows/s 300+900s
+2026-11-07T02:16:13Z g5nb-hushar-tensor-10m-r500t200-p2 done   p50=8.75 p95=9.17 p99=10.61 achieved=200.0/200 shed=0 srvcpu=17.0 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-07T02:17:14Z g5nb-hushar-tensor-10m-r500t200-p4 start  hushar/tensor sessions=4 500rows x 200tps = 100000 rows/s 300+900s
+2026-11-07T02:38:13Z g5nb-hushar-tensor-10m-r500t200-p4 done   p50=8.77 p95=9.14 p99=10.12 achieved=200.0/200 shed=0 srvcpu=17.1 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-07T02:39:14Z g5nb-hushar-tensor-10m-r500t200-p8 start  hushar/tensor sessions=8 500rows x 200tps = 100000 rows/s 300+900s
+2026-11-07T03:00:13Z g5nb-hushar-tensor-10m-r500t200-p8 done   p50=8.77 p95=9.2 p99=10.35 achieved=200.0/200 shed=0 srvcpu=17.0 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-07T03:01:14Z g5nb-triton-10m-r100t1000-p2 start  triton/tensor instances=2 100rows x 1000tps = 100000 rows/s 300+900s
+2026-11-07T03:22:13Z g5nb-triton-10m-r100t1000-p2 done   p50=1.41 p95=1.72 p99=8.52 achieved=1000.0/1000 shed=0 srvcpu=9.7 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-07T03:23:14Z g5nb-triton-10m-r100t1000-p4 start  triton/tensor instances=4 100rows x 1000tps = 100000 rows/s 300+900s
+2026-11-07T03:44:13Z g5nb-triton-10m-r100t1000-p4 done   p50=1.45 p95=1.71 p99=6.12 achieved=1000.0/1000 shed=0 srvcpu=10.0 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-07T03:45:14Z g5nb-triton-10m-r100t1000-p8 start  triton/tensor instances=8 100rows x 1000tps = 100000 rows/s 300+900s
+2026-11-07T04:06:13Z g5nb-triton-10m-r100t1000-p8 done   p50=1.41 p95=1.65 p99=1.71 achieved=1000.0/1000 shed=0 srvcpu=10.4 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-07T04:07:14Z g5nb-triton-10m-r500t200-p2 start  triton/tensor instances=2 500rows x 200tps = 100000 rows/s 300+900s
+2026-11-07T04:28:15Z g5nb-triton-10m-r500t200-p2 done   p50=5.09 p95=5.31 p99=5.32 achieved=200.0/200 shed=0 srvcpu=4.2 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-07T04:29:16Z g5nb-triton-10m-r500t200-p4 start  triton/tensor instances=4 500rows x 200tps = 100000 rows/s 300+900s
+2026-11-07T04:50:15Z g5nb-triton-10m-r500t200-p4 done   p50=5.3 p95=5.32 p99=5.33 achieved=200.0/200 shed=0 srvcpu=4.3 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-07T04:51:16Z g5nb-triton-10m-r500t200-p8 start  triton/tensor instances=8 500rows x 200tps = 100000 rows/s 300+900s
+2026-11-07T05:12:15Z g5nb-triton-10m-r500t200-p8 done   p50=5.29 p95=5.31 p99=5.33 achieved=200.0/200 shed=0 srvcpu=4.5 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-07T05:13:16Z lane complete
+===== 10m done rc=0 (2026-11-07T05:13:16Z) =====
+ALL DONE rc=0 2026-11-07T05:13:16Z

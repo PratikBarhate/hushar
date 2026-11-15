@@ -1,0 +1,61 @@
+{
+  "run": "nominibatch-sessions-gpu-g5-10M-20M",
+  "size": "10m",
+  "host": "g5-1",
+  "rev": "72e7c983",
+  "pinned": false,
+  "per_rung": true,
+  "mini_batch": null,
+  "sessions": {
+    "100": [
+      2,
+      4,
+      8
+    ],
+    "500": [
+      2,
+      4,
+      8
+    ]
+  },
+  "selection": {
+    "hushar-tensor": {
+      "parallelism": null,
+      "parallelism_kind": "sessions",
+      "per_rung": true,
+      "plan": {
+        "100": [
+          2,
+          4,
+          8
+        ],
+        "500": [
+          2,
+          4,
+          8
+        ]
+      },
+      "rule": "one cell per session count; no mini batch, so sessions_per_request is 1 and the session count is the requests in flight",
+      "probes": []
+    },
+    "triton": {
+      "parallelism": null,
+      "parallelism_kind": "instances",
+      "per_rung": true,
+      "plan": {
+        "100": [
+          2,
+          4,
+          8
+        ],
+        "500": [
+          2,
+          4,
+          8
+        ]
+      },
+      "rule": "one cell per instance_group count, matching hushar's session counts",
+      "probes": []
+    }
+  }
+}

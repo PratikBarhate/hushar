@@ -1,0 +1,22 @@
+{
+  "bind_address": "0.0.0.0",
+  "inference_log": {
+    "batch_size": 100,
+    "max_sends_in_flight": 4,
+    "sample_rate": 0.2,
+    "uri": "s3://<bucket>/inference-logs/featurewire-log20-g5-trn1-10M-20M/g5l20-hushar-20m-r500t150-p2"
+  },
+  "metrics": {
+    "batch_size": 100,
+    "cloudwatch_namespace": "HusharBench",
+    "max_sends_in_flight": 4
+  },
+  "model_config_path": "/tmp/hushar-server/g5l20-hushar-20m-r500t150-p2.model.json",
+  "port_number": 8279,
+  "threading": {
+    "connection_concurrency": 512,
+    "intra_op_threads": 1,
+    "sessions_per_model": 2,
+    "worker_threads": 4
+  }
+}

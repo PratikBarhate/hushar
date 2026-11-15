@@ -1,0 +1,16 @@
+hushar: model c9gmb-20m-r100t100-mb10-s4-rep2 loaded on onnxruntime/CPU (runtime 1.28.0)
+  inputs   : features FP32[690]
+  outputs  : scores FP32[5]
+  features : 1 binding(s)
+             features FP32[690] <- 210 features transformed and concatenated [emb_review, emb_category, emb_sentiment, emb_region, oh_color, oh_size, oh_channel, oh_status, ... +202 more]
+  overlap  : 64 mini batch(es) at once per session, 4 on distinct compute unit(s)
+  overlap  : 60 of them exceed what this pool's width affords, so they share the pool by time-slicing it rather than a second unit computing
+  overlap  : 64 configured by "threading.concurrency_per_session", replacing the 4 this host derives from its core count and a pool of 16
+  plan     : mini batches, shared session -- rows cut into mini batches of 10, scored at the same time on the leased session, the last however many remain
+hushar: metrics -> HusharBench [every 100 batches, 4 in flight]
+hushar: inference logs -> s3://<bucket>/inference-logs/minibatch-size-cpu-c9g-10M-20M/c9gmb-20m-r100t100-mb10-s4-rep2 [Amazon S3, 16 prefix shard(s), every 500 batches, 4 in flight, logging 1 request in 5 (20.0%)]
+hushar: threads -> 32 async, 4 concurrent request(s) x 1 session(s) each x 16 intra-op x 4 ONNX Runtime session(s) = 64 compute on 64 core(s)
+  spin   : idle intra-op and inter-op threads sleep
+  admit  : 512 in flight per connection
+  pool   : 4 blocking thread(s) for 4 session(s) per model, each session with its own intra-op pool; a request leases an idle group while it scores
+hushar: listening on 0.0.0.0:8279

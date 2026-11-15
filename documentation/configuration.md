@@ -109,9 +109,47 @@ partition column — declare it and ignore it, or project it over `0`..`prefix_s
 | `cloudwatch_namespace` | no | unset → stderr | when set, must contain a non-whitespace character |
 | `batch_size` | no | `500` | greater than zero; CloudWatch caps the effective value at `333` |
 | `max_sends_in_flight` | no | `4` | `1..=u32::MAX`; used only by CloudWatch |
+| `detailed` | no | `false` | publish the scheduling measures as well as the three stage timings |
 
 CloudWatch metrics include a `ModelId` dimension. Namespace permissions are checked when
 metrics are published, not at startup.
+
+#### What a request reports
+
+Three measures are published always. `detailed` adds six more, and **triples the data
+points each request emits**, which is why it is off by default: the metric path has been
+observed to drop batches at the smaller volume under heavy load.
+
+| Measure | Unit | Detailed | Meaning |
+|---|---|:-:|---|
+| `VectorizationTime` | µs | | building the model's input from the request's features |
+| `ToTensorTime` | µs | | handing that input to the backend |
+| `InferenceTime` | µs | | the engine call. Across mini batches, the **longest single call** |
+| `RequestTime` | µs | ● | the request's own span, start to scores |
+| `LeaseWaitTime` | µs | ● | waiting for a session; `0` on a merged request |
+| `EngineCalls` | count | ● | engine calls the request became |
+| `BallastRows` | count | ● | rows computed and discarded to fill a fixed call shape |
+| `CallFillPercent` | percent | ● | real rows as a share of the rows sent to the engine |
+| `QueueDepth` | count | ● | requests waiting when this one joined a merge queue |
+
+`InferenceTime` is a **critical path, not device work**: when mini batches overlap, or when
+a call is shared between merged requests, no part of that call's duration belongs to one
+request. `RequestTime` is the figure to compare against a client-side latency.
+
+#### Reading fill and ballast
+
+These two tell you whether a merge configuration is earning its keep. The same model under
+two windows, serving 60 req/s of 40-row requests into `max_rows: 256`:
+
+| `max_delay_micros` | `CallFillPercent` | `BallastRows` | `RequestTime` |
+|---:|---:|---:|---:|
+| 500 | 15% | 216 | 1.1 ms |
+| 20000 | 30% | 178 | 13.6 ms |
+
+Waiting 40× longer doubled the fill and cost 12× the latency, and even then 70% of every
+call was ballast. That is a `max_rows` far too wide for this load: the right move is a
+smaller call, not a longer wait. Without these two measures the configuration looks fine,
+because latency and throughput both hold.
 
 <a id="what-the-observability-levers-cost"></a>
 ### What the observability levers cost
@@ -151,8 +189,23 @@ an unknown ID fails. Each model has its own artifact and vectorization configura
 values may be at most 1024 bytes. Do not set ORT spinning entries in `session_config` when
 `allow_spinning` is also set.
 
-ORT-only fields have no effect on a Neuron-only deployment. See
+#### Sessions and request lanes
+
+One session serves one request at a time, so `sessions_per_model` is both the model copies
+loaded and the requests that can score at once:
+
+```mermaid
+flowchart LR
+  s["sessions_per_model: 4"] --> l["4 requests at once<br/>1 session each"]
+  l --> t["4 model copies,<br/>4 thread pools"]
+  style l fill:#d4edda
+```
+
+Raising it buys throughput at one model copy and one thread pool each. For ONNX Runtime the
+CPU load is `sessions_per_model × intra_op_threads`, so the two are chosen together — see
 [threads-and-cores.md](threads-and-cores.md) for tuning guidance.
+
+ORT-only fields have no effect on a Neuron-only deployment.
 
 ## `model.json`
 
@@ -164,9 +217,78 @@ ORT-only fields have no effect on a Neuron-only deployment. See
 | `execution_provider` | no | `cpu` | legacy top-level ORT provider; cannot be combined with `backend` |
 | `mini_batch_size` | no | unset | positive row count for splitting requests into model calls |
 | `is_fixed` | no | `false` | pads the final mini-batch; requires `mini_batch_size` when true |
+| `merge` | no | unset | merge rows across requests into one call; cannot be combined with `mini_batch_size` |
 | `vectorization_config` | yes | — | maps request features to model inputs |
 
 The backend is selected by configuration, not by the model filename.
+
+### Mini-batching or merging, never both
+
+`mini_batch_size` and `merge` are opposite moves, so a model configures one or the other:
+
+```mermaid
+flowchart LR
+  r["request<br/>100 rows"] --> mb["mini_batch_size: 50<br/>one request → two calls"]
+  r2["3 requests<br/>40 rows each"] --> mg["merge.max_rows: 128<br/>three requests → one call"]
+  style mb fill:#cfe2ff
+  style mg fill:#d4edda
+```
+
+Merging fills a call so its fixed cost is spread over more rows. A mini batch divides a
+call and pays that cost again per batch. Setting both is refused at startup:
+
+```text
+model "m" sets both "mini_batch_size" and "merge", which are opposite moves: merging fills
+one call from several requests so its fixed cost is spread over more rows, and a mini batch
+cuts one request up and pays that cost again per batch. Keep "mini_batch_size" to split
+requests, or keep "merge" to fill calls from them.
+```
+
+A mini batch is also refused on a backend whose concurrent calls queue on a device, unless
+the model's own graph demands that row count. See
+[hardware.md](hardware.md#mini-batching-on-a-device-provider).
+
+<a id="merge"></a>
+### `merge`
+
+| Field | Required | Default | Meaning |
+|---|---:|---|---|
+| `max_rows` | yes | — | rows in one engine call; greater than zero |
+| `max_delay_micros` | no | `0` | how long a call waits for more requests before running short |
+
+```json
+"merge": { "max_rows": 256, "max_delay_micros": 300 }
+```
+
+Rows from concurrent requests are collected into one call, and each caller gets its own
+rows back:
+
+```mermaid
+flowchart LR
+  a["request A<br/>100 rows"] --> q[["queue"]]
+  b["request B<br/>80 rows"] --> q
+  c["request C<br/>40 rows"] --> q
+  q --> call[["one call<br/>256 rows<br/>36 ballast"]]
+  call --> sa["A's 100 scores"]
+  call --> sb["B's 80 scores"]
+  call --> sc["C's 40 scores"]
+  style call fill:#cfe2ff
+```
+
+Three things to know before setting it:
+
+- **Every call is padded to exactly `max_rows`.** The engine is always shown one shape, so
+  a provider that compiles per shape builds one engine instead of one per observed width.
+  A call that is not full computes ballast rows and throws their scores away.
+- **`max_delay_micros` is added to the latency of whichever request arrives first.** The
+  default of `0` never waits: it takes whatever is already queued. That is safe to enable
+  but merges nothing under light load, which is when merging has least to offer anyway.
+- **A request larger than `max_rows` spans consecutive calls.** Its rows still come back
+  in order. That is the cap doing its job, not mini batching.
+
+A pinned graph or a NEFF loads against `max_rows`, since a merged call always presents
+that many rows. A `max_rows` that disagrees with a pinned leading axis is refused when the
+model loads.
 
 ### ONNX Runtime backend
 

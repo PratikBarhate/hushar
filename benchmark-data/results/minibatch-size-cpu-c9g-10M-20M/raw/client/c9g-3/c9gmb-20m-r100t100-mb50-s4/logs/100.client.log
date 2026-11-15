@@ -1,0 +1,38 @@
+hushar benchmark [cell @ 100 req/s]
+  server    : http://172.31.46.63:8279
+  model     : bench-vectorized on cpu
+  features  : 210 per row
+  asking    : whichever the server's split chooses
+  offering  : 100 req/s x 100 row(s), 512 in flight (pinned), 300s warmup + 900s measured, reported in 15 slices
+  payload   : 108888 bytes per request, 1088.9 bytes per row, 210 feature(s)
+  warmup done, measuring
+
+  bench-vectorized on cpu
+  ---------------------------------------------
+  achieved      :     100.0 req/s   (10000.1 rows/s)
+  offered       :       100 req/s
+  measured      :     90001 requests  (of 120000 that succeeded overall)
+  latency  p50  :     32.75 ms
+           p95  :     34.03 ms
+           p99  :     34.75 ms
+           max  :     46.83 ms
+           mean :     32.71 ms
+  failed        :         0
+  shed          :         0  (offered but never sent: 512 in flight was the cap)
+
+  reported as 15 slice(s) of 60s, under one continuous 900s load:
+  slice 1/15 : n=6000 achieved=100.00 p50=32.61 p95=33.91 p99=34.65 shed=0 failed=0
+  slice 2/15 : n=6000 achieved=100.00 p50=32.64 p95=33.90 p99=34.61 shed=0 failed=0
+  slice 3/15 : n=6000 achieved=100.00 p50=32.66 p95=33.92 p99=34.70 shed=0 failed=0
+  slice 4/15 : n=6000 achieved=100.00 p50=32.66 p95=33.95 p99=34.63 shed=0 failed=0
+  slice 5/15 : n=6000 achieved=100.00 p50=32.66 p95=33.95 p99=34.55 shed=0 failed=0
+  slice 6/15 : n=6000 achieved=100.00 p50=32.70 p95=33.98 p99=34.67 shed=0 failed=0
+  slice 7/15 : n=6000 achieved=100.00 p50=32.82 p95=34.12 p99=34.90 shed=0 failed=0
+  slice 8/15 : n=6000 achieved=100.00 p50=32.82 p95=34.11 p99=34.78 shed=0 failed=0
+  slice 9/15 : n=6000 achieved=100.00 p50=32.83 p95=34.09 p99=34.73 shed=0 failed=0
+  slice 10/15 : n=6000 achieved=100.00 p50=32.82 p95=34.11 p99=34.81 shed=0 failed=0
+  slice 11/15 : n=6000 achieved=100.00 p50=32.80 p95=34.07 p99=34.78 shed=0 failed=0
+  slice 12/15 : n=6000 achieved=100.00 p50=32.81 p95=34.04 p99=34.77 shed=0 failed=0
+  slice 13/15 : n=6000 achieved=100.00 p50=32.80 p95=34.10 p99=34.82 shed=0 failed=0
+  slice 14/15 : n=6000 achieved=100.00 p50=32.82 p95=34.12 p99=34.85 shed=0 failed=0
+  slice 15/15 : n=6001 achieved=100.02 p50=32.77 p95=34.08 p99=34.76 shed=0 failed=0
