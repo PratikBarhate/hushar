@@ -1,0 +1,21 @@
+launched 2026-11-17T03:36:54Z for g5-2 phase=all specs=[100m:eee2644bd65cd23543ca806f102f5062:bf16]
+
+===== 100m bf16 (2026-11-17T03:36:54Z) =====
+2026-11-17T03:36:55Z preflight g5-2: {'type': 'g5.2xlarge', 'ami': 'ami-0bd460dfa11a51c74', 'kernel': '6.12.115-140.210.amzn2023.x86_64', 'nproc': '8', 'gpu': 'NVIDIA_A10G', 'gpucount': '1', 'driver': '595.112.07', 'md5': 'eee2644bd65cd23543ca806f102f5062', 'hushar': 'yes', 'plans': '100,500', 'image': 'yes', 'gpusampler': 'yes', 'ortso': '1.28.3', 'trtso': '10.16.1', 'cudamaj': '13', 'trtlinked': '10.16.1', 'trtmissing': '0'}
+2026-11-17T03:36:55Z preflight g5-2: OK -- g5.2xlarge, NVIDIA_A10G, driver 595.112.07, TensorRT 10.16.1 on CUDA 13 (hushar links 10.16.1), ONNX Runtime 1.28.3, 100m md5 eee2644bd65cd23543ca806f102f5062
+2026-11-17T03:36:55Z run=nominibatch-precision-gpu-g5-100M rev=e6265e6e host=g5-2 size=100m precision=bf16 arms=['hushar-tensor', 'triton'] phase=all loads=[(100, 200), (500, 40)] sessions={100: [2], 500: [2]} shapes=[100, 500] triton_parallelism={100: [2], 500: [2]} warmup=300s measured=900s/15slices settle=60s plan=whole request (no mini batch) precision=BF16 enabled in the TensorRT builder on both arms (trt_bf16_enable=1 on hushar, --bf16 on trtexec); additive, so BF16 is permitted per layer and chosen on timing, not forced
+2026-11-17T03:36:56Z prime 100m bf16 already done
+2026-11-17T03:36:56Z selection hushar-tensor: sessions {100: [2], 500: [2]} (no probe)
+2026-11-17T03:36:56Z selection triton: instances {100: [2], 500: [2]} (no probe)
+2026-11-17T03:36:57Z main: 4 cell(s) -- 100x200 s2 [hushar-tensor], 500x40 s2 [hushar-tensor], 100x200 i2 [triton], 500x40 i2 [triton]
+2026-11-17T03:36:57Z g5q-hushar-tensor-100m-bf16-r100t200-p2 start  hushar/tensor sessions=2 100rows x 200tps = 20000 rows/s 300+900s
+2026-11-17T03:58:13Z g5q-hushar-tensor-100m-bf16-r100t200-p2 done   p50=6.31 p95=6.69 p99=6.96 achieved=200.0/200 shed=0 srvcpu=15.1 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-17T03:59:14Z g5q-hushar-tensor-100m-bf16-r500t40-p2 start  hushar/tensor sessions=2 500rows x 40tps = 20000 rows/s 300+900s
+2026-11-17T04:20:13Z g5q-hushar-tensor-100m-bf16-r500t40-p2 done   p50=24.2 p95=25.65 p99=26.19 achieved=40.0/40 shed=0 srvcpu=12.1 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-17T04:21:14Z g5q-triton-100m-bf16-r100t200-p2 start  triton/tensor instances=2 100rows x 200tps = 20000 rows/s 300+900s
+2026-11-17T04:42:13Z g5q-triton-100m-bf16-r100t200-p2 done   p50=5.3 p95=5.63 p99=5.69 achieved=200.0/200 shed=0 srvcpu=5.1 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-17T04:43:14Z g5q-triton-100m-bf16-r500t40-p2 start  triton/tensor instances=2 500rows x 40tps = 20000 rows/s 300+900s
+2026-11-17T05:04:15Z g5q-triton-100m-bf16-r500t40-p2 done   p50=20.25 p95=20.51 p99=20.65 achieved=40.0/40 shed=0 srvcpu=2.7 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-17T05:05:16Z lane complete
+===== 100m bf16 done rc=0 (2026-11-17T05:05:16Z) =====
+ALL DONE rc=0 2026-11-17T05:05:17Z

@@ -1,0 +1,21 @@
+launched 2026-11-17T16:14:11Z for trn1-2 phase=all specs=[100m:bf16]
+
+===== 100m bf16 (2026-11-17T16:14:11Z) =====
+2026-11-17T16:14:12Z preflight trn1-2: {'type': 'trn1.2xlarge', 'ami': 'ami-0dee875b4887bc141', 'kernel': '6.17.0-1019-aws', 'nproc': '8', 'dev': '1', 'cores': '2', 'nrt': 'yes', 'monitor': 'yes', 'sampler': 'yes', 'hushar': 'yes', 'provider': 'neuron', 'venv': 'yes', 'nrtpath': 'libnrt.so.1'}
+2026-11-17T16:14:12Z preflight trn1-2: OK -- trn1.2xlarge, 1 neuron device(s), libnrt.so.1, kernel 6.17.0-1019-aws, ami ami-0dee875b4887bc141
+2026-11-17T16:14:12Z run=featurewire-log20-prec-g5-trn1-100M rev=4c25e535-dirty host=trn1-2 size=100m target=100M phase=all loads=[(100, 200), (500, 40), (100, 70), (500, 10), (100, 100), (500, 20)] mini_batch=rows (no split) sessions=[2] shapes=[100, 500] wire=features/210 vectorize=server cores_per_replica=1 contexts=1 sample_rate=0.2 log=s3://<bucket>/inference-logs/featurewire-log20-prec-g5-trn1-100M log_rows_per_object=50000 log_sends=4 candidate=none warmup=300s measured=900s/15slices settle=60s
+2026-11-17T16:14:12Z prime 100m/bf16 already done; carrying the configurations to the client
+2026-11-17T16:14:19Z main: 6 cell(s) -- 100x200 mb100/1p s2g1/2lane, 500x40 mb500/1p s2g1/2lane, 100x70 mb100/1p s2g1/2lane, 500x10 mb500/1p s2g1/2lane, 100x100 mb100/1p s2g1/2lane, 500x20 mb500/1p s2g1/2lane
+2026-11-17T16:14:20Z trn1fwp-100m-bf16-r100t200-s2 already measured, skipping
+2026-11-17T16:14:21Z trn1fwp-100m-bf16-r500t40-s2 already measured, skipping
+2026-11-17T16:14:22Z trn1fwp-100m-bf16-r100t70-s2 start  mb=100/1p sessions=2 (1/core) groups_of=1 lanes=2 ctx=1 100rows x 70tps = 7000 rows/s 300+900s
+2026-11-17T16:35:15Z trn1fwp-100m-bf16-r100t70-s2 done   p50=16.46 p95=16.73 p99=16.81 achieved=70.0/70 shed=0 srvcpu=14.8 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-17T16:36:16Z trn1fwp-100m-bf16-r500t10-s2 start  mb=500/1p sessions=2 (1/core) groups_of=1 lanes=2 ctx=1 500rows x 10tps = 5000 rows/s 300+900s
+2026-11-17T16:57:17Z trn1fwp-100m-bf16-r500t10-s2 done   p50=75.14 p95=75.38 p99=75.61 achieved=10.0/10 shed=0 srvcpu=9.7 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-17T16:58:17Z trn1fwp-100m-bf16-r100t100-s2 start  mb=100/1p sessions=2 (1/core) groups_of=1 lanes=2 ctx=1 100rows x 100tps = 10000 rows/s 300+900s
+2026-11-17T17:19:15Z trn1fwp-100m-bf16-r100t100-s2 done   p50=16.44 p95=16.72 p99=16.8 achieved=100.0/100 shed=0 srvcpu=20.7 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-17T17:20:16Z trn1fwp-100m-bf16-r500t20-s2 start  mb=500/1p sessions=2 (1/core) groups_of=1 lanes=2 ctx=1 500rows x 20tps = 10000 rows/s 300+900s
+2026-11-17T17:41:17Z trn1fwp-100m-bf16-r500t20-s2 done   p50=75.08 p95=76.03 p99=76.22 achieved=20.0/20 shed=0 srvcpu=19.2 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-17T17:42:18Z lane complete
+===== 100m bf16 done rc=0 (2026-11-17T17:42:18Z) =====
+ALL DONE rc=0 2026-11-17T17:42:18Z

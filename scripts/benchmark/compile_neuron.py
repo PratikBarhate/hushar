@@ -138,25 +138,101 @@ def isolate_neff_cache(cache_dir):
     os.environ["TORCH_NEURONX_NEFF_CACHE_DIR"] = str(cache_dir)
 
 
-def compile_model(torch_neuronx, model, example, workdir):
+# --------------------------------------------------------------- precision
+#
+# THE PRECISION IS SPELLED OUT ON BOTH ARMS, AND NOT BECAUSE THE DEFAULT IS WRONG.
+#
+# `neuronx-cc --auto-cast` defaults to `matmult` according to the compiler's CLI
+# reference, which would mean a compile passing no flag casts FP32 matrix multiplies to
+# BF16. THAT DEFAULT DOES NOT REACH THIS CODE PATH. `torch_neuronx.trace` builds its own
+# argument list, and a measured three-way comparison on a trn1.2xlarge -- no flag,
+# `--auto-cast=none`, `--auto-cast=matmult` -- showed the first two producing a
+# BYTE-IDENTICAL NEFF and an identical compiled-versus-PyTorch error, while `matmult`
+# produced a NEFF 0.40x the size and an error three orders larger. The evidence is at
+# `benchmark-data/results/featurewire-log20-prec-g5-trn1-100M/raw/probe/`.
+#
+# So every NEFF this script built before `--precision` existed was genuinely FP32, and the
+# `"precision": "fp32"` those runs recorded was correct. The reason to pass the flag anyway
+# is narrower and still worth it: a precision label must not rest on an undocumented
+# framework default that a future release can change without saying so. The flag makes the
+# arm explicit, and `trace_error_bounds` below makes it CHECKABLE -- which is what caught
+# the mistaken claim that the default had been biting all along.
+#
+# `matmult` rather than `all` for the BF16 arm because it casts the matrix-multiply
+# engine's operations and leaves normalization and accumulation alone, which is the same
+# division TensorRT's `--bf16` makes on the GPU. That correspondence is the point: it is
+# what lets an A10G BF16 row and a Trainium BF16 row be read against each other. `all`
+# would cast the elementwise operations too, which is more aggressive than the GPU arm,
+# so it is deliberately not used here.
+PRECISIONS = {
+    "fp32": dict(
+        auto_cast="none",
+        auto_cast_type=None,
+        # The compiled-versus-PyTorch error `main` already measures, used as the PROOF
+        # that the flag took effect. FP32 trace error is ~1e-6 on this architecture, so a
+        # ceiling an order of magnitude above that catches a cast that leaked in while
+        # leaving room for ordinary accumulation-order noise.
+        max_trace_error=1e-4,
+        min_trace_error=0.0,
+        note="--auto-cast=none, so every operation keeps the dtype the model declares",
+    ),
+    "bf16": dict(
+        auto_cast="matmult",
+        auto_cast_type="bf16",
+        # BF16 carries ~3 decimal digits, so casting the matmuls moves the logit error
+        # from ~1e-6 to between 1e-4 and 1e-2 depending on depth -- measured at 6.9e-04
+        # over 2 layers and 2.3e-03 over 31. A FLOOR is therefore the positive proof the
+        # cast applied: a "bf16" NEFF whose error is still ~1e-6 was compiled as FP32,
+        # which is exactly the failure this table exists to prevent. The ceiling catches a
+        # cast that went further than intended, or a graph that lost its dynamic range.
+        max_trace_error=5.0,
+        min_trace_error=1e-4,
+        note=("--auto-cast=matmult --auto-cast-type=bf16, so the matrix-multiply engine "
+              "runs in BF16 and normalization and accumulation stay FP32 -- the same "
+              "division TensorRT's --bf16 makes on the GPU"),
+    ),
+}
+
+
+def compile_model(torch_neuronx, model, example, workdir, precision):
     """Compiles with the trace options the installed Neuron release supports.
 
     `trace` compiles the parameters in as constants and emits the NEFF into
     `compiler_workdir`, which is why that directory is retained: it is both the
     diagnostic trail and where the artifact is found.
+
+    Returns the compiled module, its output, and the compiler arguments that were
+    actually passed -- the last of those because the precision claim rests on them and a
+    record of what was intended is not a record of what was sent.
     """
     if not hasattr(torch_neuronx, "trace"):
         raise RuntimeError(DYNAMO_REFUSAL.format(
             version=getattr(torch_neuronx, "__version__", "unknown")))
+    spec = PRECISIONS[precision]
+    args = ["--model-type=transformer", f"--auto-cast={spec['auto_cast']}"]
+    if spec["auto_cast_type"]:
+        args.append(f"--auto-cast-type={spec['auto_cast_type']}")
+
     parameters = inspect.signature(torch_neuronx.trace).parameters
     options = {}
     if "compiler_workdir" in parameters:
         options["compiler_workdir"] = str(workdir)
-    if "compiler_args" in parameters:
-        options["compiler_args"] = ["--model-type=transformer"]
+    # REFUSED RATHER THAN COMPILED WITHOUT IT. A torch_neuronx whose `trace` takes no
+    # `compiler_args` would drop the flag and hand back a NEFF built on the default
+    # `matmult` -- a BF16-matmul graph that this script would then label with whatever
+    # `--precision` asked for. That is the one outcome worse than failing.
+    if "compiler_args" not in parameters:
+        raise RuntimeError(
+            f"this torch_neuronx.trace takes no `compiler_args`, so --auto-cast cannot "
+            f"be passed and the precision of the NEFF would be whatever the compiler "
+            f"defaults to (`matmult`, i.e. BF16 matmuls) rather than the requested "
+            f"{precision}. Refusing to write a NEFF whose recorded precision would be a "
+            f"guess."
+        )
+    options["compiler_args"] = args
     compiled = torch_neuronx.trace(model, example, **options)
     with torch.no_grad():
-        return compiled, compiled(example)
+        return compiled, compiled(example), args
 
 
 def only_neff(workdir):
@@ -184,6 +260,16 @@ def main():
     parser.add_argument(
         "--work-dir",
         help="compiler work directory; defaults beside the output NEFF",
+    )
+    parser.add_argument(
+        "--precision",
+        default="fp32",
+        choices=sorted(PRECISIONS),
+        help=(
+            "fp32 compiles with --auto-cast=none; bf16 with --auto-cast=matmult "
+            "--auto-cast-type=bf16. The flag is always passed: the compiler's own "
+            "default is matmult, so omitting it produces BF16 matmuls regardless"
+        ),
     )
     args = parser.parse_args()
     if args.batch_size < 1:
@@ -256,8 +342,12 @@ def main():
     print(f"compiler: {executable}")
     print(f"compiler version: {found_compiler or 'not reported'}")
     print(f"torch_neuronx: {getattr(torch_neuronx, '__version__', 'unknown')}")
+    print(f"precision: {args.precision} -- {PRECISIONS[args.precision]['note']}")
 
-    compiled, actual = compile_model(torch_neuronx, model, example, workdir)
+    compiled, actual, compiler_args = compile_model(
+        torch_neuronx, model, example, workdir, args.precision
+    )
+    print(f"compiler args: {' '.join(compiler_args)}")
     compiled.save(str(workdir / f"{stem}.pt"))
     with torch.no_grad():
         expected = model(example)
@@ -268,6 +358,35 @@ def main():
     if tuple(actual.shape) != tuple(expected.shape):
         raise RuntimeError(
             f"compiled model returned {tuple(actual.shape)}, expected {tuple(expected.shape)}"
+        )
+
+    # THE PRECISION IS PROVED BY THE ERROR, NOT BY THE FLAG BEING PASSED. A flag the
+    # compiler ignored, a stale cache entry, or a work directory holding somebody else's
+    # NEFF would all leave `--precision` recorded as asked while the arithmetic ran at
+    # another width -- and two arms that differ only in a metadata string would make the
+    # whole comparison meaningless while every other gate passed.
+    #
+    # BF16 keeps ~3 decimal digits, so casting the matmuls moves the worst logit error
+    # from ~1e-6 to ~1e-2: four orders of magnitude, far outside any accumulation-order
+    # noise. So the FLOOR is what says the cast applied and the CEILING is what says it
+    # did not go further than asked. Both are checked, in both directions, here -- before
+    # the NEFF is written, let alone published to the cache where later lanes restore it.
+    limits = PRECISIONS[args.precision]
+    if maximum_error < limits["min_trace_error"]:
+        raise RuntimeError(
+            f"--precision {args.precision} asked for {limits['note']}, but the "
+            f"compiled-versus-PyTorch error is {maximum_error:.3g}, BELOW the "
+            f"{limits['min_trace_error']:.3g} floor that a real cast produces. The graph "
+            f"was almost certainly compiled at FP32 and would be an FP32 NEFF wearing a "
+            f"{args.precision} label -- which is exactly the mislabelling that every "
+            f"campaign before this one published."
+        )
+    if maximum_error > limits["max_trace_error"]:
+        raise RuntimeError(
+            f"--precision {args.precision} produced a compiled-versus-PyTorch error of "
+            f"{maximum_error:.3g}, ABOVE the {limits['max_trace_error']:.3g} ceiling. "
+            f"The cast went further than requested or the graph lost its dynamic range; "
+            f"a NEFF this far from the reference model is not measuring the same model."
         )
 
     source = only_neff(workdir)
@@ -304,7 +423,32 @@ def main():
         "torch": torch.__version__,
         "torch_neuronx": getattr(torch_neuronx, "__version__", "unknown"),
         "neuronx_cc": found_compiler,
-        "precision": "fp32",
+        # THE PRECISION, AND THE FLAGS THAT MADE IT. Earlier campaigns wrote "fp32"
+        # here as a LITERAL while passing no --auto-cast at all. That label turned out to
+        # be CORRECT -- `torch_neuronx.trace` does not inherit the compiler CLI's
+        # `matmult` default, which a measured three-way comparison confirmed -- but it was
+        # correct by luck rather than by construction, and nothing in the artifact said
+        # so. The flags are recorded beside the name so the claim is checkable from the
+        # artifact itself, and `trace_error_bounds` records the window the error was
+        # required to fall in for the label to be allowed.
+        "precision": args.precision,
+        "auto_cast": PRECISIONS[args.precision]["auto_cast"],
+        "auto_cast_type": PRECISIONS[args.precision]["auto_cast_type"],
+        "compiler_args": compiler_args,
+        "precision_note": PRECISIONS[args.precision]["note"],
+        "trace_error_bounds": [PRECISIONS[args.precision]["min_trace_error"],
+                               PRECISIONS[args.precision]["max_trace_error"]],
+        "auto_cast_default_note": (
+            "neuronx-cc's CLI reference gives --auto-cast a default of `matmult`, but "
+            "torch_neuronx.trace does NOT inherit it: compiling one model with no flag, "
+            "with --auto-cast=none and with --auto-cast=matmult produced a "
+            "byte-identical NEFF for the first two and a 0.40x NEFF with a "
+            "three-orders-larger trace error for the third. So a NEFF with no "
+            "`auto_cast` key in its metadata was built on the framework default, which "
+            "IS FP32, and its `precision` field is right; it simply is not "
+            "self-evidencing. Both arms here pass the flag so the label rests on the "
+            "artifact rather than on a framework default."
+        ),
         # The route is recorded because it CHANGED, and a NEFF compiled one way is not
         # evidently the same artifact as one compiled another. `config-sweep-neuron-trn1-
         # 10M-50M` used torch_neuronx.trace, which no longer exists in torch-neuronx 2.14.

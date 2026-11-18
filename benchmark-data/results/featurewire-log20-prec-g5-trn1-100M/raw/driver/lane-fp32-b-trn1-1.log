@@ -1,0 +1,17 @@
+launched 2026-11-17T16:14:00Z for trn1-1 phase=all specs=[100m:fp32]
+
+===== 100m fp32 (2026-11-17T16:14:00Z) =====
+2026-11-17T16:14:01Z preflight trn1-1: {'type': 'trn1.2xlarge', 'ami': 'ami-0dee875b4887bc141', 'kernel': '6.17.0-1019-aws', 'nproc': '8', 'dev': '1', 'cores': '2', 'nrt': 'yes', 'monitor': 'yes', 'sampler': 'yes', 'hushar': 'yes', 'provider': 'neuron', 'venv': 'yes', 'nrtpath': 'libnrt.so.1'}
+2026-11-17T16:14:01Z preflight trn1-1: OK -- trn1.2xlarge, 1 neuron device(s), libnrt.so.1, kernel 6.17.0-1019-aws, ami ami-0dee875b4887bc141
+2026-11-17T16:14:01Z run=featurewire-log20-prec-g5-trn1-100M rev=4c25e535-dirty host=trn1-1 size=100m target=100M phase=all loads=[(100, 100), (500, 20), (100, 70), (500, 10)] mini_batch=rows (no split) sessions=[2] shapes=[100, 500] wire=features/210 vectorize=server cores_per_replica=1 contexts=1 sample_rate=0.2 log=s3://<bucket>/inference-logs/featurewire-log20-prec-g5-trn1-100M log_rows_per_object=50000 log_sends=4 candidate=none warmup=300s measured=900s/15slices settle=60s
+2026-11-17T16:14:01Z prime 100m/fp32 already done; carrying the configurations to the client
+2026-11-17T16:14:10Z main: 4 cell(s) -- 100x100 mb100/1p s2g1/2lane, 500x20 mb500/1p s2g1/2lane, 100x70 mb100/1p s2g1/2lane, 500x10 mb500/1p s2g1/2lane
+2026-11-17T16:14:10Z trn1fwp-100m-fp32-r100t100-s2 already measured, skipping
+2026-11-17T16:14:11Z trn1fwp-100m-fp32-r500t20-s2 already measured, skipping
+2026-11-17T16:14:12Z trn1fwp-100m-fp32-r100t70-s2 start  mb=100/1p sessions=2 (1/core) groups_of=1 lanes=2 ctx=1 100rows x 70tps = 7000 rows/s 300+900s
+2026-11-17T16:35:15Z trn1fwp-100m-fp32-r100t70-s2 done   p50=22.74 p95=23.02 p99=23.1 achieved=70.0/70 shed=0 srvcpu=20.2 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-17T16:36:16Z trn1fwp-100m-fp32-r500t10-s2 start  mb=500/1p sessions=2 (1/core) groups_of=1 lanes=2 ctx=1 500rows x 10tps = 5000 rows/s 300+900s
+2026-11-17T16:57:18Z trn1fwp-100m-fp32-r500t10-s2 done   p50=117.22 p95=118.16 p99=118.36 achieved=10.0/10 shed=0 srvcpu=15.0 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-17T16:58:19Z lane complete
+===== 100m fp32 done rc=0 (2026-11-17T16:58:19Z) =====
+ALL DONE rc=0 2026-11-17T16:58:19Z

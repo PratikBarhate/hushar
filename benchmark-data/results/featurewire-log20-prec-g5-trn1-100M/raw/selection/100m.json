@@ -1,0 +1,49 @@
+{
+  "run": "featurewire-log20-prec-g5-trn1-100M",
+  "size": "100m",
+  "host": "g5-2",
+  "rev": "4c25e535-dirty",
+  "pinned": false,
+  "per_rate": true,
+  "mini_batch": null,
+  "sessions": {
+    "100": [
+      2
+    ],
+    "500": [
+      2
+    ]
+  },
+  "selection": {
+    "hushar": {
+      "parallelism": null,
+      "parallelism_kind": "sessions",
+      "per_rate": true,
+      "plan": {
+        "100": [
+          2
+        ],
+        "500": [
+          2
+        ]
+      },
+      "rule": "one cell per session count; no mini batch, so sessions_per_request is 1 and the session count is the requests in flight",
+      "probes": []
+    },
+    "triton": {
+      "parallelism": null,
+      "parallelism_kind": "instances",
+      "per_rate": true,
+      "plan": {
+        "100": [
+          2
+        ],
+        "500": [
+          2
+        ]
+      },
+      "rule": "one cell per instance_group count, matching hushar's session counts",
+      "probes": []
+    }
+  }
+}

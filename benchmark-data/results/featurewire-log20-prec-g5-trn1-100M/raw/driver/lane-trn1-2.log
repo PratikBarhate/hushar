@@ -1,0 +1,20 @@
+launched 2026-11-17T06:40:00Z for trn1-2 phase=all specs=[100m:bf16]
+
+===== 100m bf16 (2026-11-17T06:40:00Z) =====
+2026-11-17T06:40:01Z preflight trn1-2: {'type': 'trn1.2xlarge', 'ami': 'ami-0dee875b4887bc141', 'kernel': '6.17.0-1019-aws', 'nproc': '8', 'dev': '1', 'cores': '2', 'nrt': 'yes', 'monitor': 'yes', 'sampler': 'yes', 'hushar': 'yes', 'provider': 'neuron', 'venv': 'yes', 'nrtpath': 'libnrt.so.1'}
+2026-11-17T06:40:01Z preflight trn1-2: OK -- trn1.2xlarge, 1 neuron device(s), libnrt.so.1, kernel 6.17.0-1019-aws, ami ami-0dee875b4887bc141
+2026-11-17T06:40:01Z run=featurewire-log20-prec-g5-trn1-100M rev=4c25e535-dirty host=trn1-2 size=100m target=100M phase=all loads=[(100, 200), (500, 40)] mini_batch=rows (no split) sessions=[2] shapes=[100, 500] wire=features/210 vectorize=server cores_per_replica=1 contexts=1 sample_rate=0.2 log=s3://<bucket>/inference-logs/featurewire-log20-prec-g5-trn1-100M log_rows_per_object=50000 log_sends=4 candidate=none warmup=300s measured=900s/15slices settle=60s
+2026-11-17T06:40:01Z prime 100m/bf16: 2 NEFF shape(s) [100, 500]
+2026-11-17T06:40:07Z prime 100m/bf16 mb100: compiling (target 100M, --auto-cast=matmult)
+2026-11-17T06:44:03Z prime 100m/bf16 mb100: compiled 191.9s, NEFF 154.5 MiB, 100,561,925 params / 31 layers, trace error 0.00232, served a trickle in 22.1s (at 2 replicas the device is asked for ~309.0 MiB of NEFF copies)
+2026-11-17T06:44:09Z prime 100m/bf16 mb500: compiling (target 100M, --auto-cast=matmult)
+2026-11-17T06:52:19Z prime 100m/bf16 mb500: compiled 442.3s, NEFF 172.2 MiB, 100,561,925 params / 31 layers, trace error 0.00325, served a trickle in 22.3s (at 2 replicas the device is asked for ~344.4 MiB of NEFF copies)
+2026-11-17T06:52:20Z prime 100m/bf16 complete: 100,561,925 parameters, 31 layers, shapes b100 154.5MiB compiled, b500 172.2MiB compiled
+2026-11-17T06:52:20Z main: 2 cell(s) -- 100x200 mb100/1p s2g1/2lane, 500x40 mb500/1p s2g1/2lane
+2026-11-17T06:52:20Z trn1fwp-100m-bf16-r100t200-s2 start  mb=100/1p sessions=2 (1/core) groups_of=1 lanes=2 ctx=1 100rows x 200tps = 20000 rows/s 300+900s
+2026-11-17T07:13:10Z trn1fwp-100m-bf16-r100t200-s2 NOTE: the inference log shed 19800 batch(es) -- S3 did not keep up, so this cell paid less than the full logging cost
+2026-11-17T07:13:10Z trn1fwp-100m-bf16-r100t200-s2 NOTE: 61 inference-log write(s) FAILED: /<bucket>/inference-logs/featurewire-log20-prec-g5-trn1-100M/trn1fwp-100m-bf16-r100t200-s2/shard=14/year=2026/month=11/day=17/hour=07/mi=13/<uuid>_<account-id>4450.pb: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+2026-11-17T07:13:22Z trn1fwp-100m-bf16-r100t200-s2 done   p50=6290.94 p95=6304.59 p99=6311.87 achieved=127.1/200 shed=86721 srvcpu=26.8 failed (0/15 slice(s) held) -- settling 60s
+2026-11-17T07:14:22Z trn1fwp-100m-bf16-r500t40-s2 start  mb=500/1p sessions=2 (1/core) groups_of=1 lanes=2 ctx=1 500rows x 40tps = 20000 rows/s 300+900s
+2026-11-17T07:35:10Z trn1fwp-100m-bf16-r500t40-s2 NOTE: 65 inference-log write(s) FAILED: //<bucket>/inference-logs/featurewire-log20-prec-g5-trn1-100M/trn1fwp-100m-bf16-r500t40-s2/shard=01/year=2026/month=11/day=17/hour=07/mi=34/<uuid>_<account-id>5698.pb: dispatch failure: timeout: client error (Connect): HTTP connect timeout occurred after 3.1s: timed out
+2026-11-17T07:35:22Z trn1fwp-100m-bf16-r500t40-s2 done   p50=5822.79 p95=5842.4 p99=5852.3 achieved=27.4/40 shed=14971 srvcpu=26.3 failed (0/15 slice(s) held) -- settling 60s

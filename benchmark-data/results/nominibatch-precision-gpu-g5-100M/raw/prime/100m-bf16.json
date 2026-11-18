@@ -1,0 +1,104 @@
+{
+  "size": "100m",
+  "precision": "bf16",
+  "run": "nominibatch-precision-gpu-g5-100M",
+  "rev": "e6265e6e",
+  "host": "g5-2",
+  "cache_root": "/root/trt-cache/100m/bf16",
+  "shapes": [
+    {
+      "rows": 100,
+      "engine_cache": "/root/trt-cache/100m/bf16/r100",
+      "engine_shape": [
+        100,
+        690
+      ],
+      "precision": "bf16",
+      "engine_bytes": 202955140,
+      "passes": [
+        {
+          "pass_": "first",
+          "seconds": 53.2,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 6.82,
+            "p95": 7.05,
+            "p99": 8.31,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 198204\n-rw-r--r--. 1 root root 202955140 Nov 17 01:35 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.engine\n-rw-r--r--. 1 root root        24 Nov 17 01:35 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.profile"
+        },
+        {
+          "pass_": "cached",
+          "seconds": 22.1,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 6.67,
+            "p95": 6.83,
+            "p99": 7.28,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 198204\n-rw-r--r--. 1 root root 202955140 Nov 17 01:35 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.engine\n-rw-r--r--. 1 root root        24 Nov 17 01:35 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.profile"
+        }
+      ],
+      "build_seconds": 53.2,
+      "cached_seconds": 22.1,
+      "speedup": 2.4
+    },
+    {
+      "rows": 500,
+      "engine_cache": "/root/trt-cache/100m/bf16/r500",
+      "engine_shape": [
+        500,
+        690
+      ],
+      "precision": "bf16",
+      "engine_bytes": 206186060,
+      "passes": [
+        {
+          "pass_": "first",
+          "seconds": 62.4,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 24.31,
+            "p95": 25.21,
+            "p99": 25.34,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 201360\n-rw-r--r--. 1 root root 206186060 Nov 17 01:38 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.engine\n-rw-r--r--. 1 root root        30 Nov 17 01:38 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.profile"
+        },
+        {
+          "pass_": "cached",
+          "seconds": 22.2,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 24.33,
+            "p95": 25.19,
+            "p99": 26.04,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 201360\n-rw-r--r--. 1 root root 206186060 Nov 17 01:38 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.engine\n-rw-r--r--. 1 root root        30 Nov 17 01:38 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.profile"
+        }
+      ],
+      "build_seconds": 62.4,
+      "cached_seconds": 22.2,
+      "speedup": 2.8
+    }
+  ],
+  "prime_arm": "hushar-tensor",
+  "prime_wire": "tensor",
+  "precision_note": "BF16 enabled in the TensorRT builder on both arms (trt_bf16_enable=1 on hushar, --bf16 on trtexec); additive, so BF16 is permitted per layer and chosen on timing, not forced",
+  "note": "One entry per engine SHAPE at THIS precision. With no mini batch the whole request is the call, so a shape is a ROW COUNT and one cache directory serves every session count at that row count -- a session count loads more copies of the same engine, it does not change the engine. A precision DOES change it, which is why the cache root carries the precision tag and this document is keyed on it. Primed on the SAME WIRE the cells use, so no cell can pay for a TensorRT build inside its warm-up. build_seconds is a 20 s trickle against a cold cache, so it carries the TensorRT engine build; cached_seconds is the same trickle against a FRESH server that loaded the cache. The gap is the cost every cell would otherwise have paid inside its warm-up."
+}

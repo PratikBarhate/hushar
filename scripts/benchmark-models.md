@@ -7,12 +7,13 @@ one is readable against the other. Defined in
 ```bash
 python scripts/generate_benchmark_models.py --params 10M --out-dir benchmark-data/generated/10m
 python scripts/generate_benchmark_models.py --params 20M --out-dir benchmark-data/generated/20m
+python scripts/generate_benchmark_models.py --params 100M --out-dir benchmark-data/generated/100m
 ```
 
-| | written as | 10M | 20M |
-|---|---|--:|--:|
-| transformer | `bench_model.onnx` | 9,142,789 params, 34.9 MB | 18,599,941 params, 71.0 MB |
-| ranking | `bench_dcn_model.onnx` | 9,112,581 params, 34.8 MB | 19,610,629 params, 74.8 MB |
+| | written as | 10M | 20M | 100M |
+|---|---|--:|--:|--:|
+| transformer | `bench_model.onnx` | 9,142,789 params, 34.9 MB | 18,599,941 params, 71.0 MB | 100,561,925 params, 383.6 MB |
+| ranking | `bench_dcn_model.onnx` | 9,112,581 params, 34.8 MB | 19,610,629 params, 74.8 MB | not generated |
 
 `bench_model` is the one the CPU and accelerator campaigns have used so far.
 
@@ -150,7 +151,7 @@ layers run once per row:
 | final `LayerNorm` | 1,024 | — |
 | `classifier` | 2,565 | 2,560 |
 
-## 10M and 20M
+## 10M, 20M and 100M
 
 Width, head count and `d_ff` are fixed; **depth is solved** to land nearest the target.
 
@@ -158,10 +159,24 @@ Width, head count and `d_ff` are fixed; **depth is solved** to land nearest the 
 |---|--:|--:|--:|--:|--:|
 | 10M | 2 | 6,304,768 (69%) | 2,838,021 (31%) | 9,142,789 | 53,291,520 |
 | 20M | 5 | 15,761,920 (85%) | 2,838,021 (15%) | 18,599,941 | 128,985,600 |
+| 100M | 31 | 97,723,904 (97%) | 2,838,021 (3%) | 100,561,925 | 785,000,960 |
 
 `to_tokens` is a fixed 2.83M that the stack grows past. It is nearly a third of the 10M
-model, so the two sizes are not a clean 2x of anything: parameters go up 2.03x and
-arithmetic 2.42x.
+model and 2.8% of the 100M one, so the sizes are not a clean multiple of anything: from 10M
+to 20M parameters go up 2.03x and arithmetic 2.42x, and from 10M to 100M **11.00x and
+14.73x**. Arithmetic outruns parameters because the fixed entry layer runs once per row
+while every layer it feeds runs over all 8 tokens.
+
+**Precision is not in this table.** FP32 and BF16 are a builder or compiler choice on the
+same ONNX file, so neither parameters nor MAC move with it; the built artifact does. At 100M
+the BF16 TensorRT engine is 0.50x its FP32 pair and the BF16 Neuron NEFF 0.43x, measured in
+[`featurewire-log20-prec-g5-trn1-100M`](../benchmark-data/results/featurewire-log20-prec-g5-trn1-100M/summary.md).
+
+**The exported file stores fewer values than the architecture has parameters**, by 1,024
+for every LayerNorm after the first: 9,138,693 at 10M, 18,589,701 at 20M and 100,498,437 at
+100M. Untrained, every LayerNorm still holds its initial all-ones scale and all-zeros bias,
+so the export deduplicates them behind `Identity` nodes. The totals above are the
+architecture's count, which is also what `torch_neuronx.trace` reports.
 
 ---
 
@@ -229,4 +244,5 @@ is not readable off a spec sheet, which is why both exist.
 
 The committed c9g campaign
 ([`minibatch-size-cpu-c9g-10M-20M`](../benchmark-data/results/minibatch-size-cpu-c9g-10M-20M/summary.md))
-used `bench_model` at both sizes: md5 `5539c971…` at 10M and `30f9c533…` at 20M.
+used `bench_model` at both sizes: md5 `5539c971…` at 10M and `30f9c533…` at 20M. The 100M
+campaigns used md5 `eee2644b…`.

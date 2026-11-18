@@ -1,0 +1,17 @@
+hushar: model trn1fwp-100m-bf16-r100t100-s2 loaded on neuron/libnrt 2.33.10.0 (NeuronCore 0, 1 model copy/copies, 1 context(s))
+  inputs   : input0 FP32[690]
+  outputs  : output0 FP32[5]
+  features : 1 binding(s)
+             input0 FP32[690] <- 210 features transformed and concatenated [emb_review, emb_category, emb_sentiment, emb_region, oh_color, oh_size, oh_channel, oh_status, ... +202 more]
+  overlap  : concurrent calls on one session serialise here, so splitting a request into mini batches would queue them rather than overlap them
+  plan     : mini batches, shared session -- rows cut into mini batches of 100, scored at the same time on the leased session, the last padded up to it
+hushar: metrics -> HusharBench [every 100 batches, 4 in flight]
+hushar: inference logs -> s3://<bucket>/inference-logs/featurewire-log20-prec-g5-trn1-100M/trn1fwp-100m-bf16-r100t100-s2 [Amazon S3, 16 prefix shard(s), every 500 batches, 4 in flight, logging 1 request in 5 (20.0%)]
+hushar: threads -> 4 async, 2 concurrent request(s), one replica each, Neuron execution is device-managed on 8 host core(s)
+hushar: Neuron -> model trn1fwp-100m-bf16-r100t100-s2, 2 replica(s) on NeuronCore 0-1, 1 core(s) and 1 execution context(s) per replica
+  ctx    : a request of N rows is ceil(N / 100) execution(s) of 100 rows on the one replica it leases; 1 can be in flight at once and any further one waits for a context
+  note   : a replica serves one request at a time, so "backend.execution_contexts_per_replica" is worth exactly the executions one request produces -- fewer serialize the request, more stay idle
+  config : intra_op_threads, inter_op_threads, allow_spinning and session_config apply only to ONNX Runtime
+  admit  : 512 in flight per connection
+  pool   : 2 replica(s) per model, one blocking thread each; a request leases an idle replica while it scores
+hushar: listening on 0.0.0.0:8279

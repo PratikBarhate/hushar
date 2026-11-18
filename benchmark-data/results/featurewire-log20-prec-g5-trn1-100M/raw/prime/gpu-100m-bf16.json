@@ -1,0 +1,105 @@
+{
+  "size": "100m",
+  "run": "featurewire-log20-prec-g5-trn1-100M",
+  "rev": "4c25e535-dirty",
+  "host": "g5-2",
+  "precision": "bf16",
+  "precision_note": "BF16 enabled in the TensorRT builder on both arms (trt_bf16_enable=1 on hushar, --bf16 on trtexec); additive, so BF16 is permitted per layer and chosen on timing, not forced",
+  "trt_option": "trt_bf16_enable=1",
+  "cache_root": "/root/trt-cache/100m/bf16",
+  "shapes": [
+    {
+      "rows": 100,
+      "engine_cache": "/root/trt-cache/100m/bf16/r100",
+      "engine_shape": [
+        100,
+        690
+      ],
+      "precision": "bf16",
+      "engine_bytes": 202952636,
+      "passes": [
+        {
+          "pass_": "first",
+          "seconds": 55.3,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 6.55,
+            "p95": 7.08,
+            "p99": 7.31,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 198200\n-rw-r--r--. 1 root root 202952636 Nov 17 06:44 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.engine\n-rw-r--r--. 1 root root        24 Nov 17 06:44 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.profile"
+        },
+        {
+          "pass_": "cached",
+          "seconds": 22.1,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 6.16,
+            "p95": 6.57,
+            "p99": 6.72,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 198200\n-rw-r--r--. 1 root root 202952636 Nov 17 06:44 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.engine\n-rw-r--r--. 1 root root        24 Nov 17 06:44 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.profile"
+        }
+      ],
+      "build_seconds": 55.3,
+      "cached_seconds": 22.1,
+      "speedup": 2.5
+    },
+    {
+      "rows": 500,
+      "engine_cache": "/root/trt-cache/100m/bf16/r500",
+      "engine_shape": [
+        500,
+        690
+      ],
+      "precision": "bf16",
+      "engine_bytes": 206186332,
+      "passes": [
+        {
+          "pass_": "first",
+          "seconds": 62.5,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 22.66,
+            "p95": 23.65,
+            "p99": 23.87,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 201360\n-rw-r--r--. 1 root root 206186332 Nov 17 06:46 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.engine\n-rw-r--r--. 1 root root        30 Nov 17 06:46 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.profile"
+        },
+        {
+          "pass_": "cached",
+          "seconds": 22.2,
+          "rc": 0,
+          "result": {
+            "offered": 2,
+            "achieved": 2.0,
+            "p50": 22.42,
+            "p95": 22.84,
+            "p99": 22.88,
+            "shed": 0,
+            "failed": 0
+          },
+          "cache_listing": "total 201360\n-rw-r--r--. 1 root root 206186332 Nov 17 06:46 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.engine\n-rw-r--r--. 1 root root        30 Nov 17 06:46 TensorrtExecutionProvider_TRTKernel_graph_main_graph_14343694358246433346_0_0_bf16_sm86.profile"
+        }
+      ],
+      "build_seconds": 62.5,
+      "cached_seconds": 22.2,
+      "speedup": 2.8
+    }
+  ],
+  "prime_arm": "hushar",
+  "prime_wire": "features",
+  "note": "One entry per engine SHAPE. With no mini batch the whole request is the call, so a shape is a ROW COUNT and one cache directory serves every session count at that row count -- a session count loads more copies of the same engine, it does not change the engine. Primed on the SAME WIRE the cells use, so no cell can pay for a TensorRT build inside its warm-up. build_seconds is a 20 s trickle against a cold cache, so it carries the TensorRT engine build; cached_seconds is the same trickle against a FRESH server that loaded the cache. The gap is the cost every cell would otherwise have paid inside its warm-up."
+}

@@ -1,0 +1,46 @@
+# torch_neuronx.trace and --auto-cast: what the old campaigns actually compiled
+
+Run on trn1-1 (trn1.2xlarge, PyTorch 2.9 DLAMI, neuronx-cc 2.26.6360.0) at
+2026-11-17T15:45:09Z, to settle whether passing no --auto-cast inherits the
+neuronx-cc CLI default of `matmult`. It does not.
+
+    -> 1 host(s): trn1-1
+    
+    ======================================================================
+    trn1-1   trn1.2xlarge   [Success] exit=0
+    ======================================================================
+    .
+    Compiler status PASS
+    .
+    Compiler status PASS
+    .
+    Compiler status PASS
+    model: target 10M -> 9,142,789 parameters, 2 layers, input [100, 690]
+    torch_neuronx 2.9.0.2.15.32035+de43f57c, neuronx-cc on PATH: /opt/aws_neuronx_venv_pytorch_2_9_nxd_inference/bin/neuronx-cc
+    trace() accepts: ['_', 'compiler_args', 'compiler_workdir', 'cpu_backend', 'enable_aliasing', 'example_inputs', 'func', 'inline_weights_to_neff', 'input_output_aliases', 'kwargs', 'partitioner_config']
+    
+    no auto-cast flag  (the OLD code path)
+        args              --model-type=transformer
+        trace error       1.43e-06
+        NEFF bytes        34,284,544  (0.937x of 36,571,156 FP32 weight bytes)
+        compile seconds   17.9   NEFFs emitted 1
+    
+    --auto-cast=none
+        args              --model-type=transformer --auto-cast=none
+        trace error       1.43e-06
+        NEFF bytes        34,284,544  (0.937x of 36,571,156 FP32 weight bytes)
+        compile seconds   9.2   NEFFs emitted 1
+    
+    --auto-cast=matmult --auto-cast-type=bf16
+        args              --model-type=transformer --auto-cast=matmult --auto-cast-type=bf16
+        trace error       0.000692
+        NEFF bytes        14,736,384  (0.403x of 36,571,156 FP32 weight bytes)
+        compile seconds   8.4   NEFFs emitted 1
+    
+    ========================================================================
+    no-flag trace error 1.43e-06 vs none 1.43e-06 vs matmult 0.000692
+    VERDICT: passing no --auto-cast behaves as --auto-cast=none.
+             torch_neuronx.trace does NOT inherit the neuronx-cc CLI default of
+             `matmult`, so the earlier campaigns' NEFFs were genuinely FP32.
+    
+    OK on all 1 host(s)

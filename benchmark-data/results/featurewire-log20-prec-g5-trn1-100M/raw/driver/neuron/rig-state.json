@@ -1,0 +1,69 @@
+{
+  "availability_zone": "us-west-2b",
+  "hosts": {
+    "cl1": {
+      "ami": "ami-0c09db4d8b86a32d2",
+      "arch": "arm64",
+      "id": "i-0becc570276268d76",
+      "instance": "m9g.8xlarge",
+      "ip": "172.31.20.185",
+      "role": "client",
+      "subnet": "subnet-00c62a1237179cad1"
+    },
+    "cl2": {
+      "ami": "ami-0c09db4d8b86a32d2",
+      "arch": "arm64",
+      "id": "i-0824a9a30c763f15f",
+      "instance": "m9g.8xlarge",
+      "ip": "172.31.23.27",
+      "role": "client",
+      "subnet": "subnet-00c62a1237179cad1"
+    },
+    "trn1-1": {
+      "ami": "ami-0dee875b4887bc141",
+      "arch": "x86_64",
+      "id": "i-015f413f568def0ca",
+      "instance": "trn1.2xlarge",
+      "ip": "172.31.26.52",
+      "role": "server",
+      "subnet": "subnet-00c62a1237179cad1"
+    },
+    "trn1-2": {
+      "ami": "ami-0dee875b4887bc141",
+      "arch": "x86_64",
+      "id": "i-08e6916ab76ebbd0c",
+      "instance": "trn1.2xlarge",
+      "ip": "172.31.24.247",
+      "role": "server",
+      "subnet": "subnet-00c62a1237179cad1"
+    }
+  },
+  "images": {
+    "client": {
+      "age_days_at_launch": 4.4,
+      "ami": "ami-0c09db4d8b86a32d2",
+      "architecture": "arm64",
+      "created": "2026-11-12T12:52:11Z",
+      "name": "al2023-ami-2023.12.20261112.0-kernel-6.18-arm64",
+      "root_device": "/dev/xvda",
+      "source": "SSM parameter /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    "server": {
+      "age_days_at_launch": 95.7,
+      "ami": "ami-0dee875b4887bc141",
+      "architecture": "x86_64",
+      "created": "2026-08-13T06:47:35Z",
+      "name": "Deep Learning AMI Neuron PyTorch 2.9 (Ubuntu 24.04) 20260813",
+      "root_device": "/dev/sda1",
+      "source": "newest of 15 matching 'Deep Learning AMI Neuron PyTorch 2.9 (Ubuntu 24.04) *'"
+    }
+  },
+  "lanes": [
+    "trn1-1",
+    "trn1-2"
+  ],
+  "launched": "2026-11-17T06:32:08Z",
+  "rig_set": "main",
+  "run": "featurewire-log20-prec-g5-trn1-100M",
+  "subnet": "subnet-00c62a1237179cad1"
+}

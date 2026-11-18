@@ -1,0 +1,41 @@
+hushar benchmark [cell @ 100 req/s]
+  server    : http://172.31.26.52:8279
+  model     : bench-model-neuron-100m-b100 on neuron
+  features  : 210 per row
+  asking    : whichever the server's split chooses
+  offering  : 100 req/s x 100 row(s), 400 in flight (4s of latency), 300s warmup + 900s measured, reported in 15 slices
+  payload   : 108888 bytes per request, 1088.9 bytes per row, 210 feature(s)
+  warmup done, measuring
+
+  bench-model-neuron-100m-b100 on neuron
+  ---------------------------------------------
+  achieved      :      90.9 req/s   (9091.1 rows/s)
+  offered       :       100 req/s
+  measured      :     81820 requests  (of 109489 that succeeded overall)
+  latency  p50  :   4391.31 ms
+           p95  :   4401.85 ms
+           p99  :   4407.02 ms
+           max  :   4416.08 ms
+           mean :   4391.47 ms
+  failed        :         0
+  shed          :     10510  (offered but never sent: 400 in flight was the cap)
+
+  reported as 15 slice(s) of 60s, under one continuous 900s load:
+  slice 1/15 : n=5455 achieved=90.92 p50=4391.26 p95=4400.84 p99=4409.27 shed=545 failed=0
+  slice 2/15 : n=5453 achieved=90.88 p50=4393.09 p95=4403.30 p99=4407.25 shed=547 failed=0
+  slice 3/15 : n=5450 achieved=90.83 p50=4395.58 p95=4405.14 p99=4409.33 shed=550 failed=0
+  slice 4/15 : n=5454 achieved=90.90 p50=4392.31 p95=4400.66 p99=4403.56 shed=546 failed=0
+  slice 5/15 : n=5454 achieved=90.90 p50=4390.38 p95=4400.06 p99=4404.32 shed=546 failed=0
+  slice 6/15 : n=5456 achieved=90.93 p50=4391.66 p95=4400.62 p99=4404.66 shed=544 failed=0
+  slice 7/15 : n=5453 achieved=90.88 p50=4391.82 p95=4400.37 p99=4403.03 shed=547 failed=0
+  slice 8/15 : n=5455 achieved=90.92 p50=4390.16 p95=4400.34 p99=4403.98 shed=545 failed=0
+  slice 9/15 : n=5454 achieved=90.90 p50=4391.37 p95=4402.22 p99=4407.19 shed=546 failed=0
+  slice 10/15 : n=5457 achieved=90.95 p50=4390.44 p95=4398.73 p99=4404.33 shed=543 failed=0
+  slice 11/15 : n=5457 achieved=90.95 p50=4390.13 p95=4400.54 p99=4407.12 shed=543 failed=0
+  slice 12/15 : n=5454 achieved=90.90 p50=4392.19 p95=4405.04 p99=4411.14 shed=546 failed=0
+  slice 13/15 : n=5456 achieved=90.93 p50=4390.50 p95=4404.19 p99=4409.24 shed=544 failed=0
+  slice 14/15 : n=5456 achieved=90.93 p50=4390.23 p95=4398.53 p99=4402.15 shed=544 failed=0
+  slice 15/15 : n=5456 achieved=90.93 p50=4389.73 p95=4401.21 p99=4408.47 shed=544 failed=0
+
+  NOTE: 9% of the offered rate was shed, so 100 req/s is above what this
+  configuration sustains. The latencies above are for the requests that ran.

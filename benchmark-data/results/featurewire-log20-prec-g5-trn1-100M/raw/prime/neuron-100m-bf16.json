@@ -1,0 +1,158 @@
+{
+  "size": "100m",
+  "target": "100M",
+  "run": "featurewire-log20-prec-g5-trn1-100M",
+  "rev": "4c25e535-dirty",
+  "host": "trn1-2",
+  "precision": "bf16",
+  "auto_cast": "matmult",
+  "auto_cast_type": "bf16",
+  "neuronx_cc": "NeuronX Compiler version 2.26.6360.0+6f180f47",
+  "maximum_trace_error": 0.003248274326324463,
+  "parameter_count": 100561925,
+  "layers": 31,
+  "input_width": 690,
+  "shapes": [
+    {
+      "mini_batch": 100,
+      "neff": "benchmark-data/generated/neuron/100m/bf16/bench_model_neuron_100m_b100.neff",
+      "neff_shape": [
+        100,
+        690
+      ],
+      "source": "compiled",
+      "build_seconds": 191.9,
+      "load_proof_seconds": 22.1,
+      "load_proof_result": {
+        "offered": 2,
+        "achieved": 2.0,
+        "p50": 16.69,
+        "p95": 16.8,
+        "p99": 16.81,
+        "shed": 0,
+        "failed": 0
+      },
+      "sha256": "78dec26416be449b1431fb4865f8ad4cd1d56ea4c3e7888acf77aca8ac32b7d2",
+      "size_bytes": 162008064,
+      "neff_mib": 154.5,
+      "precision": "bf16",
+      "auto_cast": "matmult",
+      "auto_cast_type": "bf16",
+      "compiler_args": [
+        "--model-type=transformer",
+        "--auto-cast=matmult",
+        "--auto-cast-type=bf16"
+      ],
+      "neuronx_cc": "NeuronX Compiler version 2.26.6360.0+6f180f47",
+      "parameter_count": 100561925,
+      "layers": 31,
+      "input_width": 690,
+      "maximum_trace_error": 0.0023151934146881104,
+      "torch": "2.9.1+cu128",
+      "torch_neuronx": "2.9.0.2.15.32035+de43f57c",
+      "projected_device_mib_at_max_replicas": 309.0,
+      "metadata": {
+        "model": "benchmark-data/generated/neuron/100m/bf16/bench_model_neuron_100m_b100.neff",
+        "sha256": "78dec26416be449b1431fb4865f8ad4cd1d56ea4c3e7888acf77aca8ac32b7d2",
+        "size_bytes": 162008064,
+        "parameter_count": 100561925,
+        "layers": 31,
+        "input_width": 690,
+        "batch_size": 100,
+        "maximum_trace_error": 0.0023151934146881104,
+        "torch": "2.9.1+cu128",
+        "torch_neuronx": "2.9.0.2.15.32035+de43f57c",
+        "neuronx_cc": "NeuronX Compiler version 2.26.6360.0+6f180f47",
+        "precision": "bf16",
+        "auto_cast": "matmult",
+        "auto_cast_type": "bf16",
+        "compiler_args": [
+          "--model-type=transformer",
+          "--auto-cast=matmult",
+          "--auto-cast-type=bf16"
+        ],
+        "precision_note": "--auto-cast=matmult --auto-cast-type=bf16, so the matrix-multiply engine runs in BF16 and normalization and accumulation stay FP32 -- the same division TensorRT's --bf16 makes on the GPU",
+        "trace_error_bounds": [
+          0.0001,
+          5.0
+        ],
+        "auto_cast_default_note": "neuronx-cc's own --auto-cast default is `matmult` on every release before SDK 2.28, so a compile that passes no flag produces BF16 matrix multiplies. Both arms of this campaign pass the flag explicitly; a NEFF whose metadata has no `auto_cast` key was built before this was understood and its `precision` field cannot be trusted.",
+        "compile_route": "torch_neuronx.trace",
+        "compile_route_note": "torch_neuronx.trace compiles the parameters in as CONSTANTS, so the NEFF takes one input -- the [batch, width] feature tensor -- which is the contract hushar's backend serves. The torch-neuronx 2.14 dynamo backend was evaluated and cannot replace it: it writes no model NEFF to disk, and the graph it lowers is stateless, so a NEFF built from its StableHLO takes weights as inputs and hushar refuses it. Same route as config-sweep-neuron-trn1-10M-50M.",
+        "compiler_workdir": "benchmark-data/generated/neuron/100m/bf16/bench_model_neuron_100m_b100.work",
+        "neff_cache_dir": "benchmark-data/generated/neuron/100m/bf16/bench_model_neuron_100m_b100.work/neff-cache"
+      }
+    },
+    {
+      "mini_batch": 500,
+      "neff": "benchmark-data/generated/neuron/100m/bf16/bench_model_neuron_100m_b500.neff",
+      "neff_shape": [
+        500,
+        690
+      ],
+      "source": "compiled",
+      "build_seconds": 442.3,
+      "load_proof_seconds": 22.3,
+      "load_proof_result": {
+        "offered": 2,
+        "achieved": 2.0,
+        "p50": 75.78,
+        "p95": 76.52,
+        "p99": 77.77,
+        "shed": 0,
+        "failed": 0
+      },
+      "sha256": "836ba0edbe6ee6ac52f37af2563039e84f8177b8a5f9701385d1dfc47daf359d",
+      "size_bytes": 180614144,
+      "neff_mib": 172.2,
+      "precision": "bf16",
+      "auto_cast": "matmult",
+      "auto_cast_type": "bf16",
+      "compiler_args": [
+        "--model-type=transformer",
+        "--auto-cast=matmult",
+        "--auto-cast-type=bf16"
+      ],
+      "neuronx_cc": "NeuronX Compiler version 2.26.6360.0+6f180f47",
+      "parameter_count": 100561925,
+      "layers": 31,
+      "input_width": 690,
+      "maximum_trace_error": 0.003248274326324463,
+      "torch": "2.9.1+cu128",
+      "torch_neuronx": "2.9.0.2.15.32035+de43f57c",
+      "projected_device_mib_at_max_replicas": 344.4,
+      "metadata": {
+        "model": "benchmark-data/generated/neuron/100m/bf16/bench_model_neuron_100m_b500.neff",
+        "sha256": "836ba0edbe6ee6ac52f37af2563039e84f8177b8a5f9701385d1dfc47daf359d",
+        "size_bytes": 180614144,
+        "parameter_count": 100561925,
+        "layers": 31,
+        "input_width": 690,
+        "batch_size": 500,
+        "maximum_trace_error": 0.003248274326324463,
+        "torch": "2.9.1+cu128",
+        "torch_neuronx": "2.9.0.2.15.32035+de43f57c",
+        "neuronx_cc": "NeuronX Compiler version 2.26.6360.0+6f180f47",
+        "precision": "bf16",
+        "auto_cast": "matmult",
+        "auto_cast_type": "bf16",
+        "compiler_args": [
+          "--model-type=transformer",
+          "--auto-cast=matmult",
+          "--auto-cast-type=bf16"
+        ],
+        "precision_note": "--auto-cast=matmult --auto-cast-type=bf16, so the matrix-multiply engine runs in BF16 and normalization and accumulation stay FP32 -- the same division TensorRT's --bf16 makes on the GPU",
+        "trace_error_bounds": [
+          0.0001,
+          5.0
+        ],
+        "auto_cast_default_note": "neuronx-cc's own --auto-cast default is `matmult` on every release before SDK 2.28, so a compile that passes no flag produces BF16 matrix multiplies. Both arms of this campaign pass the flag explicitly; a NEFF whose metadata has no `auto_cast` key was built before this was understood and its `precision` field cannot be trusted.",
+        "compile_route": "torch_neuronx.trace",
+        "compile_route_note": "torch_neuronx.trace compiles the parameters in as CONSTANTS, so the NEFF takes one input -- the [batch, width] feature tensor -- which is the contract hushar's backend serves. The torch-neuronx 2.14 dynamo backend was evaluated and cannot replace it: it writes no model NEFF to disk, and the graph it lowers is stateless, so a NEFF built from its StableHLO takes weights as inputs and hushar refuses it. Same route as config-sweep-neuron-trn1-10M-50M.",
+        "compiler_workdir": "benchmark-data/generated/neuron/100m/bf16/bench_model_neuron_100m_b500.work",
+        "neff_cache_dir": "benchmark-data/generated/neuron/100m/bf16/bench_model_neuron_100m_b500.work/neff-cache"
+      }
+    }
+  ],
+  "note": "One entry per NEFF SHAPE, which is the mini batch: a NEFF's leading dimension is FIXED, so every mini-batch size in the grid is a separate compile and a cell can only run a shape that exists. `source` is `compiled` when this lane built it and `s3-cache` when an earlier lane did -- a NEFF is a pure function of the seeded architecture, the target parameter count, the batch size AND the cast, so reusing one is reusing the same bytes, which the SHA-256 records. `load_proof_seconds` is a 20 s trickle of exactly `mini_batch` rows served by a FRESH server, so a NEFF that loads but cannot serve is found here rather than inside a cell's warm-up. `maximum_trace_error` is the compiled-versus-PyTorch error and is the PROOF of the cast: ~1e-6 at FP32, ~1e-2 once the matmuls are BF16, so the arms are distinguishable from this number alone."
+}

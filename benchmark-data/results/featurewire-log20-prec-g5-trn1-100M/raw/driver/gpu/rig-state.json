@@ -1,0 +1,37 @@
+{
+  "availability_zone": "us-west-2a",
+  "hosts": {},
+  "images": {
+    "client": {
+      "age_days_at_launch": 4.4,
+      "ami": "ami-0c09db4d8b86a32d2",
+      "architecture": "arm64",
+      "created": "2026-11-12T12:52:11Z",
+      "name": "al2023-ami-2023.12.20261112.0-kernel-6.18-arm64",
+      "source": "SSM parameter /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    "server": {
+      "age_days_at_launch": 2.3,
+      "ami": "ami-0bd460dfa11a51c74",
+      "architecture": "x86_64",
+      "created": "2026-11-14T15:46:26Z",
+      "name": "Deep Learning Base OSS Nvidia Driver GPU AMI (Amazon Linux 2023) 20261113",
+      "source": "newest of 151 matching 'Deep Learning Base OSS Nvidia Driver GPU AMI (Amazon Linux 2023) *'"
+    }
+  },
+  "lanes": [
+    "g5-1",
+    "g5-2"
+  ],
+  "launched": "2026-11-17T06:32:36Z",
+  "rig_set": "main",
+  "run": "featurewire-log20-prec-g5-trn1-100M",
+  "subnet": "subnet-0cc468f8a7b87ca8d",
+  "terminated": "2026-11-17T16:42:25Z",
+  "terminated_ids": {
+    "cl1": "i-0fcea8d4fec8da797",
+    "cl2": "i-0e7102a84d0db07bd",
+    "g5-1": "i-036b127b416ec3735",
+    "g5-2": "i-09d62e240769b38c1"
+  }
+}

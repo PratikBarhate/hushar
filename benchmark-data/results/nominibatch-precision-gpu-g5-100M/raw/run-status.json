@@ -1,0 +1,48 @@
+{
+  "run": "nominibatch-precision-gpu-g5-100M",
+  "main": {
+    "cells": 12,
+    "sustained": 12,
+    "partial": 0,
+    "failed_load": 0,
+    "with_cloudwatch": 6,
+    "with_gpu_samples": 12
+  },
+  "probes": {
+    "cells": 0,
+    "sustained": 0,
+    "partial": 0,
+    "failed_load": 0,
+    "with_cloudwatch": 0,
+    "with_gpu_samples": 0
+  },
+  "by_arm": {
+    "hushar-tensor": {
+      "cells": 6,
+      "sustained": 6,
+      "partial": 0,
+      "failed_load": 0,
+      "with_cloudwatch": 6,
+      "with_gpu_samples": 6
+    },
+    "triton": {
+      "cells": 6,
+      "sustained": 6,
+      "partial": 0,
+      "failed_load": 0,
+      "with_cloudwatch": 0,
+      "with_gpu_samples": 6
+    }
+  },
+  "by_size": {
+    "100m": {
+      "cells": 12,
+      "sustained": 12,
+      "partial": 0,
+      "failed_load": 0,
+      "with_cloudwatch": 6,
+      "with_gpu_samples": 12
+    }
+  },
+  "preserved_attempt_failures": 0
+}

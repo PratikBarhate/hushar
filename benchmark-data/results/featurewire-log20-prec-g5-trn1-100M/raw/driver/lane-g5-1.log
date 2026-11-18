@@ -1,0 +1,24 @@
+launched 2026-11-17T06:43:51Z for g5-1 phase=all specs=[100m:eee2644bd65cd23543ca806f102f5062:fp32]
+
+===== 100m fp32 (2026-11-17T06:43:51Z) =====
+2026-11-17T06:43:52Z preflight g5-1: {'type': 'g5.2xlarge', 'ami': 'ami-0bd460dfa11a51c74', 'kernel': '6.12.115-140.210.amzn2023.x86_64', 'nproc': '8', 'gpu': 'NVIDIA_A10G', 'gpucount': '1', 'driver': '595.112.07', 'md5': 'eee2644bd65cd23543ca806f102f5062', 'hushar': 'yes', 'plans': '100,500', 'image': 'yes', 'gpusampler': 'yes', 'ortso': '1.28.3', 'trtso': '10.16.1', 'cudamaj': '13', 'trtlinked': '10.16.1', 'trtmissing': '0'}
+2026-11-17T06:43:52Z preflight g5-1: OK -- g5.2xlarge, NVIDIA_A10G, driver 595.112.07, TensorRT 10.16.1 on CUDA 13 (hushar links 10.16.1), ONNX Runtime 1.28.3, 100m md5 eee2644bd65cd23543ca806f102f5062
+2026-11-17T06:43:52Z run=featurewire-log20-prec-g5-trn1-100M rev=4c25e535-dirty host=g5-1 size=100m arms=['hushar', 'triton'] phase=all loads=[(100, 100), (500, 20)] sessions={100: [2], 500: [2]} shapes=[100, 500] triton_parallelism={100: [2], 500: [2]} wire=features/210 vectorize=server sample_rate=0.2 log=s3://<bucket>/inference-logs/featurewire-log20-prec-g5-trn1-100M log_rows_per_object=50000 log_sends=4 candidate=none warmup=300s measured=900s/15slices settle=60s plan=whole request (no mini batch)
+2026-11-17T06:43:53Z prime 100m/fp32: 2 engine shape(s) [100, 500] on the features wire
+2026-11-17T06:44:35Z prime 100m r100 first pass: rc=0 31s {'offered': 2, 'achieved': 2.0, 'p50': 11.57, 'p95': 12.09, 'p99': 12.13, 'shed': 0, 'failed': 0}
+2026-11-17T06:45:16Z prime 100m r100 cached pass: rc=0 22s {'offered': 2, 'achieved': 2.0, 'p50': 11.36, 'p95': 11.73, 'p99': 11.82, 'shed': 0, 'failed': 0}
+2026-11-17T06:46:13Z prime 100m r500 first pass: rc=0 32s {'offered': 2, 'achieved': 2.0, 'p50': 44.82, 'p95': 45.79, 'p99': 46.38, 'shed': 0, 'failed': 0}
+2026-11-17T06:46:54Z prime 100m r500 cached pass: rc=0 22s {'offered': 2, 'achieved': 2.0, 'p50': 44.47, 'p95': 45.01, 'p99': 45.12, 'shed': 0, 'failed': 0}
+2026-11-17T06:47:09Z prime 100m r100: build 31.1s -> cached 22.1s
+2026-11-17T06:47:09Z prime 100m r500: build 32.4s -> cached 22.2s
+2026-11-17T06:47:09Z selection hushar: sessions {100: [2], 500: [2]} (no probe)
+2026-11-17T06:47:09Z selection triton: instances {100: [2], 500: [2]} (no probe)
+2026-11-17T06:47:09Z main: 4 cell(s) -- 100x100 s2 [hushar], 500x20 s2 [hushar], 100x100 i2 [triton], 500x20 i2 [triton]
+2026-11-17T06:47:10Z g5fwp-hushar-100m-fp32-r100t100-p2 start  hushar/features sessions=2 100rows x 100tps = 10000 rows/s 300+900s
+2026-11-17T07:08:15Z g5fwp-hushar-100m-fp32-r100t100-p2 done   p50=10.97 p95=11.34 p99=11.57 achieved=100.0/100 shed=0 srvcpu=14.4 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-17T07:09:15Z g5fwp-hushar-100m-fp32-r500t20-p2 start  hushar/features sessions=2 500rows x 20tps = 10000 rows/s 300+900s
+2026-11-17T07:30:15Z g5fwp-hushar-100m-fp32-r500t20-p2 done   p50=44.0 p95=44.52 p99=44.82 achieved=20.0/20 shed=0 srvcpu=11.9 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-17T07:31:16Z g5fwp-triton-100m-fp32-r100t100-p2 start  triton/tensor instances=2 100rows x 100tps = 10000 rows/s 300+900s
+2026-11-17T07:52:13Z g5fwp-triton-100m-fp32-r100t100-p2 done   p50=10.27 p95=10.45 p99=10.52 achieved=100.0/100 shed=0 srvcpu=3.2 sustained (15/15 slice(s) held) -- settling 60s
+2026-11-17T07:53:14Z g5fwp-triton-100m-fp32-r500t20-p2 start  triton/tensor instances=2 500rows x 20tps = 10000 rows/s 300+900s
+2026-11-17T08:14:15Z g5fwp-triton-100m-fp32-r500t20-p2 done   p50=42.1 p95=42.4 p99=42.5 achieved=20.0/20 shed=0 srvcpu=4.3 sustained (15/15 slice(s) held) -- settling 60s
